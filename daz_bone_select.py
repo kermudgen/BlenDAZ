@@ -468,19 +468,23 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         ik_bone.lock_ik_y = daz_bone.lock_ik_y
         ik_bone.lock_ik_z = daz_bone.lock_ik_z
 
+        # PHASE 2: IK Stiffness TEMPORARILY DISABLED
+        # Stiffness is causing knee bending issues (twisting, getting stuck straight)
+        # TODO: Re-enable after fixing knee bending, or tune stiffness values
         # PHASE 2: IK Stiffness for natural falloff (DAZ-like pulling behavior)
         # Apply increasing stiffness to bones further from the tip (diminishing influence)
         # Tip (hand/foot) = 0.0 (100% influence), Root (shoulder/hip) = 0.8 (20% influence)
         # This creates natural "ragdoll pulling" where parent bones resist more
-        chain_position = i / max(1, len(daz_bone_names) - 1)  # 0.0 at tip, 1.0 at root
-        stiffness = chain_position * 0.8  # Linear falloff from 0.0 to 0.8
+        if False:  # DISABLED
+            chain_position = i / max(1, len(daz_bone_names) - 1)  # 0.0 at tip, 1.0 at root
+            stiffness = chain_position * 0.8  # Linear falloff from 0.0 to 0.8
 
-        ik_bone.ik_stiffness_x = stiffness
-        ik_bone.ik_stiffness_y = stiffness
-        ik_bone.ik_stiffness_z = stiffness
+            ik_bone.ik_stiffness_x = stiffness
+            ik_bone.ik_stiffness_y = stiffness
+            ik_bone.ik_stiffness_z = stiffness
 
-        if i == 0 or i == len(daz_bone_names) - 1:  # Log first and last bone
-            print(f"  IK stiffness: {daz_name} = {stiffness:.2f} (chain pos {chain_position:.2f})")
+            if i == 0 or i == len(daz_bone_names) - 1:  # Log first and last bone
+                print(f"  IK stiffness: {daz_name} = {stiffness:.2f} (chain pos {chain_position:.2f})")
 
     # CRITICAL: Lock rotation on the TIP bone (last in chain) to preserve manual rotations
     # This prevents IK from rotating the tip bone (e.g., foot/hand), allowing only
@@ -513,8 +517,8 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         # For legs: nudge shin forward (X-axis rotation in quaternion)
         if 'shin' in middle_bone_name or 'calf' in middle_bone_name:
             from mathutils import Quaternion
-            nudge_quat = Quaternion((1, 0, 0), 0.1)  # Reduced to 0.1 rad (6°) - less visible
-            print(f"  Nudging shin forward 0.1 rad (6°) - applied to both .ik and DAZ")
+            nudge_quat = Quaternion((1, 0, 0), 0.2)  # 0.2 rad (11°) - balance between hint and visibility
+            print(f"  Nudging shin forward 0.2 rad (11°) - applied to both .ik and DAZ")
         # For arms: small nudge around Y-axis
         elif 'forearm' in middle_bone_name or 'lorearm' in middle_bone_name:
             from mathutils import Quaternion
