@@ -500,10 +500,12 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     #   3. DAZ bones' Limit Rotation constraints clamp the final result
     # This gives the IK solver freedom while still respecting joint limits on final pose
 
+    # TEMPORARILY DISABLED: Nudging causes initial pop
+    # TODO: Apply nudge AFTER first mouse move, or apply to both .ik and DAZ bones
     # Add nudge to middle bone to hint bend direction (prevents backwards bending)
     # Larger nudge (0.3 rad ≈ 17°) than previous 0.1 rad for stronger hint
     # Using quaternion rotation since all .ik bones now use QUATERNION mode
-    if len(ik_control_names) >= 2:
+    if False and len(ik_control_names) >= 2:  # DISABLED
         middle_bone = armature.pose.bones[ik_control_names[len(ik_control_names)//2]]
         middle_bone_name = middle_bone.name.lower()
 
