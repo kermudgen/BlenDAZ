@@ -440,14 +440,12 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         actual_rotation_quat = daz_bone_eval.matrix_basis.to_quaternion()
         ik_bone.rotation_quaternion = actual_rotation_quat.copy()
 
-        # DEBUG: Log tip bone rotation
+        # DEBUG: Log ALL bones rotation to diagnose popping
+        print(f"  Bone {i}: {daz_name}")
+        print(f"    DAZ eval quat: {actual_rotation_quat}")
+        print(f"    Copied to .ik: {ik_bone.rotation_quaternion}")
         if i == len(daz_bone_names) - 1:
-            print(f"  DEBUG TIP BONE: {daz_name}")
-            print(f"    DAZ rotation property (raw): {daz_bone.rotation_euler if daz_bone.rotation_mode != 'QUATERNION' else daz_bone.rotation_quaternion}")
-            print(f"    DAZ matrix_basis rotation (EVAL): {actual_rotation_quat}")
-            print(f"    Copied to .ik: {ik_bone.rotation_quaternion}")
-            print(f"    DAZ matrix_basis (EVAL): {daz_bone_eval.matrix_basis}")
-            print(f"    .ik matrix_basis: {ik_bone.matrix_basis}")
+            print(f"    (TIP BONE - rotation locked, not copied back)")
 
         # CRITICAL: Copy IK rotation limits from DAZ bone to prevent unrealistic bending
         # This prevents backward-bending knees and excessive ankle rotation
@@ -567,7 +565,7 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         copy_rot.subtarget = ik_name  # Copy from IK control bone
         copy_rot.target_space = 'LOCAL'  # Copy in local space!
         copy_rot.owner_space = 'LOCAL'   # Apply in local space!
-        copy_rot.influence = 1.0  # Active immediately (IK constraint controls pop prevention)
+        copy_rot.influence = 0.0  # Start disabled - activate WITH IK on first mouse move
 
         # CRITICAL: Move Copy Rotation to TOP of constraint stack (index 0)
         # This ensures it runs BEFORE Limit Rotation, so limits can clamp the result
@@ -1484,15 +1482,24 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # This prevents IK from solving to the old target position
         context.view_layer.update()
 
-        # NOW activate IK constraint after target is positioned
-        # IK starts disabled (influence 0.0), so bones stay exactly where they are
-        # On first move, we activate IK (0.0 → 1.0) and it starts solving
+        # NOW activate BOTH IK and Copy Rotation constraints after target is positioned
+        # Both start disabled (influence 0.0), so bones stay exactly where they are
+        # On first move, we activate BOTH together (0.0 → 1.0)
         ik_tip_bone = self._drag_armature.pose.bones[self._ik_control_bone_names[-1]]
         for constraint in ik_tip_bone.constraints:
             if constraint.name == "IK_Temp" and constraint.influence < 0.5:
                 constraint.influence = 1.0
                 print(f"  Activated IK constraint (influence 0.0 → 1.0)")
                 break
+
+        # Also activate Copy Rotation constraints
+        for daz_name in self._ik_daz_bone_names:
+            daz_bone = self._drag_armature.pose.bones[daz_name]
+            for constraint in daz_bone.constraints:
+                if constraint.name == "IK_CopyRot_Temp" and constraint.influence < 0.5:
+                    constraint.influence = 1.0
+
+        print(f"  Activated Copy Rotation constraints")
 
         # Final update to trigger IK solving with new target position
         context.view_layer.update()
