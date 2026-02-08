@@ -565,7 +565,7 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         copy_rot.subtarget = ik_name  # Copy from IK control bone
         copy_rot.target_space = 'LOCAL'  # Copy in local space!
         copy_rot.owner_space = 'LOCAL'   # Apply in local space!
-        copy_rot.influence = 1.0  # Full influence immediately (IK bones already match current pose)
+        copy_rot.influence = 0.0  # Start at 0.0, ramp up on first mouse move (prevents initial pop)
 
         # CRITICAL: Move Copy Rotation to TOP of constraint stack (index 0)
         # This ensures it runs BEFORE Limit Rotation, so limits can clamp the result
@@ -1478,15 +1478,20 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Set the bone's matrix directly
         target_bone.matrix = mat @ target_bone.bone.matrix_local
 
-        # CRITICAL: Activate Copy Rotation constraints now that target is positioned
+        # CRITICAL: Force IK to solve BEFORE activating Copy Rotation constraints
+        # This prevents initial "pop" - IK solves to match current pose first
+        context.view_layer.update()
+
+        # NOW activate Copy Rotation constraints (after IK has solved)
         # Set influence to 1.0 on first mouse move to prevent initial snap
         for daz_name in self._ik_daz_bone_names:
             daz_bone = self._drag_armature.pose.bones[daz_name]
             for constraint in daz_bone.constraints:
                 if constraint.name == "IK_CopyRot_Temp" and constraint.influence < 0.5:
                     constraint.influence = 1.0
+                    print(f"  Activated Copy Rotation for {daz_name} (influence 0.0 → 1.0)")
 
-        # Force update to trigger IK solving
+        # Final update to apply Copy Rotation result
         context.view_layer.update()
 
     def end_ik_drag(self, context, cancel=False):
