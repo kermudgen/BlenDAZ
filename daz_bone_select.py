@@ -519,11 +519,11 @@ def create_ik_chain(armature, bone_name, chain_length=None):
             from mathutils import Quaternion
             nudge_quat = Quaternion((1, 0, 0), 0.2)  # 0.2 rad (11°) - balance between hint and visibility
             print(f"  Nudging shin forward 0.2 rad (11°) - applied to both .ik and DAZ")
-        # For arms: small nudge around Y-axis
+        # For arms: nudge around Y-axis (increased to match legs)
         elif 'forearm' in middle_bone_name or 'lorearm' in middle_bone_name:
             from mathutils import Quaternion
-            nudge_quat = Quaternion((0, 1, 0), 0.05)  # Y-axis, small nudge
-            print(f"  Nudging forearm 0.05 rad - applied to both .ik and DAZ")
+            nudge_quat = Quaternion((0, 1, 0), 0.15)  # Y-axis, 0.15 rad (9°)
+            print(f"  Nudging forearm 0.15 rad (9°) - applied to both .ik and DAZ")
 
         # Apply the same nudge to BOTH bones so they stay matched
         if nudge_quat:
