@@ -1480,7 +1480,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Set the bone's matrix directly
         target_bone.matrix = mat @ target_bone.bone.matrix_local
 
-        # CRITICAL: Activate IK constraint on first mouse move to prevent initial pop
+        # CRITICAL: Update FIRST to ensure target is at new position
+        # This prevents IK from solving to the old target position
+        context.view_layer.update()
+
+        # NOW activate IK constraint after target is positioned
         # IK starts disabled (influence 0.0), so bones stay exactly where they are
         # On first move, we activate IK (0.0 → 1.0) and it starts solving
         ik_tip_bone = self._drag_armature.pose.bones[self._ik_control_bone_names[-1]]
@@ -1490,7 +1494,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 print(f"  Activated IK constraint (influence 0.0 → 1.0)")
                 break
 
-        # Force update to trigger IK solving
+        # Final update to trigger IK solving with new target position
         context.view_layer.update()
 
     def end_ik_drag(self, context, cancel=False):
