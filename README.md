@@ -52,7 +52,45 @@ Blender addon for DAZ figures with intuitive bone selection and temporary IK rig
 - Thigh rotation limits enforced during dragging
 - Foot rotation preserved between IK drags
 
-**Future Polish Items**:
-- Pelvis and collar integration
-- Body/head grabbing
-- Pole target support (Phase 2, if needed)
+### Roadmap: IK Chain Pulling Behavior
+
+**Goal**: Implement DAZ Studio-like "ragdoll pulling" where dragging a limb beyond reach pulls the whole body with natural falloff.
+
+**Desired Behavior**:
+When dragging a hand far from the body:
+1. **Short distance**: Arm IK solves normally (elbow bends)
+2. **Medium distance**: Arm stretches to limit, shoulder rotates more
+3. **Beyond reach**: Starts pulling collar → spine → chest → pelvis with diminishing influence
+4. **Way beyond**: Whole body gets dragged like a ragdoll
+
+**Influence Falloff** (natural like pulling a real person):
+```
+Hand:      100% influence ─┐
+Forearm:    95%            │
+Upper Arm:  80%            │ Strong influence
+Collar:     60%            │
+───────────────────────────┘
+Chest:      40%            │
+Spine:      20%            │ Weak influence
+Pelvis:     10%            ┘
+```
+
+**Implementation Phases**:
+
+- **Phase 2 (Current)**: IK Stiffness Implementation
+  - Add `ik_stiffness_x/y/z` to parent bones with increasing values
+  - Higher stiffness = more resistance = less influence
+  - Test falloff feel and tune values
+  - Low risk, uses native Blender features
+
+- **Phase 3 (Future Goal)**: Hierarchical IK with Dynamic Chain Extension
+  - Detect when target exceeds current chain's max reach
+  - Dynamically extend chain to include parent bones (collar → spine → pelvis)
+  - Apply diminishing influence to newly added bones
+  - Creates true DAZ-like progressive pulling behavior
+  - More complex but most realistic
+
+**Other Future Features**:
+- Pelvis and collar integration (better chain anchoring)
+- Body/head grabbing (spine IK, head IK)
+- Pole target support (if needed for stability)

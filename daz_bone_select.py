@@ -470,6 +470,20 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         ik_bone.lock_ik_y = daz_bone.lock_ik_y
         ik_bone.lock_ik_z = daz_bone.lock_ik_z
 
+        # PHASE 2: IK Stiffness for natural falloff (DAZ-like pulling behavior)
+        # Apply increasing stiffness to bones further from the tip (diminishing influence)
+        # Tip (hand/foot) = 0.0 (100% influence), Root (shoulder/hip) = 0.8 (20% influence)
+        # This creates natural "ragdoll pulling" where parent bones resist more
+        chain_position = i / max(1, len(daz_bone_names) - 1)  # 0.0 at tip, 1.0 at root
+        stiffness = chain_position * 0.8  # Linear falloff from 0.0 to 0.8
+
+        ik_bone.ik_stiffness_x = stiffness
+        ik_bone.ik_stiffness_y = stiffness
+        ik_bone.ik_stiffness_z = stiffness
+
+        if i == 0 or i == len(daz_bone_names) - 1:  # Log first and last bone
+            print(f"  IK stiffness: {daz_name} = {stiffness:.2f} (chain pos {chain_position:.2f})")
+
     # CRITICAL: Lock rotation on the TIP bone (last in chain) to preserve manual rotations
     # This prevents IK from rotating the tip bone (e.g., foot/hand), allowing only
     # middle bones (knee/elbow) to rotate. This preserves user's manual R rotations.
