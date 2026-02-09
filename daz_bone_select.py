@@ -241,12 +241,13 @@ def get_smart_chain_length(bone_name):
         if not any(finger in bone_lower for finger in ['thumb', 'index', 'mid', 'ring', 'pinky', 'carpal']):
             return 3  # Forearm + upper arm + collar bone
 
-    # Feet - full leg chain (foot + shin + thigh)
+    # Feet - full leg chain including pelvis (foot + shin + thigh + pelvis)
+    # Pelvis provides better anchoring and more natural movement
     # Twist bones will be automatically skipped by the chain builder
     if 'foot' in bone_lower:
         # Exclude toe bones
         if not any(toe in bone_lower for toe in ['toe', 'metatarsal']):
-            return 3  # Foot + shin + thigh
+            return 4  # Foot + shin + thigh + pelvis
 
     # Forearms - full arm chain including collar
     if any(part in bone_lower for part in ['forearm', 'lorearm']):
