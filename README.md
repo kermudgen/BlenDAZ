@@ -51,6 +51,17 @@ Blender addon for DAZ figures with intuitive bone selection and temporary IK rig
 - Knee bending works correctly (no backward bending)
 - Thigh rotation limits enforced during dragging
 - Foot rotation preserved between IK drags
+- Pelvis and collar integration complete (better anchoring)
+
+**Polish/Tuning TODO**:
+- Fine-tune collar IK influence (currently 0.8 - may need adjustment to reduce shoulder shrugging)
+- Fine-tune head tracking behavior (Y-axis damped track - may need influence adjustment or different track settings)
+- **Overall "Rag-Doll Feel"**: Polish the interface so dragging any part feels natural and intuitive, like manipulating a physical figure. Body parts should respond realistically when pulled/moved.
+
+**UX Improvements TODO**:
+- **N-Panel Access**: Add tool button to 3D View sidebar (N-Panel) in addition to hotkey
+- **Viewport Persistence**: Handle workspace/layout switches gracefully (either persist or exit cleanly with message)
+- **Mode Management**: Require Object Mode to start, auto-switch to Pose Mode during use, return to Object Mode on exit
 
 ### Roadmap: IK Chain Pulling Behavior
 
@@ -91,6 +102,5 @@ Pelvis:     10%            ┘
   - More complex but most realistic
 
 **Other Future Features**:
-- Pelvis and collar integration (better chain anchoring)
 - Body/head grabbing (spine IK, head IK)
 - Pole target support (if needed for stability)
