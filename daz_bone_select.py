@@ -325,7 +325,7 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     daz_bones = []  # PoseBones
     current = clicked_bone
 
-    # Walk up collecting non-twist bones
+    # Walk up collecting non-twist bones (include disconnected bones - we'll fix IK chain later)
     while current and len(daz_bones) < chain_length:
         if not is_twist_bone(current.name):
             daz_bones.append(current)
@@ -374,6 +374,10 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         # CRITICAL: Set parent to previous IK bone (creates chain)
         if prev_ik_edit:
             ik_edit.parent = prev_ik_edit
+            # CRITICAL: Connect bones by adjusting previous bone's tail to this bone's head
+            # This fixes disconnected bone issues (e.g., DAZ chest bones)
+            prev_ik_edit.tail = ik_edit.head.copy()
+            print(f"  Connected {prev_ik_edit.name} → {ik_name}")
         else:
             # Root bone - parent to DAZ parent (or None)
             if daz_edit.parent:
@@ -483,9 +487,9 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         if 'collar' in daz_name_lower or 'clavicle' in daz_name_lower:
             stiffness = 0.98  # Collar: essentially locked
         elif 'chest' in daz_name_lower:
-            stiffness = 0.99  # Chest: almost completely locked
+            stiffness = 0.1  # Chest: very flexible for smooth torso chain
         elif 'abdomen' in daz_name_lower or 'spine' in daz_name_lower:
-            stiffness = 0.995  # Spine: nearly locked
+            stiffness = 0.1  # Spine: very flexible for smooth torso chain
         elif 'hip' in daz_name_lower:
             # Hip is the root body controller - lock rotation, allow only translation
             stiffness = 0.8
@@ -832,6 +836,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
     # GPU draw handler for highlighting
     _draw_handler = None
+    _highlight_cache = {}  # Cache of {(mesh_name, bone_name): [triangle_verts]} for performance
+    _last_highlighted_bone = None  # Track when to rebuild cache
 
     def modal(self, context, event):
         """Handle mouse events"""
@@ -863,8 +869,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            # CRITICAL: Check if we're actually clicking on mesh, not gizmo
-            # Do a fresh raycast to verify we hit mesh
+            # Only handle click if we're hovering over a bone (otherwise pass through for gizmos)
+            if not self._hover_bone_name or not self._hover_armature:
+                self._mouse_down_pos = None
+                return {'PASS_THROUGH'}
+
+            # Do a fresh raycast to verify we hit mesh (not clicking through to background)
             region = context.region
             rv3d = context.space_data.region_3d
             coord = (event.mouse_region_x, event.mouse_region_y)
@@ -883,7 +893,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         hit_mesh = True
                         break
 
-            # If we didn't hit any mesh, pass through (might be clicking gizmo)
+            # If we didn't hit any mesh, pass through (clicking empty space)
             if not hit_mesh:
                 self._mouse_down_pos = None
                 return {'PASS_THROUGH'}
@@ -891,7 +901,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Record mouse position on press (to detect drags vs clicks)
             self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
 
-            # If hovering over a bone, prepare for potential drag
+            # Hovering over a bone - prepare for potential drag
             if self._hover_bone_name and self._hover_armature:
                 # Select bone immediately (don't wait for release)
                 # This allows click-drag to work in one motion
@@ -1055,6 +1065,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, 'WINDOW')
             self._draw_handler = None
 
+        # Clear highlight cache
+        self._highlight_cache.clear()
+        self._last_highlighted_bone = None
+
         print("=== DAZ Bone Select & Pin Stopped ===\n")
 
     def check_hover(self, context, event):
@@ -1099,7 +1113,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 body_distance = (body_location - ray_origin).length
 
         # PRIORITY LOGIC: Choose which hit to use
-        # Prioritize body if it's close behind clothing (within 0.15 units)
+        # Prioritize body if it's behind clothing (increased threshold for poofy dresses)
         final_mesh = None
         final_location = None
 
@@ -1107,7 +1121,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # We hit both clothing and body
             distance_difference = body_distance - closest_distance
 
-            if distance_difference < 0.15:  # Body is close behind clothing
+            if distance_difference < 1.0:  # Body is behind clothing (generous threshold for distant clothing)
                 final_mesh = body_mesh
                 final_location = body_location
                 # print(f"  Prioritizing body mesh (distance diff: {distance_difference:.3f})")
@@ -1212,6 +1226,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                     # Check bone exists in armature
                     if bone_name in armature.data.bones:
+                        # Map hand/foot palm/sole bones to parent hand/foot
+                        bone_name_lower = bone_name.lower()
+                        if any(term in bone_name_lower for term in ['metacarpal', 'metatarsal', 'carpal', 'tarsal']):
+                            # Find parent bone (should be hand or foot)
+                            parent_bone = armature.data.bones[bone_name].parent
+                            if parent_bone:
+                                bone_name = parent_bone.name
+                                print(f"  Mapped palm/sole bone to parent: {bone_name}")
+
                         return (mesh_obj.name, bone_name, armature)
 
         # METHOD 2: Fallback to nearest vertex (if no face index)
@@ -1255,6 +1278,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Check bone exists in armature
             if bone_name in armature.data.bones:
+                # Map hand/foot palm/sole bones to parent hand/foot
+                bone_name_lower = bone_name.lower()
+                if any(term in bone_name_lower for term in ['metacarpal', 'metatarsal', 'carpal', 'tarsal']):
+                    # Find parent bone (should be hand or foot)
+                    parent_bone = armature.data.bones[bone_name].parent
+                    if parent_bone:
+                        bone_name = parent_bone.name
+                        print(f"  Mapped palm/sole bone to parent: {bone_name}")
+
                 return (mesh_obj.name, bone_name, armature)
 
         return None
@@ -1562,6 +1594,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
                         print(f"  Applied nudge to {bone_name}: 0.15 rad")
                         break
+                    # Find abdomen/spine and nudge it for torso bending
+                    elif 'abdomen' in bone_name_lower or 'spine' in bone_name_lower:
+                        nudge_quat = Quaternion((1, 0, 0), 0.2)  # 0.2 rad (11°) forward bend
+                        ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
+                        print(f"  Applied torso nudge to {bone_name}: 0.2 rad")
+                        break
                 break
 
         # Also activate Copy Rotation constraints
@@ -1757,46 +1795,130 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         print(f"  ✓ Undo complete")
 
     def draw_highlight_callback(self):
-        """Draw callback to highlight hovered bone"""
+        """Draw callback to highlight mesh region weighted to hovered bone (DAZ-style)"""
         if not self._hover_bone_name or not self._hover_armature:
             return
 
         armature = self._hover_armature
         bone_name = self._hover_bone_name
 
+        # Use base body mesh for highlighting (ignore clothing)
+        mesh_obj = self._base_body_mesh if self._base_body_mesh else self._hover_mesh
+        if not mesh_obj:
+            return
+
         # Get bone from armature
         if bone_name not in armature.data.bones:
             return
 
-        bone = armature.data.bones[bone_name]
-        pose_bone = armature.pose.bones[bone_name]
+        # Find vertex group for this bone
+        if bone_name not in mesh_obj.vertex_groups:
+            return
 
-        # Get bone head and tail in world space
-        bone_matrix = armature.matrix_world @ pose_bone.matrix
-        head = armature.matrix_world @ pose_bone.head
-        tail = armature.matrix_world @ pose_bone.tail
+        # Cache key for this mesh+bone combination
+        cache_key = (mesh_obj.name, bone_name)
 
-        # Draw bone as thick line
+        # Check cache - only compute weighted verts/polygons once per bone
+        if cache_key not in self._highlight_cache or self._last_highlighted_bone != bone_name:
+            vgroup = mesh_obj.vertex_groups[bone_name]
+            mesh = mesh_obj.data
+
+            # Collect vertices where THIS bone has the HIGHEST weight (DAZ-style clean sections)
+            # This prevents bleed into neighboring areas
+            weighted_verts = set()
+            for vert in mesh.vertices:
+                if not vert.groups:
+                    continue
+
+                # Find the group with maximum weight for this vertex
+                max_weight = 0.0
+                max_group_idx = None
+                for group in vert.groups:
+                    if group.weight > max_weight:
+                        max_weight = group.weight
+                        max_group_idx = group.group
+
+                # Only include vertex if THIS bone has the max weight
+                if max_group_idx == vgroup.index and max_weight > 0.01:  # Small threshold to exclude zero weights
+                    weighted_verts.add(vert.index)
+
+            if not weighted_verts:
+                self._highlight_cache[cache_key] = []
+                self._last_highlighted_bone = bone_name
+                return
+
+            # Collect triangle indices (vertex indices, not positions)
+            tri_indices = []
+            for poly in mesh.polygons:
+                # If at least one vertex of the polygon is weighted, include the whole polygon
+                if any(v in weighted_verts for v in poly.vertices):
+                    # Triangulate polygon (simple fan triangulation from first vertex)
+                    for i in range(1, len(poly.vertices) - 1):
+                        tri_indices.append((poly.vertices[0], poly.vertices[i], poly.vertices[i + 1]))
+
+            # Cache the triangle indices (not positions)
+            self._highlight_cache[cache_key] = tri_indices
+            self._last_highlighted_bone = bone_name
+
+        # Get cached triangle indices
+        tri_indices = self._highlight_cache[cache_key]
+        if not tri_indices:
+            return
+
+        # Get DEFORMED mesh from evaluated depsgraph (includes armature deformation)
+        import bpy
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        mesh_eval = mesh_obj.evaluated_get(depsgraph)
+        mesh_data = mesh_eval.data
+
+        # Build triangles using DEFORMED vertex positions
+        # CRITICAL: Offset vertices away from surface to prevent z-fighting
+        offset_amount = 0.001  # Small offset in world units
+        tris = []
+
+        for v0_idx, v1_idx, v2_idx in tri_indices:
+            # Get vertex positions and normals
+            v0_co = mesh_data.vertices[v0_idx].co
+            v1_co = mesh_data.vertices[v1_idx].co
+            v2_co = mesh_data.vertices[v2_idx].co
+
+            v0_normal = mesh_data.vertices[v0_idx].normal
+            v1_normal = mesh_data.vertices[v1_idx].normal
+            v2_normal = mesh_data.vertices[v2_idx].normal
+
+            # Offset along normal to prevent z-fighting (push away from surface)
+            v0 = mesh_eval.matrix_world @ (v0_co + v0_normal * offset_amount)
+            v1 = mesh_eval.matrix_world @ (v1_co + v1_normal * offset_amount)
+            v2 = mesh_eval.matrix_world @ (v2_co + v2_normal * offset_amount)
+
+            tris.extend([v0, v1, v2])
+
+        if not tris:
+            return
+
+        # Draw triangles with semi-transparent overlay (DAZ-style clean sections)
         shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        batch = batch_for_shader(shader, 'TRIS', {"pos": tris})
 
-        # Create line vertices (draw bone as line)
-        vertices = [head, tail]
+        # Enable blending for transparency
+        gpu.state.blend_set('ALPHA')
 
-        # Create batch
-        batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
+        # CRITICAL: Depth settings to draw on top of clothing/hair
+        gpu.state.depth_test_set('ALWAYS')  # Always draw, ignore depth (show through clothing)
+        gpu.state.depth_mask_set(False)  # Don't write to depth buffer (overlay on top cleanly)
+        gpu.state.face_culling_set('BACK')  # Only draw front faces (prevents double-draw artifacts)
 
-        # Set line width
-        gpu.state.line_width_set(6.0)
-
-        # Set color (bright yellow with transparency)
+        # Draw with bright amber highlight (more visible than previous yellow-orange)
         shader.bind()
-        shader.uniform_float("color", (1.0, 1.0, 0.0, 0.8))  # Yellow
+        shader.uniform_float("color", (1.0, 0.6, 0.1, 0.4))  # Bright amber with moderate transparency
 
-        # Draw
         batch.draw(shader)
 
-        # Reset line width
-        gpu.state.line_width_set(1.0)
+        # Reset state
+        gpu.state.blend_set('NONE')
+        gpu.state.depth_mask_set(True)
+        gpu.state.face_culling_set('NONE')
+        gpu.state.depth_test_set('LESS_EQUAL')
 
 
 def register():

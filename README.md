@@ -56,6 +56,8 @@ Blender addon for DAZ figures with intuitive bone selection and temporary IK rig
 **Polish/Tuning TODO**:
 - Fine-tune collar IK influence (currently 0.8 - may need adjustment to reduce shoulder shrugging)
 - Fine-tune head tracking behavior (Y-axis damped track - may need influence adjustment or different track settings)
+- **Torso IK**: Functional but somewhat funky - needs refinement for smoother chest/spine bending (disconnected bones workaround works but not perfect)
+- **Contextual Menu for Clothing/Hair**: Right-click menu to select between body bone (amber) and clothing/hair bone (cyan/blue). Show both highlights superimposed so user can see both options.
 - **Overall "Rag-Doll Feel"**: Polish the interface so dragging any part feels natural and intuitive, like manipulating a physical figure. Body parts should respond realistically when pulled/moved.
 
 **UX Improvements TODO**:
