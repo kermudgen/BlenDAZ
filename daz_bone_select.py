@@ -504,38 +504,10 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     #   3. DAZ bones' Limit Rotation constraints clamp the final result
     # This gives the IK solver freedom while still respecting joint limits on final pose
 
-    # CRITICAL: Apply nudge to BOTH .ik and DAZ bones to prevent initial pop
-    # Nudge hints IK bend direction but must be applied to both bones to keep them matched
-    # Otherwise Copy Rotation will copy the nudged .ik → DAZ causing a visible pop
-    if len(ik_control_names) >= 2:
-        middle_index = len(ik_control_names) // 2
-        middle_ik_bone = armature.pose.bones[ik_control_names[middle_index]]
-        middle_daz_bone = armature.pose.bones[daz_bone_names[middle_index]]
-        middle_bone_name = middle_ik_bone.name.lower()
-
-        nudge_quat = None
-        # For legs: nudge shin forward (X-axis rotation in quaternion)
-        if 'shin' in middle_bone_name or 'calf' in middle_bone_name:
-            from mathutils import Quaternion
-            nudge_quat = Quaternion((1, 0, 0), 0.2)  # 0.2 rad (11°) - balance between hint and visibility
-            print(f"  Nudging shin forward 0.2 rad (11°) - applied to both .ik and DAZ")
-        # For arms: nudge around Y-axis (increased to match legs)
-        elif 'forearm' in middle_bone_name or 'lorearm' in middle_bone_name:
-            from mathutils import Quaternion
-            nudge_quat = Quaternion((0, 1, 0), 0.15)  # Y-axis, 0.15 rad (9°)
-            print(f"  Nudging forearm 0.15 rad (9°) - applied to both .ik and DAZ")
-
-        # Apply the same nudge to BOTH bones so they stay matched
-        if nudge_quat:
-            middle_ik_bone.rotation_quaternion = nudge_quat @ middle_ik_bone.rotation_quaternion
-            # Also apply to DAZ bone so they match
-            if middle_daz_bone.rotation_mode == 'QUATERNION':
-                middle_daz_bone.rotation_quaternion = nudge_quat @ middle_daz_bone.rotation_quaternion
-            else:
-                # Convert euler to quat, apply nudge, convert back
-                current_quat = middle_daz_bone.rotation_euler.to_quaternion()
-                nudged_quat = nudge_quat @ current_quat
-                middle_daz_bone.rotation_euler = nudged_quat.to_euler(middle_daz_bone.rotation_mode)
+    # DON'T apply nudge during chain creation - causes first grab issues
+    # Instead, nudge will be applied on first mouse move after IK is active
+    # This avoids initialization/evaluation timing issues
+    print(f"  Nudge will be applied on first mouse move (after IK active)")
 
     bpy.context.view_layer.update()
 
@@ -1501,10 +1473,29 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Both start disabled (influence 0.0), so bones stay exactly where they are
         # On first move, we activate BOTH together (0.0 → 1.0)
         ik_tip_bone = self._drag_armature.pose.bones[self._ik_control_bone_names[-1]]
+        ik_just_activated = False
         for constraint in ik_tip_bone.constraints:
             if constraint.name == "IK_Temp" and constraint.influence < 0.5:
                 constraint.influence = 1.0
+                ik_just_activated = True
                 print(f"  Activated IK constraint (influence 0.0 → 1.0)")
+
+                # APPLY NUDGE NOW (on first mouse move after IK activation)
+                # This prevents first-grab issues by applying nudge when IK is ready
+                if len(self._ik_control_bone_names) >= 2:
+                    middle_index = len(self._ik_control_bone_names) // 2
+                    middle_ik_bone = self._drag_armature.pose.bones[self._ik_control_bone_names[middle_index]]
+                    middle_bone_name = middle_ik_bone.name.lower()
+
+                    from mathutils import Quaternion
+                    if 'shin' in middle_bone_name or 'calf' in middle_bone_name:
+                        nudge_quat = Quaternion((1, 0, 0), 0.2)  # 0.2 rad (11°) for legs
+                        middle_ik_bone.rotation_quaternion = nudge_quat @ middle_ik_bone.rotation_quaternion
+                        print(f"  Applied nudge to {middle_bone_name}: 0.2 rad forward")
+                    elif 'forearm' in middle_bone_name or 'lorearm' in middle_bone_name:
+                        nudge_quat = Quaternion((0, 1, 0), 0.15)  # 0.15 rad (9°) for arms
+                        middle_ik_bone.rotation_quaternion = nudge_quat @ middle_ik_bone.rotation_quaternion
+                        print(f"  Applied nudge to {middle_bone_name}: 0.15 rad")
                 break
 
         # Also activate Copy Rotation constraints
