@@ -299,11 +299,8 @@ def create_ik_chain(armature, bone_name, chain_length=None):
 
     Returns: (target_bone_name, ik_control_bone_names, daz_bone_names)
     """
-    # CRITICAL: Force MULTIPLE updates to ensure armature is fully evaluated
-    # This fixes "crazy on first grab" issue - first grab needs extra evaluation time
-    # Subsequent grabs work smoothly because armature is already evaluated
-    bpy.context.view_layer.update()
-    bpy.context.view_layer.update()
+    # CRITICAL: Force update to ensure all manual rotations/transforms are applied
+    # This captures any R rotations or G moves the user made between IK drags
     bpy.context.view_layer.update()
 
     if bone_name not in armature.pose.bones:
