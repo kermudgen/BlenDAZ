@@ -1,9 +1,10 @@
-# BlenDAZ - DAZ Bone Select & IK
+# BlenDAZ - DAZ Bone Select & IK & PowerPose
 
-Blender addon for DAZ figures with intuitive bone selection and temporary IK rigging.
+Blender addon for DAZ figures with intuitive bone selection, temporary IK rigging, and PowerPose panel posing.
 
 ## Features
 
+### DAZ Bone Select (Viewport Tool)
 - **Hover Preview**: Hover over mesh to preview which bone you'll select
 - **Click-Drag IK**: Click and drag bones to pose with temporary IK chains
 - **Smart IK Chains**: Automatically creates appropriate chain lengths for different bone types
@@ -11,14 +12,26 @@ Blender addon for DAZ figures with intuitive bone selection and temporary IK rig
 - **Stable IK**: Uses quaternions to prevent flipping and gimbal lock
 - **Tip Bone Isolation**: End effector (foot/hand) rotation is independent from IK chain
 
+### PowerPose (Panel Tool) ⭐ NEW!
+- **2D Panel Interface**: Control points in N-panel sidebar for rotation-based posing
+- **Dual Button Control**: Separate Bend and Twist buttons for each bone
+- **Direct Rotation**: Precise bone rotation without IK complexity
+- **Real-Time Updates**: See changes immediately in 3D viewport
+- **Genesis 8 Template**: Pre-configured control points for common bones
+- **Organized by Region**: Head, Arms, Torso, Legs sections
+
+See [POWERPOSE_README.md](POWERPOSE_README.md) for detailed PowerPose documentation.
+
 ## Installation
 
 1. Open Blender
 2. Edit → Preferences → Add-ons
 3. Click "Install" and select `daz_bone_select.py`
-4. Enable "DAZ Bone Select & Pin"
+4. Enable "DAZ Bone Select & Pin & PowerPose"
 
 ## Usage
+
+### DAZ Bone Select (Viewport Tool)
 
 - **Ctrl+Shift+D**: Activate the tool
 - **Hover**: Preview bone under cursor
@@ -29,6 +42,17 @@ Blender addon for DAZ figures with intuitive bone selection and temporary IK rig
 - **Shift+P**: Pin rotation
 - **U**: Unpin
 - **ESC**: Exit tool
+
+### PowerPose (Panel Tool)
+
+1. Press **N** to open N-panel sidebar
+2. Navigate to **DAZ** tab
+3. Select your armature and enter **Pose Mode**
+4. Click **Bend** button next to a bone name and drag to **bend**
+5. Click **Twist** button next to a bone name and drag to **twist**
+6. **Release** to keyframe, **ESC** to cancel
+
+See [POWERPOSE_README.md](POWERPOSE_README.md) for detailed instructions.
 
 ## Technical Details
 
