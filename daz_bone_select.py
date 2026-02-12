@@ -19,6 +19,9 @@ bl_info = {
     "category": "Rigging",
 }
 
+# DEBUG MODE: Set to True to preserve IK chain for inspection
+DEBUG_PRESERVE_IK_CHAIN = False  # Set to True to keep IK chain for inspection
+
 
 # ============================================================================
 # BASE MESH DETECTION - Helper Functions
@@ -122,22 +125,27 @@ def is_pectoral(bone_name):
     return 'pectoral' in bone_lower or 'breast' in bone_lower
 
 
-def get_ik_target_bone(armature, bone_name):
+def get_ik_target_bone(armature, bone_name, silent=False):
     """
     Map small bones to their major parent bone for IK (DAZ-style behavior).
     Returns: bone name to use for IK, or None if bone shouldn't use IK.
+
+    Args:
+        silent: If True, suppress print messages (for hover detection)
     """
     bone_lower = bone_name.lower()
 
     # Twist/roll bones - NO IK (causes noodle limbs)
     if is_twist_bone(bone_name):
-        print(f"  Twist bone detected - IK disabled: {bone_name}")
+        if not silent:
+            print(f"  Twist bone detected - IK disabled: {bone_name}")
         return None
 
     # Pectoral bones - NO IK (shouldn't pull spine/chest)
     # These are breast/chest bones that should not create IK chains
     if is_pectoral(bone_name):
-        print(f"  Pectoral bone detected - IK disabled: {bone_name}")
+        if not silent:
+            print(f"  Pectoral bone detected - IK disabled: {bone_name}")
         return None
 
     # Carpal/metacarpal bones → map to hand
@@ -160,7 +168,7 @@ def get_ik_target_bone(armature, bone_name):
             else:
                 target = bone_name
 
-        if target != bone_name:
+        if target != bone_name and not silent:
             print(f"  Mapping {bone_name} → {target} for IK")
         return target
 
@@ -184,7 +192,7 @@ def get_ik_target_bone(armature, bone_name):
             else:
                 target = bone_name
 
-        if target != bone_name:
+        if target != bone_name and not silent:
             print(f"  Mapping {bone_name} → {target} for IK")
         return target
 
@@ -220,7 +228,7 @@ def get_ik_target_bone(armature, bone_name):
         else:
             target = bone_name
 
-        if target != bone_name:
+        if target != bone_name and not silent:
             print(f"  Mapping {bone_name} → {target} for IK")
         return target
 
@@ -261,17 +269,16 @@ def get_smart_chain_length(bone_name):
         if not any(finger in bone_lower for finger in ['thumb', 'index', 'mid', 'ring', 'pinky', 'carpal']):
             return 9  # Extended chain including hip for stability
 
-    # Feet - full chain for ragdoll pulling
-    # Foot → shin → thigh → pelvis → spine → chest
-    # IK stiffness will create natural falloff (parent bones resist more)
+    # Feet - medium chain (foot → shin → thigh → pelvis)
+    # Includes pelvis for more freedom, excludes hip to prevent whole-body spinning
     if 'foot' in bone_lower:
         # Exclude toe bones
         if not any(toe in bone_lower for toe in ['toe', 'metatarsal']):
-            return 7  # Extended chain for ragdoll effect
+            return 4  # Medium chain: pelvis is root (prevents hip movement, allows leg freedom)
 
-    # Forearms - full arm chain including collar
+    # Forearms - full arm chain including collar + torso (for pinned hand dragging)
     if any(part in bone_lower for part in ['forearm', 'lorearm']):
-        return 3  # Forearm + upper arm + collar bone
+        return 7  # Forearm + upper arm + collar + chest + abdomen + spine for torso bending
 
     # Shins - medium chain to thigh
     if any(part in bone_lower for part in ['shin', 'calf']):
@@ -309,7 +316,7 @@ def get_smart_chain_length(bone_name):
     return 2
 
 
-def create_ik_chain(armature, bone_name, chain_length=None):
+def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=None, soft_pin_mode=False):
     """
     Create IK chain with BONE targets and Copy Rotation constraints.
 
@@ -318,7 +325,10 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     2. Create .ik.target bone (what you drag - no parent)
     3. Add Copy Rotation constraints from DAZ bones to .ik bones
 
-    Returns: (target_bone_name, ik_control_bone_names, daz_bone_names)
+    Args:
+        ignore_pin_on_bone: Bone name to ignore pin checks on (for temporarily overriding pins)
+
+    Returns: (target_bone_name, ik_control_bone_names, daz_bone_names, shoulder_target_names)
     """
     # CRITICAL: Force update to ensure all manual rotations/transforms are applied
     # This captures any R rotations or G moves the user made between IK drags
@@ -337,15 +347,68 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     print(f"Creating IK chain for: {bone_name}")
 
     # ==================================================================
+    # STEP 0.5: Clean up any existing temp IK chain (from previous drag in debug mode)
+    # ==================================================================
+    # In debug mode (DEBUG_PRESERVE_IK_CHAIN = True), old chains persist between drags
+    # We need to dissolve them before creating new ones to prevent conflicts
+    if DEBUG_PRESERVE_IK_CHAIN:
+        # Look for existing .ik bones and dissolve the chain
+        existing_target = None
+        for bone in armature.pose.bones:
+            if bone.name.endswith('.ik.target') and bone_name.lower() in bone.name.lower():
+                # Found a target bone from previous drag - extract base name
+                # e.g., "lFoot.ik.target" → base is "lFoot.ik.target"
+                existing_target = bone.name
+                break
+
+        if existing_target:
+            print(f"  [DEBUG] Found existing IK chain, dissolving: {existing_target}")
+            # Find the associated .ik bones and constraint info
+            # We need to call dissolve_ik_chain with the old chain info
+            # For now, just remove the temp constraints manually
+            for pose_bone in armature.pose.bones:
+                # Remove temp constraints from previous drag
+                constraints_to_remove = [c for c in pose_bone.constraints
+                                        if 'IK_Temp' in c.name or 'IK_CopyRot_Temp' in c.name or 'IK_Pin_Temp' in c.name]
+                for constraint in constraints_to_remove:
+                    pose_bone.constraints.remove(constraint)
+
+            # Switch to edit mode to delete old .ik bones
+            bpy.ops.object.mode_set(mode='EDIT')
+            edit_bones = armature.data.edit_bones
+            bones_to_remove = [b.name for b in edit_bones if '.ik' in b.name]
+            for bone_name_to_remove in bones_to_remove:
+                if bone_name_to_remove in edit_bones:
+                    edit_bones.remove(edit_bones[bone_name_to_remove])
+            bpy.ops.object.mode_set(mode='POSE')
+            bpy.context.view_layer.update()
+            print(f"  [DEBUG] Cleaned up {len(bones_to_remove)} old .ik bones and constraints")
+
+    # ==================================================================
     # STEP 1: Collect non-twist, non-pectoral bones for the chain
     # ==================================================================
     daz_bones = []  # PoseBones
     current = clicked_bone
 
     # Walk up collecting bones (exclude twist and pectoral bones)
+    # IMPORTANT: Stop at pinned bones - they act as anchor points for the chain
     while current and len(daz_bones) < chain_length:
+        # Check if current bone is pinned (and not the ignored bone)
+        data_bone = armature.data.bones.get(current.name)
+        is_pinned = (data_bone and
+                     current.name != ignore_pin_on_bone and
+                     (is_bone_pinned_translation(data_bone) or is_bone_pinned_rotation(data_bone)))
+
+        if is_pinned:
+            # Found a pinned bone - include it as the root anchor and stop
+            if not is_twist_bone(current.name) and not is_pectoral(current.name):
+                daz_bones.append(current)
+                print(f"  Found pinned bone {current.name} - stopping chain here (anchor point)")
+            break
+
         if not is_twist_bone(current.name) and not is_pectoral(current.name):
             daz_bones.append(current)
+
         current = current.parent
 
     if len(daz_bones) < 2:
@@ -354,6 +417,66 @@ def create_ik_chain(armature, bone_name, chain_length=None):
 
     # Reverse so we have root-to-tip order
     daz_bones = list(reversed(daz_bones))
+
+    # ==================================================================
+    # EXTENSION: Include pinned children in the chain
+    # ==================================================================
+    # If the tip bone (clicked bone) has pinned descendants, extend the chain to include them
+    # This allows IK to respect pins on child bones (e.g., pinned hand when dragging forearm)
+    # Recursively search through twist bones to find pinned children
+    # IMPORTANT: Stop at hands/feet - don't extend into fingers/toes
+
+    def find_pinned_descendant(bone, depth=0):
+        """Recursively find first pinned descendant, skipping twist/pectoral/finger bones"""
+        if depth > 5:  # Safety limit to prevent infinite recursion
+            return None
+
+        for child in bone.children:
+            child_lower = child.name.lower()
+
+            # Skip fingers and toes (don't extend into digits)
+            finger_toe_parts = ['thumb', 'index', 'mid', 'ring', 'pinky', 'carpal', 'metacarpal', 'toe', 'metatarsal']
+            if any(part in child_lower for part in finger_toe_parts):
+                continue
+
+            # Skip ignored bone
+            if child.name == ignore_pin_on_bone:
+                continue
+
+            # If twist/pectoral bone, recursively check its children (don't add twist bone to chain)
+            if is_twist_bone(child.name) or is_pectoral(child.name):
+                result = find_pinned_descendant(child, depth + 1)
+                if result:
+                    return result
+                continue
+
+            # Non-twist bone - check if pinned
+            child_data_bone = armature.data.bones.get(child.name)
+            if child_data_bone and (is_bone_pinned_translation(child_data_bone) or is_bone_pinned_rotation(child_data_bone)):
+                return child
+
+            # Not pinned - recursively check its children
+            result = find_pinned_descendant(child, depth + 1)
+            if result:
+                return result
+
+        return None
+
+    tip_bone = daz_bones[-1]  # This is the clicked bone (at the tip after reversal)
+    pinned_child = find_pinned_descendant(tip_bone)
+
+    # Initialize pinned child world position variables
+    pinned_child_world_head = None
+    pinned_child_world_tail = None
+
+    if pinned_child:
+        daz_bones.append(pinned_child)
+        # Capture pinned child's CURRENT world position for soft pin mode target
+        # This prevents snap by starting IK target at the pin location
+        pinned_child_world_head = armature.matrix_world @ pinned_child.head
+        pinned_child_world_tail = armature.matrix_world @ pinned_child.tail
+        print(f"  ✓ Extended chain to include pinned descendant: {pinned_child.name}")
+
     daz_bone_names = [b.name for b in daz_bones]
 
     print(f"  Chain: {' → '.join(daz_bone_names)}")
@@ -419,11 +542,19 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     target_name = f"{bone_name}.ik.target"
     target_edit = edit_bones.new(target_name)
 
-    # CRITICAL: Position at clicked bone's CURRENT world position (not rest position)
+    # CRITICAL: Position at correct bone's CURRENT world position (not rest position)
     # Convert world positions back to armature local space
     armature_inv = armature.matrix_world.inverted()
-    target_edit.head = armature_inv @ clicked_bone_world_head
-    target_edit.tail = armature_inv @ clicked_bone_world_tail
+
+    # In soft pin mode, position target at PINNED CHILD (hand) to prevent snap
+    # Otherwise, position at clicked bone (normal drag behavior)
+    if soft_pin_mode and pinned_child_world_head is not None:
+        target_edit.head = armature_inv @ pinned_child_world_head
+        target_edit.tail = armature_inv @ pinned_child_world_tail
+        print(f"  Positioned IK target at pinned child for zero-snap initialization")
+    else:
+        target_edit.head = armature_inv @ clicked_bone_world_head
+        target_edit.tail = armature_inv @ clicked_bone_world_tail
 
     # Copy roll from rest position (roll doesn't change with posing)
     clicked_edit = edit_bones[bone_name]
@@ -431,6 +562,26 @@ def create_ik_chain(armature, bone_name, chain_length=None):
 
     target_edit.parent = None  # CRITICAL: No parent for free movement
     target_edit.use_deform = False
+
+    # Create POLE TARGET bone for soft pin mode (lever/fulcrum)
+    # This controls the elbow direction when hand is pinned
+    pole_target_name = None
+
+    # Detect if this is a leg chain (for other logic, but NOT for pole target)
+    is_leg_chain = any(any(part in bone_name.lower() for part in ['shin', 'thigh', 'foot', 'leg'])
+                       for bone_name in daz_bone_names)
+
+    if soft_pin_mode:
+        pole_target_name = target_name + ".pole"
+        pole_target_edit = edit_bones.new(pole_target_name)
+
+        # ARM soft pin: Position at the ELBOW (clicked bone) for proper pole control
+        pole_target_edit.head = armature_inv @ clicked_bone_world_head
+        pole_target_edit.tail = armature_inv @ clicked_bone_world_tail
+        pole_target_edit.roll = clicked_edit.roll
+        pole_target_edit.parent = None
+        pole_target_edit.use_deform = False
+        print(f"  Created pole target bone: {pole_target_name} at elbow position")
 
     # Create shoulder target bones for collar guidance (prevents collar snapping)
     shoulder_target_names = []
@@ -519,6 +670,15 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         ik_bone.lock_ik_y = daz_bone.lock_ik_y
         ik_bone.lock_ik_z = daz_bone.lock_ik_z
 
+        # SPECIAL: Force shin/knee to only bend forward/back (prevent sideways bend/twist)
+        # This solves the IK ambiguity problem when leg is straight
+        daz_name_lower = daz_name.lower()
+        if 'shin' in daz_name_lower or 'calf' in daz_name_lower:
+            ik_bone.lock_ik_y = True  # Lock twist
+            ik_bone.lock_ik_z = True  # Lock side-to-side bend
+            # X axis stays unlocked for forward/back knee bend
+            print(f"  Locked shin IK Y/Z axes (knee bends forward/back only): {ik_name}")
+
         # PHASE 3: Ragdoll Pulling - IK Stiffness on Parent Bones Only
         # Apply MAXIMUM stiffness to essentially LOCK parent bones
         # They'll only move when IK solver absolutely can't find a solution (limb stretched past limits)
@@ -526,15 +686,35 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         stiffness = 0.0
         daz_name_lower = daz_name.lower()
 
+        # Check if bone is pinned OR has pinned children - if so, lock it completely (stiffness = 1.0)
+        # Skip pin check for ignore_pin_on_bone (allows dragging pinned bone directly)
+        data_bone = armature.data.bones.get(daz_name)
+        is_pinned = (data_bone and
+                     daz_name != ignore_pin_on_bone and
+                     (is_bone_pinned_translation(data_bone) or is_bone_pinned_rotation(data_bone)))
+        has_pinned_child = has_pinned_children(armature, daz_name, ignore_pin_on_bone)
+
+        if is_pinned:
+            # Pinned bones use constraints to maintain world transform (not IK stiffness locking)
+            # This allows bones to "try to stay" at pinned location/rotation while still
+            # being influenced by IK, matching DAZ Studio behavior
+            pin_status = get_pin_status_text(data_bone)
+            print(f"  ⚓ PINNED: {daz_name} - will add pin constraints, {pin_status}")
+
+            # Add appropriate constraints after IK chain is created (see Step 4.8 below)
+            # stiffness remains 0.0 for pinned bones - constraints handle the pinning
+        # REMOVED: "Parent of pinned" high stiffness logic
+        # This was causing bones in the drag chain to be too rigid, preventing natural IK solving
+        # The Copy Location constraint on the pinned .ik bone is sufficient to maintain the pin
         # Lock parent bones with near-maximum stiffness (0.99 ≈ locked)
-        if 'collar' in daz_name_lower or 'clavicle' in daz_name_lower:
+        elif 'collar' in daz_name_lower or 'clavicle' in daz_name_lower:
             stiffness = 0.75  # Collar: balanced stiffness - stable but not locked
         elif 'shldr' in daz_name_lower or 'shoulder' in daz_name_lower:
             stiffness = 0.1  # Shoulder: very flexible for natural arm movement
         elif 'chest' in daz_name_lower:
-            stiffness = 0.99  # Chest: essentially locked, only moves when arm stretched far
+            stiffness = 0.999  # Chest: very high resistance, minimal bending
         elif 'abdomen' in daz_name_lower or 'spine' in daz_name_lower:
-            stiffness = 0.99  # Spine: essentially locked, only moves when arm stretched far
+            stiffness = 0.999  # Spine: extreme resistance, barely bends
         elif 'hip' in daz_name_lower:
             # Hip is the root body controller - lock rotation, allow only translation
             stiffness = 0.99  # Essentially locked
@@ -543,7 +723,7 @@ def create_ik_chain(armature, bone_name, chain_length=None):
             ik_bone.lock_ik_z = True
             print(f"  Locked hip IK rotation (translation only, prevents character spinning)")
         elif 'pelvis' in daz_name_lower:
-            stiffness = 0.8  # Pelvis: high resistance
+            stiffness = 0.99  # Pelvis: nearly locked (prevents leg IK from pushing pelvis/other leg)
 
         if stiffness > 0:
             ik_bone.ik_stiffness_x = stiffness
@@ -576,10 +756,8 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     #   3. DAZ bones' Limit Rotation constraints clamp the final result
     # This gives the IK solver freedom while still respecting joint limits on final pose
 
-    # DON'T apply nudge during chain creation - causes first grab issues
-    # Instead, nudge will be applied on first mouse move after IK is active
-    # This avoids initialization/evaluation timing issues
-    print(f"  Nudge will be applied on first mouse move (after IK active)")
+    # Leg IK: Static pre-bend applied during chain creation (see STEP 3.75)
+    # Arm IK: No pre-bend needed (arms work naturally with pole target in soft pin mode)
 
     bpy.context.view_layer.update()
 
@@ -587,13 +765,39 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     ik_tip_name = ik_control_names[-1]
     ik_tip_pose = armature.pose.bones[ik_tip_name]
 
+    # DEBUG MODE: Clean up any existing IK_Temp constraints from previous drags
+    constraints_to_remove = [c for c in ik_tip_pose.constraints if "IK_Temp" in c.name]
+    for constraint in constraints_to_remove:
+        constraint_name = constraint.name  # Store name before removing
+        ik_tip_pose.constraints.remove(constraint)
+        print(f"  Removed old IK constraint: {constraint_name}")
+
     ik_constraint = ik_tip_pose.constraints.new('IK')
     ik_constraint.name = "IK_Temp"
     ik_constraint.target = armature  # CRITICAL: Target is ARMATURE
     ik_constraint.subtarget = target_name  # CRITICAL: Subtarget is BONE NAME
-    ik_constraint.chain_count = len(ik_control_names)
+
+    # In soft pin mode, use 3-bone IK chain (collar → shoulder → forearm)
+    # This matches MHX rig behavior where collar + shoulder rotate with pole target
+    if soft_pin_mode:
+        # 3-bone chain: collar + shoulder + forearm (like MHX)
+        ik_constraint.chain_count = 3
+        print(f"  Soft pin mode: IK chain_count = 3 (collar + shoulder + forearm)")
+    else:
+        ik_constraint.chain_count = len(ik_control_names)
     ik_constraint.use_tail = True
-    ik_constraint.use_stretch = True  # Allow stretching
+
+    # Disable stretching when:
+    # 1. Dragging a pinned bone directly (prevents hand separation from arm)
+    # 2. In soft pin mode with pole target (keeps hand at pinned position)
+    # Allow stretching only in normal unpinned IK mode for ragdoll-style behavior
+    if ignore_pin_on_bone or soft_pin_mode:
+        ik_constraint.use_stretch = False
+        reason = "dragging pinned bone" if ignore_pin_on_bone else "soft pin mode"
+        print(f"  Disabled IK stretching ({reason})")
+    else:
+        ik_constraint.use_stretch = True
+
     ik_constraint.use_rotation = False
     ik_constraint.iterations = 500
     # Explicitly set spaces to WORLD (matching Diffeomorphic)
@@ -601,6 +805,67 @@ def create_ik_chain(armature, bone_name, chain_length=None):
     ik_constraint.owner_space = 'WORLD'
     # CRITICAL: Start IK disabled - activate on first mouse move to prevent initial pop
     ik_constraint.influence = 0.0
+
+    # ==================================================================
+    # STEP 3.5: Enable Pole Target for Soft Pin Mode
+    # ==================================================================
+    # When soft_pin_mode is active, enable the pole target on the IK constraint
+    # The pole target bone was already created in EDIT mode above
+    if soft_pin_mode and pole_target_name:
+        ik_constraint.pole_target = armature
+        ik_constraint.pole_subtarget = pole_target_name
+        ik_constraint.pole_angle = -1.5708  # -90° (π/2) for DAZ/MHX rigs
+        print(f"  ✓ Enabled pole target: {pole_target_name} (pole angle: -90°)")
+
+    # ==================================================================
+    # STEP 3.75: Apply static pre-bend to leg IK chains (before Copy Rotation)
+    # ==================================================================
+    # For legs, apply a small forward bend to thigh and shin BEFORE Copy Rotation constraints
+    # This seeds the IK solver with the correct bend direction (knee forward)
+    # ONLY apply if leg is in rest pose (straight) - if already bent, skip pre-bend
+    # Since Copy Rotation isn't active yet, this won't affect the DAZ bones (no pop)
+    if is_leg_chain:
+        from mathutils import Quaternion
+
+        # Check if leg is in rest pose by looking at shin rotation
+        shin_bone = None
+        for i, (daz_name, ik_name) in enumerate(zip(daz_bone_names, ik_control_names)):
+            if 'shin' in daz_name.lower() or 'calf' in daz_name.lower():
+                shin_bone = armature.pose.bones[ik_name]
+                break
+
+        # If shin is at identity rotation (rest pose), apply pre-bend
+        if shin_bone:
+            quat = shin_bone.rotation_quaternion
+            is_rest_pose = abs(quat.w - 1.0) < 0.01 and abs(quat.x) < 0.01 and abs(quat.y) < 0.01 and abs(quat.z) < 0.01
+
+            if is_rest_pose:
+                print(f"  Leg in rest pose - applying static pre-bend (seeds IK solver)")
+
+                for i, (daz_name, ik_name) in enumerate(zip(daz_bone_names, ik_control_names)):
+                    daz_name_lower = daz_name.lower()
+                    ik_bone = armature.pose.bones[ik_name]
+
+                    # Thigh: forward rotation + translation
+                    if 'thigh' in daz_name_lower:
+                        # Rotate forward (around X axis, ~14°)
+                        nudge_quat = Quaternion((1, 0, 0), 0.25)  # ~14.3 degrees
+                        ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
+                        # Translate forward slightly
+                        ik_bone.location.y += 0.02  # Small forward offset
+                        print(f"    Nudged {ik_name}: rotation 14° forward, translation +0.02 Y")
+
+                    # Shin: forward rotation
+                    elif 'shin' in daz_name_lower or 'calf' in daz_name_lower:
+                        # Rotate forward (around X axis, ~14°)
+                        nudge_quat = Quaternion((1, 0, 0), 0.25)  # ~14.3 degrees
+                        ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
+                        print(f"    Nudged {ik_name}: rotation 14° forward")
+
+                bpy.context.view_layer.update()
+                print(f"  ✓ Leg pre-bend applied (IK solver will prefer forward knee bend)")
+            else:
+                print(f"  Leg already bent - skipping pre-bend (using current pose as seed)")
 
     # ==================================================================
     # STEP 4: Add Copy Rotation constraints from DAZ bones to IK bones
@@ -622,6 +887,11 @@ def create_ik_chain(armature, bone_name, chain_length=None):
                 print(f"  Adding Copy Rotation for tip bone (mid-limb): {daz_name}")
 
         daz_pose = armature.pose.bones[daz_name]
+
+        # DEBUG MODE: Clean up any existing IK_CopyRot_Temp constraints from previous drags
+        constraints_to_remove = [c for c in daz_pose.constraints if "IK_CopyRot_Temp" in c.name]
+        for constraint in constraints_to_remove:
+            daz_pose.constraints.remove(constraint)
 
         # Add Copy Rotation constraint
         copy_rot = daz_pose.constraints.new('COPY_ROTATION')
@@ -646,6 +916,11 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         collar_pose = armature.pose.bones[collar_name]
         shoulder_target_name = f"{collar_name}.shoulder.target"
 
+        # DEBUG MODE: Clean up any existing Shoulder_Track_Temp constraints from previous drags
+        constraints_to_remove = [c for c in collar_pose.constraints if "Shoulder_Track_Temp" in c.name]
+        for constraint in constraints_to_remove:
+            collar_pose.constraints.remove(constraint)
+
         # Add Damped Track constraint
         damped_track = collar_pose.constraints.new('DAMPED_TRACK')
         damped_track.name = "Shoulder_Track_Temp"
@@ -655,6 +930,105 @@ def create_ik_chain(armature, bone_name, chain_length=None):
         damped_track.influence = 0.0  # Start disabled - activate WITH IK on first mouse move
 
         print(f"  Added Damped Track on {collar_name} → {shoulder_target_name}")
+
+    # ==================================================================
+    # STEP 4.7: Pin Constraint Transfer to .ik Bones
+    # ==================================================================
+    # If the tip bone is pinned (translation pin), add Copy Location to the .ik tip bone
+    # This makes the temporary IK chain respect the pin during solving
+    # UNLESS the tip bone is being dragged directly (ignore_pin_on_bone) - then skip
+    tip_daz_name = daz_bone_names[-1]
+    tip_ik_name = ik_control_names[-1]
+    tip_data_bone = armature.data.bones.get(tip_daz_name)
+
+    if tip_data_bone and is_bone_pinned_translation(tip_data_bone) and tip_daz_name != ignore_pin_on_bone:
+        # SOFT PIN MODE: Skip adding hard pin constraint to .ik bone
+        # The soft pin system will manage the position dynamically
+        if soft_pin_mode:
+            print(f"  ⚙️  SOFT PIN: Skipping hard pin constraint on {tip_ik_name} (soft pin will manage position)")
+        else:
+            # Get the pin Empty target
+            pin_empty_name = f"PIN_translation_{armature.name}_{tip_daz_name}"
+            pin_empty = bpy.data.objects.get(pin_empty_name)
+
+            if pin_empty:
+                # Add Copy Location to .ik tip bone (same as DAZ bone has)
+                tip_ik_pose = armature.pose.bones[tip_ik_name]
+                copy_loc = tip_ik_pose.constraints.new('COPY_LOCATION')
+                copy_loc.name = "IK_PinLoc_Temp"
+                copy_loc.target = pin_empty
+                copy_loc.influence = 1.0  # Absolute lock - no movement allowed
+                copy_loc.use_offset = False
+                copy_loc.target_space = 'WORLD'
+                copy_loc.owner_space = 'WORLD'
+
+                # Force constraint evaluation update to ensure Copy Location runs after IK
+                bpy.context.view_layer.update()
+
+                print(f"  ✓ Added pin Copy Location to .ik bone: {tip_ik_name} → {pin_empty_name} (influence=1.0)")
+                print(f"  → Temporary IK chain will respect pinned location during solving")
+            else:
+                print(f"  ⚠️  Tip bone {tip_daz_name} is pinned but Empty not found: {pin_empty_name}")
+
+    # ==================================================================
+    # STEP 4.75: Add Pin Constraints to ALL Pinned Bones in Chain
+    # ==================================================================
+    # Handle pinned bones that are NOT the tip (e.g., pinned chest in middle of chain)
+    # These need Copy Location constraints on their .ik bones to act as rigid anchors
+    for i, (daz_name, ik_name) in enumerate(zip(daz_bone_names, ik_control_names)):
+        # Skip tip bone (already handled above)
+        if i == len(daz_bone_names) - 1:
+            continue
+
+        # Skip bone being dragged directly
+        if daz_name == ignore_pin_on_bone:
+            continue
+
+        # Skip soft pin mode (handled separately)
+        if soft_pin_mode and daz_name == tip_daz_name:
+            continue
+
+        # Check if this bone is pinned
+        data_bone = armature.data.bones.get(daz_name)
+        if data_bone and is_bone_pinned_translation(data_bone):
+            # Get the pin Empty target
+            pin_empty_name = f"PIN_translation_{armature.name}_{daz_name}"
+            pin_empty = bpy.data.objects.get(pin_empty_name)
+
+            if pin_empty:
+                # Add strong Copy Location to keep bone at pin position
+                # This resists movement but allows minimal yield when IK absolutely needs it
+                ik_pose = armature.pose.bones[ik_name]
+
+                # Use Copy Location with high influence to pin position
+                # Don't use location locks - they prevent IK from solving properly
+                copy_loc = ik_pose.constraints.new('COPY_LOCATION')
+                copy_loc.name = "IK_PinLoc_Temp"
+                copy_loc.target = pin_empty
+                copy_loc.influence = 1.0  # Full lock - acts as rigid anchor point
+                copy_loc.use_offset = False
+                copy_loc.target_space = 'WORLD'
+                copy_loc.owner_space = 'WORLD'
+
+                print(f"  ✓ Locked translation + pin anchor on .ik bone: {ik_name} (rigid anchor)")
+            else:
+                print(f"  ⚠️  Bone {daz_name} is pinned but Empty not found: {pin_empty_name}")
+
+    # ==================================================================
+    # STEP 4.8: Pin Handling (Translation and Rotation Pins)
+    # ==================================================================
+    # Pins are now persistent constraints on DAZ bones (added when pressing P)
+    # When dragging a pinned bone directly (ignore_pin_on_bone), we temporarily
+    # disable its pin constraint to allow free movement, then re-enable after drag
+    if ignore_pin_on_bone:
+        data_bone = armature.data.bones.get(ignore_pin_on_bone)
+        pose_bone = armature.pose.bones.get(ignore_pin_on_bone)
+        if data_bone and pose_bone:
+            # Temporarily disable pin constraint on directly dragged bone
+            for c in pose_bone.constraints:
+                if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation"):
+                    c.mute = True  # Mute constraint (will unmute after drag)
+                    print(f"  Temporarily disabled pin on {ignore_pin_on_bone} (direct drag)")
 
     # POLISH: Add Damped Track for head bones to make Y axis (top of head) point at target
     # This makes the head orient naturally towards where you're dragging
@@ -714,12 +1088,16 @@ def dissolve_ik_chain(armature, target_bone_name, ik_control_names, daz_bone_nam
             if not bone:
                 continue
 
-            # CRITICAL: Skip keyframing the TIP bone (last in chain)
-            # The tip bone has no Copy Rotation constraint, so keyframing it locks it at rest pose
-            # By NOT keyframing it, manual R rotations stick to the bone property
+            # Skip keyframing the TIP bone ONLY if it's an end effector (hand, foot)
+            # Mid-limb bones (chest, shoulder, forearm) should be keyframed even as tip
             if i == len(daz_bone_names) - 1:
-                print(f"  Skipping keyframe for tip bone: {daz_name} (preserves manual rotations)")
-                continue
+                daz_lower = daz_name.lower()
+                is_end_effector = any(part in daz_lower for part in ['hand', 'foot'])
+                if is_end_effector:
+                    print(f"  Skipping keyframe for tip bone (end effector): {daz_name} (preserves manual rotations)")
+                    continue
+                else:
+                    print(f"  Keyframing tip bone (mid-limb): {daz_name}")
 
             # Insert visual rotation keyframe (captures constraint result)
             if bone.rotation_mode == 'QUATERNION':
@@ -781,7 +1159,19 @@ def dissolve_ik_chain(armature, target_bone_name, ik_control_names, daz_bone_nam
             edit_bones.remove(edit_bones[shoulder_target_name])
             print(f"  Removed shoulder target: {shoulder_target_name}")
 
+    # Delete pole target bone (if it exists)
+    pole_target_name = target_bone_name + ".pole"
+    if pole_target_name in edit_bones:
+        edit_bones.remove(edit_bones[pole_target_name])
+        print(f"  Removed pole target: {pole_target_name}")
+
     bpy.ops.object.mode_set(mode='POSE')
+
+    # NOTE: Pin helper Empties are NOT removed here - they are persistent
+    # and should only be removed when user explicitly unpins the bone
+    # The pin Empties existed before the IK chain was created and should
+    # remain after the chain dissolves
+
     bpy.context.view_layer.update()
 
 
@@ -825,7 +1215,8 @@ def get_pin_status_text(bone):
 def pin_bone_translation(armature, bone_name):
     """Mark bone as translation pinned and store world location"""
     bone = armature.data.bones.get(bone_name)
-    if not bone:
+    pose_bone = armature.pose.bones.get(bone_name)
+    if not bone or not pose_bone:
         return False
 
     # Get current world location
@@ -835,9 +1226,28 @@ def pin_bone_translation(armature, bone_name):
 
         # Store pin data
         bone["daz_pin_translation"] = True
-        bone["daz_pin_location"] = world_location
+        bone["daz_pin_location"] = tuple(world_location)  # Store as tuple
 
-        print(f"  ✓ Pinned Translation: {bone_name} at {world_location}")
+        # Create helper empty at pinned location
+        from mathutils import Matrix, Vector
+        pin_matrix = Matrix.Translation(Vector(world_location))
+        empty = create_pin_helper_empty(armature, bone_name, pin_matrix, 'translation')
+
+        # Add persistent Copy Location constraint to the ORIGINAL DAZ bone
+        # Remove any existing pin constraint first
+        for c in pose_bone.constraints:
+            if c.name == "DAZ_Pin_Translation":
+                pose_bone.constraints.remove(c)
+
+        constraint = pose_bone.constraints.new('COPY_LOCATION')
+        constraint.name = "DAZ_Pin_Translation"
+        constraint.target = empty
+        constraint.influence = 1.0  # Absolute lock at pinned location
+        constraint.use_offset = False
+        constraint.target_space = 'WORLD'
+        constraint.owner_space = 'WORLD'
+
+        print(f"  ✓ Pinned Translation: {bone_name} at {world_location} (Copy Location constraint)")
         return True
     return False
 
@@ -865,26 +1275,222 @@ def pin_bone_rotation(armature, bone_name):
 def unpin_bone(armature, bone_name):
     """Remove all pins from bone"""
     bone = armature.data.bones.get(bone_name)
+    pose_bone = armature.pose.bones.get(bone_name)
     if not bone:
         return False
 
     # Remove pin properties
     had_pins = False
+    had_translation_pin = False
+    had_rotation_pin = False
+
     if "daz_pin_translation" in bone:
         del bone["daz_pin_translation"]
         if "daz_pin_location" in bone:
             del bone["daz_pin_location"]
         had_pins = True
+        had_translation_pin = True
+
+        # Remove constraint from DAZ bone
+        if pose_bone:
+            for c in list(pose_bone.constraints):
+                if c.name == "DAZ_Pin_Translation":
+                    pose_bone.constraints.remove(c)
+                    print(f"  Removed translation pin constraint from {bone_name}")
 
     if "daz_pin_rotation" in bone:
         del bone["daz_pin_rotation"]
         if "daz_pin_rotation_euler" in bone:
             del bone["daz_pin_rotation_euler"]
         had_pins = True
+        had_rotation_pin = True
+
+        # Remove constraint from DAZ bone
+        if pose_bone:
+            for c in list(pose_bone.constraints):
+                if c.name == "DAZ_Pin_Rotation":
+                    pose_bone.constraints.remove(c)
+                    print(f"  Removed rotation pin constraint from {bone_name}")
+
+    # Clean up helper Empties
+    if had_translation_pin:
+        remove_pin_helper_empty(armature, bone_name, 'translation')
+    if had_rotation_pin:
+        remove_pin_helper_empty(armature, bone_name, 'rotation')
 
     if had_pins:
         print(f"  ✓ Unpinned: {bone_name}")
         return True
+    return False
+
+
+def create_pin_helper_empty(armature, bone_name, world_matrix, pin_type):
+    """
+    Create or get a helper Empty object for pin constraints.
+    This Empty serves as the constraint target to maintain world transforms.
+
+    Args:
+        armature: The armature object
+        bone_name: Name of the bone being pinned
+        world_matrix: World matrix of the pinned bone
+        pin_type: 'translation' or 'rotation'
+
+    Returns:
+        The Empty object
+    """
+    empty_name = f"PIN_{pin_type}_{armature.name}_{bone_name}"
+
+    # Check if empty already exists
+    if empty_name in bpy.data.objects:
+        empty = bpy.data.objects[empty_name]
+    else:
+        # Create new empty
+        empty = bpy.data.objects.new(empty_name, None)
+        empty.empty_display_type = 'PLAIN_AXES'
+        empty.empty_display_size = 0.01  # Very small, just for debugging
+        bpy.context.scene.collection.objects.link(empty)
+
+    # Set empty's world transform to match the pinned bone's current transform
+    empty.matrix_world = world_matrix
+
+    # Hide empty in viewport and render
+    empty.hide_viewport = True
+    empty.hide_render = True
+
+    return empty
+
+
+def remove_pin_helper_empty(armature, bone_name, pin_type):
+    """Remove helper Empty for a pin"""
+    empty_name = f"PIN_{pin_type}_{armature.name}_{bone_name}"
+    if empty_name in bpy.data.objects:
+        empty = bpy.data.objects[empty_name]
+        bpy.data.objects.remove(empty, do_unlink=True)
+
+
+def add_translation_pin_constraint(armature, ik_bone_name, bone_name):
+    """
+    Add Copy Location constraint to IK bone to maintain world position.
+    This makes the bone "try to stay" at the pinned world location.
+
+    Args:
+        armature: The armature object
+        ik_bone_name: Name of the .ik control bone
+        bone_name: Name of the original DAZ bone (for getting pin data)
+    """
+    pose_bone = armature.pose.bones.get(ik_bone_name)
+    data_bone = armature.data.bones.get(bone_name)
+
+    if not pose_bone or not data_bone:
+        return
+
+    # Get stored world location
+    world_location = data_bone.get("daz_pin_location")
+    if not world_location:
+        return
+
+    # Create a matrix from the stored pin location
+    # Use identity rotation since we only care about position for translation pins
+    from mathutils import Matrix, Vector
+    world_matrix = Matrix.Translation(Vector(world_location))
+
+    # Create helper empty at pinned location
+    empty = create_pin_helper_empty(armature, bone_name, world_matrix, 'translation')
+
+    # Add Copy Location constraint to IK bone
+    constraint = pose_bone.constraints.new('COPY_LOCATION')
+    constraint.name = "DAZ_Pin_Translation"
+    constraint.target = empty
+    constraint.influence = 0.99  # Nearly absolute - virtually locked unless extreme IK forces
+    constraint.use_offset = False  # Copy absolute world location
+    constraint.target_space = 'WORLD'
+    constraint.owner_space = 'WORLD'
+
+    print(f"  ⚓ Added translation pin constraint to {ik_bone_name} (influence={constraint.influence})")
+
+
+def add_rotation_pin_constraint(armature, ik_bone_name, bone_name):
+    """
+    Add Copy Rotation constraint to IK bone to maintain world rotation.
+    This makes the bone "try to maintain" its rotation orientation.
+
+    Args:
+        armature: The armature object
+        ik_bone_name: Name of the .ik control bone
+        bone_name: Name of the original DAZ bone (for getting pin data)
+    """
+    pose_bone = armature.pose.bones.get(ik_bone_name)
+    data_bone = armature.data.bones.get(bone_name)
+
+    if not pose_bone or not data_bone:
+        return
+
+    # Get stored world rotation
+    world_rotation_euler = data_bone.get("daz_pin_rotation_euler")
+    if not world_rotation_euler:
+        return
+
+    # Create a matrix from the stored pin rotation
+    # We also need location - get it from the bone's current position or stored translation pin
+    from mathutils import Matrix, Euler, Vector
+    rotation_matrix = Euler(world_rotation_euler).to_matrix().to_4x4()
+
+    # Get location from translation pin if available, otherwise use current bone position
+    world_location = data_bone.get("daz_pin_location")
+    if world_location:
+        translation_matrix = Matrix.Translation(Vector(world_location))
+    else:
+        # Use current bone position
+        current_matrix = get_bone_world_matrix(armature, bone_name)
+        if current_matrix:
+            translation_matrix = Matrix.Translation(current_matrix.to_translation())
+        else:
+            translation_matrix = Matrix.Translation(Vector((0, 0, 0)))
+
+    # Combine translation and rotation
+    world_matrix = translation_matrix @ rotation_matrix
+
+    # Create helper empty at pinned rotation
+    empty = create_pin_helper_empty(armature, bone_name, world_matrix, 'rotation')
+
+    # Add Copy Rotation constraint to IK bone
+    constraint = pose_bone.constraints.new('COPY_ROTATION')
+    constraint.name = "DAZ_Pin_Rotation"
+    constraint.target = empty
+    constraint.influence = 0.85  # Strong but not absolute - allows some IK movement
+    constraint.use_offset = False  # Copy absolute world rotation
+    constraint.target_space = 'WORLD'
+    constraint.owner_space = 'WORLD'
+    constraint.mix_mode = 'REPLACE'  # Replace rotation entirely
+
+    print(f"  ⚓ Added rotation pin constraint to {ik_bone_name} (influence={constraint.influence})")
+
+
+def has_pinned_children(armature, bone_name, ignore_pin_on_bone=None):
+    """Check if bone has any pinned children (recursively)
+
+    Args:
+        armature: The armature object
+        bone_name: Name of bone to check
+        ignore_pin_on_bone: Bone name to ignore when checking (for temporary pin override)
+    """
+    pose_bone = armature.pose.bones.get(bone_name)
+    if not pose_bone:
+        return False
+
+    # Check all children recursively
+    for child in pose_bone.children:
+        # Skip ignored bone (temporary pin override during direct drag)
+        if ignore_pin_on_bone and child.name == ignore_pin_on_bone:
+            continue
+
+        data_bone = armature.data.bones.get(child.name)
+        if data_bone and (is_bone_pinned_translation(data_bone) or is_bone_pinned_rotation(data_bone)):
+            return True
+        # Check child's children
+        if has_pinned_children(armature, child.name, ignore_pin_on_bone):
+            return True
+
     return False
 
 
@@ -926,8 +1532,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     # Undo stack for Ctrl+Z
     _undo_stack = []  # List of {frame, bones: [(name, rotation, mode)]} entries
 
-    # GPU draw handler for highlighting
-    _draw_handler = None
+    # GPU draw handlers
+    _draw_handler = None  # For highlighting
+    _pin_draw_handler = None  # For pin spheres (always visible)
     _highlight_cache = {}  # Cache of {(mesh_name, bone_name): [triangle_verts]} for performance
     _last_highlighted_bone = None  # Track when to rebuild cache
 
@@ -953,7 +1560,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # If dragging IK, update IK target position
             if self._is_dragging:
-                self.update_ik_drag(context, event)
+                if self._use_fabrik:
+                    self.update_fabrik_drag(context, event)
+                else:
+                    self.update_ik_drag(context, event)
                 return {'RUNNING_MODAL'}
 
             # If rotating (pectoral bones), update rotation
@@ -984,7 +1594,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Do a fresh raycast to verify we hit mesh (not clicking through to background)
             region = context.region
+
+            # Safety check: ensure we're in a 3D viewport
+            if not context.space_data or context.space_data.type != 'VIEW_3D':
+                return {'PASS_THROUGH'}
+
             rv3d = context.space_data.region_3d
+            if not rv3d:
+                return {'PASS_THROUGH'}
+
             coord = (event.mouse_region_x, event.mouse_region_y)
             view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
             ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
@@ -1146,6 +1764,18 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._drag_initial_target_pos = None  # Initial target bone position (for delta-based movement)
         self._drag_initial_mouse_pos = None  # Initial mouse position (for delta-based movement)
 
+        # FABRIK solver state (prototype)
+        self._use_fabrik = False
+        self._fabrik_chain = None
+        self._fabrik_pinned_bone = None
+
+        # Soft pin system state (DAZ-like yielding pins)
+        self._soft_pin_active = False
+        self._soft_pin_child_name = None
+        self._soft_pin_initial_pos = None
+        self._soft_pin_stiffness = 0.8  # 0.0=no resistance, 1.0=maximum resistance
+        self._soft_pin_muted_constraints = []  # Track muted constraints for cleanup
+
         # Initialize rotation state (for pectoral bones)
         self._is_rotating = False
         self._rotation_bone = None
@@ -1154,6 +1784,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Initialize undo stack
         self._undo_stack = []
+
+        # Track temporarily unpinned bones (to restore pins after drag)
+        self._temp_unpinned_bone = None
+        self._temp_unpinned_data = None  # Store pin data to restore
 
         # Try to detect base body mesh from active armature
         if context.active_object and context.active_object.type == 'ARMATURE':
@@ -1168,6 +1802,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Register draw handler for highlighting
         self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
             self.draw_highlight_callback, (), 'WINDOW', 'POST_VIEW'
+        )
+
+        # Register separate persistent draw handler for pin spheres (always visible)
+        self._pin_draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            self.draw_pin_spheres_callback, (), 'WINDOW', 'POST_VIEW'
         )
 
         print("\n=== DAZ Bone Select & Pin & IK Started ===")
@@ -1188,10 +1827,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._hover_bone_name = None
         self._hover_armature = None
 
-        # Remove draw handler
+        # Remove draw handlers
         if self._draw_handler:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, 'WINDOW')
             self._draw_handler = None
+
+        if self._pin_draw_handler:
+            bpy.types.SpaceView3D.draw_handler_remove(self._pin_draw_handler, 'WINDOW')
+            self._pin_draw_handler = None
 
         # Clear highlight cache
         self._highlight_cache.clear()
@@ -1222,7 +1865,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # This prevents selection changes when manipulating gizmos
         if context.active_bone and context.mode == 'POSE':
             region = context.region
+
+            # Safety check: ensure we're in a 3D viewport
+            if not context.space_data or context.space_data.type != 'VIEW_3D':
+                return
+
             rv3d = context.space_data.region_3d
+            if not rv3d:
+                return
 
             # Get 2D screen position of active bone
             armature = context.active_object
@@ -1245,7 +1895,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Get viewport and mouse coords
         region = context.region
+
+        # Safety check: ensure we're in a 3D viewport
+        if not context.space_data or context.space_data.type != 'VIEW_3D':
+            return
+
         rv3d = context.space_data.region_3d
+        if not rv3d:
+            return
+
         coord = (event.mouse_region_x, event.mouse_region_y)
 
         # Get ray from mouse
@@ -1317,6 +1975,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if bone_info:
                 mesh_name, bone_name, armature = bone_info
 
+                # Apply IK target bone mapping (metatarsals → foot, carpals → hand)
+                # This makes hover show the actual IK target, not the small bone
+                mapped_bone = get_ik_target_bone(armature, bone_name, silent=True)
+                if mapped_bone:
+                    bone_name = mapped_bone
+                # If mapping returned None (twist/pectoral), keep original bone
+                elif mapped_bone is None:
+                    pass  # Keep original bone_name
+
                 # Update hover state
                 self._hover_mesh = final_mesh
                 self._hover_bone_name = bone_name
@@ -1324,7 +1991,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                 # Update header (only if changed to reduce flicker)
                 if bone_name != self._last_bone:
-                    text = f"Hover: {bone_name} | Mesh: {mesh_name} | Armature: {armature.name} | CLICK to select"
+                    # Check pin status for header display
+                    data_bone = armature.data.bones.get(bone_name)
+                    pin_status = get_pin_status_text(data_bone) if data_bone else ""
+                    pin_text = f" | {pin_status}" if pin_status else ""
+
+                    text = f"Hover: {bone_name}{pin_text} | Mesh: {mesh_name} | CLICK to select | P to pin"
                     context.area.header_text_set(text)
                     self._last_bone = bone_name
                     context.area.tag_redraw()  # Redraw to update highlight
@@ -1395,15 +2067,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                     # Check bone exists in armature
                     if bone_name in armature.data.bones:
-                        # Map hand/foot palm/sole bones to parent hand/foot
-                        bone_name_lower = bone_name.lower()
-                        if any(term in bone_name_lower for term in ['metacarpal', 'metatarsal', 'carpal', 'tarsal']):
-                            # Find parent bone (should be hand or foot)
-                            parent_bone = armature.data.bones[bone_name].parent
-                            if parent_bone:
-                                bone_name = parent_bone.name
-                                print(f"  Mapped palm/sole bone to parent: {bone_name}")
-
+                        # Return raw bone name - mapping will happen in hover update via get_ik_target_bone
                         return (mesh_obj.name, bone_name, armature)
 
         # METHOD 2: Fallback to nearest vertex (if no face index)
@@ -1426,7 +2090,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         vert = mesh.vertices[nearest_vert_idx]
 
         if not vert.groups:
-            return None
+            # Fallback: Hit vertex has no weights - search nearby vertices (within 5cm radius)
+            # This handles unweighted areas of the mesh
+            search_radius = 0.05  # 5cm
+            for i, nearby_vert in enumerate(mesh.vertices):
+                if nearby_vert.groups and (nearby_vert.co - hit_local).length < search_radius:
+                    # Found a weighted vertex nearby - use it instead
+                    vert = nearby_vert
+                    nearest_vert_idx = i
+                    break
+
+            # If still no groups after search, give up
+            if not vert.groups:
+                return None
 
         # Find highest weight group
         max_weight = 0.0
@@ -1447,15 +2123,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Check bone exists in armature
             if bone_name in armature.data.bones:
-                # Map hand/foot palm/sole bones to parent hand/foot
-                bone_name_lower = bone_name.lower()
-                if any(term in bone_name_lower for term in ['metacarpal', 'metatarsal', 'carpal', 'tarsal']):
-                    # Find parent bone (should be hand or foot)
-                    parent_bone = armature.data.bones[bone_name].parent
-                    if parent_bone:
-                        bone_name = parent_bone.name
-                        print(f"  Mapped palm/sole bone to parent: {bone_name}")
-
+                # Return raw bone name - mapping will happen in hover update via get_ik_target_bone
                 return (mesh_obj.name, bone_name, armature)
 
         return None
@@ -1568,6 +2236,16 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         print(f"\n=== Starting IK Drag: {self._drag_bone_name} ===")
 
+        # Check if the bone being dragged is pinned - store for later, but DON'T unpin yet
+        # (we need pins active during chain creation so parent bones get locked)
+        data_bone = self._drag_armature.data.bones.get(self._drag_bone_name)
+        dragging_pinned_bone = data_bone and (is_bone_pinned_translation(data_bone) or is_bone_pinned_rotation(data_bone))
+        if dragging_pinned_bone:
+            print(f"  ⚠️  Bone is pinned - will temporarily disable pin for this drag")
+            # Track which bone to unmute after drag
+            self._temp_unpinned_bone = self._drag_bone_name
+            # Note: Pin constraint will be muted during IK chain creation
+
         # Map to IK-appropriate bone (e.g., carpal → hand, face → head)
         ik_bone_name = get_ik_target_bone(self._drag_armature, self._drag_bone_name)
 
@@ -1607,13 +2285,78 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Use the mapped bone for IK
         self._drag_bone_name = ik_bone_name
 
+        # Check for pinned children and enable soft pin system
+        # This creates DAZ-like "soft constraint" behavior where pins resist but yield under force
+        self._soft_pin_active = False
+        self._soft_pin_child_name = None
+        self._soft_pin_initial_pos = None
+        self._soft_pin_stiffness = 0.8  # 0.0=no resistance, 1.0=maximum resistance (but still yields)
+
+        if has_pinned_children(self._drag_armature, self._drag_bone_name, ignore_pin_on_bone=self._temp_unpinned_bone):
+            print("\n  🔧 SOFT PIN MODE: Detected pinned child, using soft constraint system")
+
+            # Walk down to find pinned child (recursively through twist bones)
+            def find_pinned_child_recursive(bone, depth=0):
+                """Recursively find pinned child, skipping twist bones"""
+                if depth > 5:
+                    return None
+                for child in bone.children:
+                    if child.name == self._temp_unpinned_bone:
+                        continue
+                    # Check if child is twist bone - if so, recurse
+                    if is_twist_bone(child.name):
+                        result = find_pinned_child_recursive(child, depth + 1)
+                        if result:
+                            return result
+                        continue
+                    # Non-twist bone - check if pinned
+                    child_data_bone = self._drag_armature.data.bones.get(child.name)
+                    if child_data_bone and is_bone_pinned_translation(child_data_bone):
+                        return child
+                    # Not pinned - recurse
+                    result = find_pinned_child_recursive(child, depth + 1)
+                    if result:
+                        return result
+                return None
+
+            dragged_pose_bone = self._drag_armature.pose.bones[self._drag_bone_name]
+            pinned_child = find_pinned_child_recursive(dragged_pose_bone)
+
+            if pinned_child:
+                self._soft_pin_active = True
+                self._soft_pin_child_name = pinned_child.name
+                # Store initial world position of pinned bone
+                pinned_pose_bone = self._drag_armature.pose.bones[pinned_child.name]
+                self._soft_pin_initial_pos = self._drag_armature.matrix_world @ pinned_pose_bone.head
+                print(f"  Soft pin child: {pinned_child.name}")
+                print(f"  Initial pin position: {self._soft_pin_initial_pos}")
+
+                # IMPORTANT: Mute the hard Copy Location constraint on pinned child
+                # We'll manage its position softly instead
+                for constraint in pinned_pose_bone.constraints:
+                    if constraint.type == 'COPY_LOCATION' and constraint.mute == False:
+                        constraint.mute = True
+                        print(f"  Muted hard pin constraint on {pinned_child.name}")
+                        # Track for re-enabling later
+                        if not hasattr(self, '_soft_pin_muted_constraints'):
+                            self._soft_pin_muted_constraints = []
+                        self._soft_pin_muted_constraints.append((pinned_pose_bone, constraint))
+            else:
+                print("  ✗ Could not find pinned child, using normal IK")
+
+        # Continue with normal IK path (now with soft pin support)
         # Create IK chain with temp bones (bypasses twist bones for clean IK)
+        # Pass the bone to ignore pin checks on if dragging a pinned bone
+        # Pin constraints will be temporarily muted for directly dragged bone
         result = create_ik_chain(
             self._drag_armature,
-            self._drag_bone_name
-            # chain_length will be auto-detected
+            self._drag_bone_name,
+            chain_length=None,  # Auto-detect (same behavior as unpinned)
+            ignore_pin_on_bone=self._temp_unpinned_bone,  # Temporarily disable pin on dragged bone
+            soft_pin_mode=self._soft_pin_active  # Soft pin mode: skip hard pin on .ik bone
         )
 
+        # Check if IK chain creation succeeded
         if not result or result[0] is None:
             print("  ✗ Failed to create IK chain")
             return
@@ -1627,9 +2370,25 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._ik_daz_bone_names = daz_bone_names
         self._shoulder_target_names = shoulder_target_names  # For collar Damped Track
 
+        # CRITICAL: In soft pin mode, track pinned child for pin location update on release
+        # This must happen AFTER create_ik_chain so the pinned child is included in the chain
+        if self._soft_pin_active and self._soft_pin_child_name:
+            self._temp_unpinned_bone = self._soft_pin_child_name
+            print(f"  Tracking {self._soft_pin_child_name} for pin location update on release")
+
         # Store view direction for depth calculation
         region = context.region
+
+        # Safety check: ensure we're in a 3D viewport
+        if not context.space_data or context.space_data.type != 'VIEW_3D':
+            print("  ⚠️  Not in 3D viewport - cannot start IK drag")
+            return
+
         rv3d = context.space_data.region_3d
+        if not rv3d:
+            print("  ⚠️  No region_3d - cannot start IK drag")
+            return
+
         self._drag_plane_normal = rv3d.view_rotation @ Vector((0, 0, -1))
 
         # Get target bone's world location as the FIXED drag depth reference
@@ -1655,6 +2414,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Reset debug flag for this drag
         self._debug_printed = False
+
+        # Mouse-direction pre-bend: track first mouse moves to determine bend direction
+        self._pre_bend_mouse_samples = []  # Store first 2-3 mouse positions
+        self._pre_bend_applied = False     # Track if we've applied the pre-bend yet
 
         print(f"  Initial mouse pos stored: {self._drag_initial_mouse_pos}")
         print(f"  Initial target pos stored: {self._drag_initial_target_pos}")
@@ -1691,7 +2454,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Use Blender's built-in region_2d_to_location_3d with delta-based movement
         region = context.region
+
+        # Safety check: ensure we're in a 3D viewport
+        if not context.space_data or context.space_data.type != 'VIEW_3D':
+            return
+
         rv3d = context.space_data.region_3d
+        if not rv3d:
+            return
+
         mouse_pos = (event.mouse_region_x, event.mouse_region_y)
 
         # Get current mouse position in 3D (at fixed depth)
@@ -1715,6 +2486,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         mouse_delta = current_mouse_3d - initial_mouse_3d
 
         # Apply delta to initial target position (prevents snap to cursor)
+        # Even if tip is pinned, target should follow mouse to create tension in IK
+        # The Copy Location constraint on the tip will keep it pinned
         new_world_location = self._drag_initial_target_pos + mouse_delta
 
         # Debug first update only (flag resets each drag)
@@ -1727,6 +2500,38 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             print(f"  DEBUG: Current mouse 3D: {current_mouse_3d}")
             print(f"  DEBUG: Mouse delta: {mouse_delta}")
             print(f"  DEBUG: New target pos: {new_world_location}")
+            print(f"  DEBUG: Soft pin active? {self._soft_pin_active}, child: {self._soft_pin_child_name}")
+
+        # POLE TARGET SYSTEM: Use pole target to control elbow direction
+        # Hand stays at pin (IK target), elbow bends toward mouse (pole target)
+        if self._soft_pin_active and self._soft_pin_child_name:
+            print(f"  [POLE] Running pole target adjustment (fulcrum={self._soft_pin_child_name})")
+            try:
+                # Get the pinned hand position (fulcrum - fixed point)
+                hand_pos = self._soft_pin_initial_pos  # Use initial pin position (fixed)
+                print(f"  [POLE] Hand (fulcrum) at: {hand_pos}")
+
+                # Get current mouse position in 3D (where elbow should point)
+                mouse_3d = current_mouse_3d
+                print(f"  [POLE] Mouse (pole target) at: {mouse_3d}")
+
+                # STANDARD IK POLE TARGET APPROACH (matching working test rig):
+                # 1. IK target stays FIXED at pinned hand position
+                # 2. Pole target positioned EXACTLY at mouse (no offset)
+                # 3. Elbow rotates to point toward pole target while hand stays pinned
+
+                # IK target locked at pinned hand position (no movement)
+                new_world_location = hand_pos
+                print(f"  [POLE] IK target locked at pin: {new_world_location}")
+
+                # Pole target positioned exactly at mouse (standard IK rig behavior)
+                self._pole_target_pos = mouse_3d
+                print(f"  [POLE] Pole target exactly at mouse: {self._pole_target_pos}")
+
+            except Exception as e:
+                print(f"  [POLE ERROR]: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Convert world location to armature local space
         desired_armature_space = self._drag_armature.matrix_world.inverted() @ new_world_location
@@ -1750,6 +2555,24 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # CRITICAL: Update FIRST to ensure target is at new position
         # This prevents IK from solving to the old target position
         context.view_layer.update()
+
+        # POLE TARGET: Update pole target position to mouse location (soft pin mode only)
+        if self._soft_pin_active and self._soft_pin_child_name and hasattr(self, '_pole_target_pos'):
+            try:
+                pole_target_name = self._ik_target_bone_name + ".pole"
+                pole_target_bone = self._drag_armature.pose.bones.get(pole_target_name)
+
+                if pole_target_bone:
+                    # Convert pole target position to armature local space
+                    pole_armature_space = self._drag_armature.matrix_world.inverted() @ self._pole_target_pos
+                    rest_head = Vector(pole_target_bone.bone.head_local)
+                    translation = pole_armature_space - rest_head
+                    pole_target_bone.matrix = Matrix.Translation(translation) @ pole_target_bone.bone.matrix_local
+                    print(f"  [POLE] Updated pole target at: {self._pole_target_pos}")
+                else:
+                    print(f"  [POLE] Warning: Pole target bone not found: {pole_target_name}")
+            except Exception as e:
+                print(f"  [POLE] Error updating pole target: {e}")
 
         # Update shoulder target positions (guides collar rotation naturally)
         if self._shoulder_target_names:
@@ -1796,75 +2619,146 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 translation = shoulder_target_local - rest_head
                 shoulder_target.matrix = Matrix.Translation(translation) @ shoulder_target.bone.matrix_local
 
-        # NOW activate BOTH IK and Copy Rotation constraints after target is positioned
-        # Both start disabled (influence 0.0), so bones stay exactly where they are
-        # On first move, we activate BOTH together (0.0 → 1.0)
+        # MOUSE-DIRECTION PRE-BEND: Collect mouse samples before activating IK
+        # This seeds the solver with the intended bend direction
         ik_tip_bone = self._drag_armature.pose.bones[self._ik_control_bone_names[-1]]
-        ik_just_activated = False
+        ik_constraint = None
         for constraint in ik_tip_bone.constraints:
-            # Check if IK constraint needs activation (influence == 0.0 means not activated yet)
-            if constraint.name == "IK_Temp" and constraint.influence == 0.0:
-                # Check if the root bone of the chain is a collar (dampen shoulder shrugging)
-                root_bone_name = self._ik_control_bone_names[0].lower()
-                if 'collar' in root_bone_name:
-                    constraint.influence = 0.3
-                    print(f"  Activated IK constraint with dampened influence (0.0 → 0.3 for collar)")
-                else:
-                    constraint.influence = 1.0
-                    print(f"  Activated IK constraint (influence 0.0 → 1.0)")
-                ik_just_activated = True
-
-                # APPLY NUDGE NOW (on first mouse move after IK activation)
-                # Find the actual bending joint (shin/forearm) in the chain, not the mathematical middle
-                # With extended chains, middle_index might be a parent bone (pelvis/chest)
-                from mathutils import Quaternion
-
-                for bone_name in self._ik_control_bone_names:
-                    ik_bone = self._drag_armature.pose.bones[bone_name]
-                    bone_name_lower = bone_name.lower()
-
-                    # Find shin/calf and nudge it
-                    if 'shin' in bone_name_lower or 'calf' in bone_name_lower:
-                        nudge_quat = Quaternion((1, 0, 0), 0.5)  # 0.5 rad (29°) for legs
-                        ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
-                        print(f"  Applied nudge to {bone_name}: 0.5 rad forward")
-                        break
-                    # Find forearm and nudge it
-                    elif 'forearm' in bone_name_lower or 'lorearm' in bone_name_lower:
-                        nudge_quat = Quaternion((0, 1, 0), 0.02)  # 0.02 rad (~1°) minimal nudge
-                        ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
-                        print(f"  Applied nudge to {bone_name}: 0.02 rad")
-                        break
-                    # Find abdomen/spine and nudge it for torso bending
-                    elif 'abdomen' in bone_name_lower or 'spine' in bone_name_lower:
-                        nudge_quat = Quaternion((1, 0, 0), 0.02)  # 0.02 rad (~1°) minimal nudge
-                        ik_bone.rotation_quaternion = nudge_quat @ ik_bone.rotation_quaternion
-                        print(f"  Applied torso nudge to {bone_name}: 0.02 rad")
-                        break
+            if constraint.name == "IK_Temp":
+                ik_constraint = constraint
                 break
 
-        # Also activate Copy Rotation constraints (but skip collar on ONLY the first frame to prevent snap)
-        for daz_name in self._ik_daz_bone_names:
-            daz_bone = self._drag_armature.pose.bones[daz_name]
+        if not ik_constraint:
+            return
 
-            # Check if this is a collar bone
-            bone_lower = daz_name.lower()
-            is_collar = 'collar' in bone_lower or 'clavicle' in bone_lower
+        # Collect first 2-3 mouse positions to determine direction
+        if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) < 3:
+            current_mouse_3d = view3d_utils.region_2d_to_location_3d(
+                context.region,
+                context.space_data.region_3d,
+                (event.mouse_region_x, event.mouse_region_y),
+                self._drag_depth_reference
+            )
+            self._pre_bend_mouse_samples.append(current_mouse_3d.copy())
+            print(f"  [PRE-BEND] Collected sample {len(self._pre_bend_mouse_samples)}/3: {current_mouse_3d}")
 
-            for constraint in daz_bone.constraints:
-                if constraint.name == "IK_CopyRot_Temp":
-                    # Skip collar ONLY on first IK activation frame (check == 0.0 to avoid false positives)
-                    if constraint.influence == 0.0:
-                        if ik_just_activated and is_collar:
-                            # First frame: Skip collar to prevent snap
-                            print(f"  Skipping Copy Rotation for {daz_name} on first frame (prevents snap)")
-                        else:
-                            # Activate normally (including collar on subsequent frames)
-                            constraint.influence = 1.0
-                            if is_collar:
-                                print(f"  Activated Copy Rotation for {daz_name} (subsequent frame)")
+        # After collecting samples, apply pre-bend and activate IK
+        if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) >= 2:
+            from mathutils import Quaternion
 
-        print(f"  Activated Copy Rotation constraints")
+            # Calculate mouse movement direction
+            mouse_start = self._pre_bend_mouse_samples[0]
+            mouse_current = self._pre_bend_mouse_samples[-1]
+            mouse_delta = mouse_current - mouse_start
+            mouse_direction = mouse_delta.normalized() if mouse_delta.length > 0.001 else Vector((0, 0, 0))
+
+            print(f"  [PRE-BEND] Mouse direction: {mouse_direction}")
+
+            # Find the middle joint to pre-bend (forearm, shin, or spine)
+            middle_bone = None
+            bend_axis = Vector((0, 1, 0))  # Default axis
+            bend_magnitude = 0.03  # 1.7° default
+
+            for i, bone_name in enumerate(self._ik_control_bone_names):
+                bone_name_lower = bone_name.lower()
+
+                # Find shin/calf (legs)
+                if 'shin' in bone_name_lower or 'calf' in bone_name_lower:
+                    middle_bone = self._drag_armature.pose.bones[bone_name]
+                    bend_axis = Vector((1, 0, 0))  # X axis for knee
+                    bend_magnitude = 0.04  # ~2.3° for legs (Grok recommended 1.5-2.5°)
+                    break
+                # Find forearm (arms)
+                elif 'forearm' in bone_name_lower:
+                    middle_bone = self._drag_armature.pose.bones[bone_name]
+                    # Determine bend axis from mouse direction
+                    # If moving up/down, bend around X. If moving left/right, bend around Z
+                    if abs(mouse_direction.z) > abs(mouse_direction.x):
+                        bend_axis = Vector((1, 0, 0))  # Up/down motion
+                    else:
+                        bend_axis = Vector((0, 0, 1))  # Side motion
+                    bend_magnitude = 0.05  # ~3° for arms
+                    break
+                # Find abdomen/spine (torso)
+                elif 'abdomen' in bone_name_lower or 'spine' in bone_name_lower:
+                    middle_bone = self._drag_armature.pose.bones[bone_name]
+                    bend_axis = Vector((1, 0, 0))
+                    bend_magnitude = 0.03  # ~1.7° for torso
+                    break
+
+            # Apply pre-bend if we found a joint
+            if middle_bone and mouse_delta.length > 0.001:
+                # Determine direction (positive or negative rotation) based on joint type
+                bend_sign = 1.0
+
+                # For LEGS (shin/knee): Check Y direction (forward/back)
+                # Dragging foot forward = knee bends = positive rotation
+                if 'shin' in middle_bone.name.lower() or 'calf' in middle_bone.name.lower():
+                    if mouse_direction.y < 0:  # Moving backward (toward body)
+                        bend_sign = 1.0  # Bend knee
+                    else:  # Moving forward (away from body)
+                        bend_sign = -1.0  # Straighten knee
+                # For ARMS (forearm/elbow): Check Z direction (up/down)
+                elif 'forearm' in middle_bone.name.lower():
+                    if mouse_direction.z < 0:  # Moving down
+                        bend_sign = -1.0
+                    else:  # Moving up
+                        bend_sign = 1.0
+                # For TORSO: Check Z direction (forward/back lean)
+                else:
+                    if mouse_direction.z < 0:  # Moving down/back
+                        bend_sign = -1.0
+                    else:  # Moving up/forward
+                        bend_sign = 1.0
+
+                nudge_quat = Quaternion(bend_axis, bend_magnitude * bend_sign)
+                middle_bone.rotation_quaternion = nudge_quat @ middle_bone.rotation_quaternion
+                print(f"  [PRE-BEND] Applied {bend_magnitude * bend_sign:.3f} rad to {middle_bone.name} on axis {bend_axis}")
+
+            self._pre_bend_applied = True
+
+            # NOW activate IK constraint AND Copy Rotation simultaneously
+            ik_constraint.influence = 1.0
+            print(f"  Activated IK constraint (influence 0.0 → 1.0) after pre-bend")
+            ik_just_activated = True
+
+            # CRITICAL: Activate Copy Rotation at the SAME TIME as IK to prevent snap
+            # If Copy Rotation activates before IK, DAZ bones snap to pre-bent .ik bones
+            # before IK has solved, causing visible pop
+            print(f"  Activating Copy Rotation simultaneously with IK...")
+        else:
+            # IK already activated (not first move)
+            ik_just_activated = False
+
+        # Activate Copy Rotation constraints (but skip collar on ONLY the first frame to prevent snap)
+        # CRITICAL: Only activate if IK has been activated (prevents snap on first mouse move)
+        if self._pre_bend_applied:  # IK has been activated
+            for daz_name in self._ik_daz_bone_names:
+                daz_bone = self._drag_armature.pose.bones[daz_name]
+
+                # Check if this is a collar bone
+                bone_lower = daz_name.lower()
+                is_collar = 'collar' in bone_lower or 'clavicle' in bone_lower
+
+                for constraint in daz_bone.constraints:
+                    if constraint.name == "IK_CopyRot_Temp":
+                        # Skip collar ONLY on first IK activation frame (check == 0.0 to avoid false positives)
+                        if constraint.influence == 0.0:
+                            if ik_just_activated and is_collar:
+                                # First frame: Skip collar to prevent snap
+                                print(f"  Skipping Copy Rotation for {daz_name} on first frame (prevents snap)")
+                            else:
+                                # Activate normally (including collar on subsequent frames)
+                                constraint.influence = 1.0
+                                if is_collar:
+                                    print(f"  Activated Copy Rotation for {daz_name} (subsequent frame)")
+
+            print(f"  Activated Copy Rotation constraints")
+        else:
+            # IK not activated yet - don't activate Copy Rotation (prevents snap on first mouse move)
+            if not hasattr(self, '_copy_rot_wait_logged'):
+                print(f"  Waiting for IK activation before enabling Copy Rotation...")
+                self._copy_rot_wait_logged = True
 
         # DON'T activate Damped Track on first frame - let IK solve naturally first
         # This prevents the initial inward snap by giving IK time to position the arm
@@ -1873,8 +2767,107 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Final update to trigger IK solving with new target position
         context.view_layer.update()
 
+    def update_fabrik_drag(self, context, event):
+        """Update FABRIK solver during drag (prototype)"""
+        print(f"\n[FABRIK] update_fabrik_drag called")
+
+        if not self._is_dragging or not self._use_fabrik:
+            print(f"  [FABRIK] EARLY RETURN: is_dragging={self._is_dragging}, use_fabrik={self._use_fabrik}")
+            return
+
+        try:
+            # Get mouse position in 3D world space
+            region = context.region
+            if not context.space_data or context.space_data.type != 'VIEW_3D':
+                return
+            rv3d = context.space_data.region_3d
+            if not rv3d:
+                return
+
+            # Convert mouse 2D to 3D (using region_2d_to_location_3d with depth from dragged bone)
+            mouse_2d = (event.mouse_region_x, event.mouse_region_y)
+
+            # Use dragged bone's current position as depth reference
+            dragged_bone = self._drag_armature.pose.bones[self._drag_bone_name]
+            dragged_world_pos = self._drag_armature.matrix_world @ dragged_bone.head
+
+            mouse_3d = view3d_utils.region_2d_to_location_3d(
+                region,
+                rv3d,
+                mouse_2d,
+                dragged_world_pos
+            )
+
+            print(f"  [FABRIK] Mouse 2D: {mouse_2d}")
+            print(f"  [FABRIK] Mouse 3D: {mouse_3d}")
+
+            # Call FABRIK solver
+            result = apply_fabrik_to_limb(
+                armature=self._drag_armature,
+                bone_chain=self._fabrik_chain,
+                pinned_bone_name=self._fabrik_pinned_bone,
+                dragged_bone_name=self._drag_bone_name,
+                mouse_target_pos=mouse_3d
+            )
+
+            if not result['success']:
+                print(f"  [FABRIK] ✗ FABRIK solve failed")
+                return
+
+            # Apply rotations to bones
+            rotations = result['rotations']
+            for bone_name, rotation_quat in rotations.items():
+                pose_bone = self._drag_armature.pose.bones[bone_name]
+
+                # Check bone state BEFORE applying rotation
+                print(f"  [FABRIK] Bone: {bone_name}")
+                print(f"    Rotation mode: {pose_bone.rotation_mode}")
+                print(f"    Constraints: {[c.name for c in pose_bone.constraints]}")
+                print(f"    Lock rotation: {pose_bone.lock_rotation}")
+
+                # Store original rotation for undo
+                if not hasattr(self, '_fabrik_original_rotations'):
+                    self._fabrik_original_rotations = {}
+                if bone_name not in self._fabrik_original_rotations:
+                    self._fabrik_original_rotations[bone_name] = pose_bone.rotation_quaternion.copy()
+
+                # Get position BEFORE rotation
+                pos_before = (self._drag_armature.matrix_world @ pose_bone.matrix).translation
+
+                # Force quaternion mode if not already
+                if pose_bone.rotation_mode != 'QUATERNION':
+                    print(f"    ⚠️  Switching to QUATERNION mode")
+                    pose_bone.rotation_mode = 'QUATERNION'
+
+                # Disable rotation limit constraints temporarily (they block FABRIK)
+                for constraint in pose_bone.constraints:
+                    if constraint.type == 'LIMIT_ROTATION' and not constraint.mute:
+                        constraint.mute = True
+                        print(f"    ⚠️  Muted Limit Rotation constraint")
+
+                # Apply FABRIK rotation
+                pose_bone.rotation_quaternion = rotation_quat
+                print(f"    Applied rotation: {rotation_quat}")
+
+                # Force update and check position AFTER
+                context.view_layer.update()
+                pos_after = (self._drag_armature.matrix_world @ pose_bone.matrix).translation
+                print(f"  [FABRIK]   Position before: {pos_before}")
+                print(f"  [FABRIK]   Position after:  {pos_after}")
+                print(f"  [FABRIK]   Delta: {(pos_after - pos_before).length:.6f}")
+
+            # Update viewport
+            context.area.tag_redraw()
+
+            print(f"  [FABRIK] ✓ Rotations applied")
+
+        except Exception as e:
+            print(f"  [FABRIK] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+
     def end_ik_drag(self, context, cancel=False):
-        """End IK drag and optionally bake pose to FK
+        """End IK drag (or FABRIK drag) and optionally bake pose to FK
 
         Args:
             cancel: If True, skip keyframing (returns to original pose)
@@ -1882,6 +2875,84 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not self._is_dragging:
             return
 
+        # Handle FABRIK mode
+        if self._use_fabrik:
+            if cancel:
+                print(f"\n=== Canceling FABRIK Drag: {self._drag_bone_name} ===")
+                # Restore original rotations
+                if hasattr(self, '_fabrik_original_rotations'):
+                    for bone_name, original_rot in self._fabrik_original_rotations.items():
+                        pose_bone = self._drag_armature.pose.bones.get(bone_name)
+                        if pose_bone:
+                            pose_bone.rotation_quaternion = original_rot
+                    context.view_layer.update()
+            else:
+                print(f"\n=== Ending FABRIK Drag: {self._drag_bone_name} ===")
+                # Keyframe the rotated bones
+                current_frame = context.scene.frame_current
+                for bone_name in self._fabrik_chain:
+                    pose_bone = self._drag_armature.pose.bones.get(bone_name)
+                    if pose_bone and bone_name != self._fabrik_pinned_bone:
+                        # Keyframe rotation (skip pinned bone - it doesn't move)
+                        pose_bone.keyframe_insert(
+                            data_path="rotation_quaternion",
+                            frame=current_frame,
+                            options={'INSERTKEY_VISUAL'}
+                        )
+                        print(f"  ✓ Keyframed: {bone_name}")
+
+            # Re-enable Limit Rotation constraints that were muted
+            for bone_name in self._fabrik_chain:
+                pose_bone = self._drag_armature.pose.bones.get(bone_name)
+                if pose_bone:
+                    for constraint in pose_bone.constraints:
+                        if constraint.type == 'LIMIT_ROTATION' and constraint.mute:
+                            constraint.mute = False
+                            print(f"  ✓ Re-enabled Limit Rotation on: {bone_name}")
+
+            # Clean up FABRIK state
+            self._use_fabrik = False
+            self._fabrik_chain = None
+            self._fabrik_pinned_bone = None
+            if hasattr(self, '_fabrik_original_rotations'):
+                delattr(self, '_fabrik_original_rotations')
+
+            # Re-enable pin constraint if needed (same as normal IK)
+            if self._temp_unpinned_bone:
+                try:
+                    armature = self._drag_armature
+                    bone_name = self._temp_unpinned_bone
+                    pose_bone = armature.pose.bones.get(bone_name) if armature else None
+
+                    if pose_bone:
+                        # CRITICAL: Update pin Empty location to new bone position BEFORE re-enabling
+                        new_position = armature.matrix_world @ pose_bone.head
+
+                        for c in pose_bone.constraints:
+                            if c.name == "DAZ_Pin_Translation" and c.target:
+                                # Update the pin Empty's location to the new position
+                                c.target.location = new_position
+                                print(f"  ✓ Updated pin location to new position: {new_position}")
+
+                        # Now unmute pin constraints
+                        for c in pose_bone.constraints:
+                            if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation") and c.mute:
+                                c.mute = False
+                                print(f"  ✓ Re-enabled pin constraint on: {bone_name}")
+
+                except Exception as e:
+                    print(f"  ⚠️  Error re-enabling pin: {e}")
+
+                # Always clear temp data
+                self._temp_unpinned_bone = None
+                self._temp_unpinned_data = None
+
+            # Clear drag state
+            self._is_dragging = False
+            self._drag_bone_name = None
+            return  # Exit early for FABRIK mode
+
+        # Normal IK mode continues here
         if cancel:
             print(f"\n=== Canceling IK Drag: {self._drag_bone_name} ===")
         else:
@@ -1891,14 +2962,61 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Dissolve IK chain (remove constraints, delete .ik bones)
         # Pass keyframe=False if canceling to skip baking
-        dissolve_ik_chain(
-            self._drag_armature,
-            self._ik_target_bone_name,
-            self._ik_control_bone_names,
-            self._ik_daz_bone_names,
-            self._shoulder_target_names,
-            keyframe=(not cancel)
-        )
+        # Skip dissolve if in debug mode to allow inspection
+        if not DEBUG_PRESERVE_IK_CHAIN:
+            dissolve_ik_chain(
+                self._drag_armature,
+                self._ik_target_bone_name,
+                self._ik_control_bone_names,
+                self._ik_daz_bone_names,
+                self._shoulder_target_names,
+                keyframe=(not cancel)
+            )
+        else:
+            print("  [DEBUG] IK chain preserved for inspection - constraints and .ik bones left intact")
+
+        # Re-enable pin constraint if it was temporarily muted
+        if self._temp_unpinned_bone:
+            try:
+                armature = self._drag_armature
+                bone_name = self._temp_unpinned_bone
+                pose_bone = armature.pose.bones.get(bone_name) if armature else None
+
+                if pose_bone:
+                    # CRITICAL: Update pin Empty location to new bone position BEFORE re-enabling
+                    # This allows the pin to follow the drag (Option A behavior)
+                    new_position = armature.matrix_world @ pose_bone.head
+
+                    for c in pose_bone.constraints:
+                        if c.name == "DAZ_Pin_Translation" and c.target:
+                            # Update the pin Empty's location to the new position
+                            c.target.location = new_position
+                            print(f"  ✓ Updated pin location to new position: {new_position}")
+
+                    # Now unmute pin constraints
+                    for c in pose_bone.constraints:
+                        if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation") and c.mute:
+                            c.mute = False
+                            print(f"  ✓ Re-enabled pin constraint on: {bone_name}")
+
+            except Exception as e:
+                print(f"  ⚠️  Error re-enabling pin: {e}")
+
+            # Always clear temp data
+            self._temp_unpinned_bone = None
+            self._temp_unpinned_data = None
+
+        # Re-enable soft pin constraints that were muted
+        if hasattr(self, '_soft_pin_muted_constraints') and self._soft_pin_muted_constraints:
+            for pose_bone, constraint in self._soft_pin_muted_constraints:
+                constraint.mute = False
+                print(f"  ✓ Re-enabled hard pin constraint on: {pose_bone.name}")
+            self._soft_pin_muted_constraints = []
+
+        # Clear soft pin state
+        self._soft_pin_active = False
+        self._soft_pin_child_name = None
+        self._soft_pin_initial_pos = None
 
         # Clear drag state
         self._is_dragging = False
@@ -1999,6 +3117,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             pin_status = get_pin_status_text(bone)
             text = f"{bone_name} | {pin_status} | Press P/Shift+P to pin, U to unpin"
             context.area.header_text_set(text)
+
+            # Force immediate viewport redraw to show pin sphere instantly
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
         else:
             self.report({'ERROR'}, f"Failed to pin: {bone_name}")
 
@@ -2025,6 +3148,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             pin_status = get_pin_status_text(bone)
             text = f"{bone_name} | {pin_status} | Press P/Shift+P to pin, U to unpin"
             context.area.header_text_set(text)
+
+            # Force immediate viewport redraw to show pin sphere instantly
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
         else:
             self.report({'ERROR'}, f"Failed to pin: {bone_name}")
 
@@ -2047,6 +3175,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self.report({'INFO'}, f"Unpinned: {bone_name}")
             text = f"{bone_name} | Press P/Shift+P to pin, U to unpin"
             context.area.header_text_set(text)
+
+            # Force immediate viewport redraw to hide pin sphere instantly
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
         else:
             self.report({'INFO'}, f"{bone_name} was not pinned")
 
@@ -2159,36 +3292,69 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if bone_name not in armature.data.bones:
             return
 
-        # Find vertex group for this bone
-        if bone_name not in mesh_obj.vertex_groups:
-            return
+        # Build list of bones to highlight together
+        bones_to_highlight = [bone_name]
 
-        # Cache key for this mesh+bone combination
-        cache_key = (mesh_obj.name, bone_name)
+        bone_lower = bone_name.lower()
 
-        # Check cache - only compute weighted verts/polygons once per bone
+        # TOE: If hovering any toe, highlight ALL toes together (not foot/metatarsals)
+        if 'toe' in bone_lower:
+            # Find parent foot bone to get all sibling toes
+            parent = armature.data.bones[bone_name].parent
+            if parent:
+                for sibling in parent.children:
+                    sibling_lower = sibling.name.lower()
+                    if 'toe' in sibling_lower:
+                        bones_to_highlight.append(sibling.name)
+            bones_to_highlight = list(set(bones_to_highlight))  # Remove duplicates
+
+        # FOOT: Include metatarsals only (NOT toes - they're separate)
+        elif 'foot' in bone_lower:
+            for child_bone in armature.data.bones[bone_name].children:
+                child_lower = child_bone.name.lower()
+                # Include metatarsals, tarsals (NOT toes)
+                if any(term in child_lower for term in ['metatarsal', 'tarsal']) and 'toe' not in child_lower:
+                    bones_to_highlight.append(child_bone.name)
+
+        # HAND: Include metacarpals only (NOT fingers - they stay separate)
+        elif 'hand' in bone_lower:
+            for child_bone in armature.data.bones[bone_name].children:
+                child_lower = child_bone.name.lower()
+                # Include metacarpals, carpals (NOT fingers)
+                if any(term in child_lower for term in ['metacarpal', 'carpal']) and 'thumb' not in child_lower:
+                    bones_to_highlight.append(child_bone.name)
+
+        # Cache key includes all bones we're highlighting
+        cache_key = (mesh_obj.name, tuple(sorted(bones_to_highlight)))
+
+        # Check cache - only compute weighted verts/polygons once per bone combination
         if cache_key not in self._highlight_cache or self._last_highlighted_bone != bone_name:
-            vgroup = mesh_obj.vertex_groups[bone_name]
             mesh = mesh_obj.data
-
-            # Collect vertices where THIS bone has the HIGHEST weight (DAZ-style clean sections)
-            # This prevents bleed into neighboring areas
             weighted_verts = set()
-            for vert in mesh.vertices:
-                if not vert.groups:
+
+            # Collect vertices from ALL bones in the group
+            for bone_to_check in bones_to_highlight:
+                if bone_to_check not in mesh_obj.vertex_groups:
                     continue
 
-                # Find the group with maximum weight for this vertex
-                max_weight = 0.0
-                max_group_idx = None
-                for group in vert.groups:
-                    if group.weight > max_weight:
-                        max_weight = group.weight
-                        max_group_idx = group.group
+                vgroup = mesh_obj.vertex_groups[bone_to_check]
 
-                # Only include vertex if THIS bone has the max weight
-                if max_group_idx == vgroup.index and max_weight > 0.01:  # Small threshold to exclude zero weights
-                    weighted_verts.add(vert.index)
+                # Collect vertices where THIS bone has the HIGHEST weight
+                for vert in mesh.vertices:
+                    if not vert.groups:
+                        continue
+
+                    # Find the group with maximum weight for this vertex
+                    max_weight = 0.0
+                    max_group_idx = None
+                    for group in vert.groups:
+                        if group.weight > max_weight:
+                            max_weight = group.weight
+                            max_group_idx = group.group
+
+                    # Include vertex if THIS bone has the max weight
+                    if max_group_idx == vgroup.index and max_weight > 0.01:
+                        weighted_verts.add(vert.index)
 
             if not weighted_verts:
                 self._highlight_cache[cache_key] = []
@@ -2256,10 +3422,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         gpu.state.depth_mask_set(False)  # Don't write to depth buffer (overlay on top cleanly)
         gpu.state.face_culling_set('BACK')  # Only draw front faces (prevents double-draw artifacts)
 
-        # Draw with bright amber highlight (more visible than previous yellow-orange)
+        # Draw with bright amber highlight
         shader.bind()
         shader.uniform_float("color", (1.0, 0.6, 0.1, 0.4))  # Bright amber with moderate transparency
-
         batch.draw(shader)
 
         # Reset state
@@ -2267,6 +3432,83 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         gpu.state.depth_mask_set(True)
         gpu.state.face_culling_set('NONE')
         gpu.state.depth_test_set('LESS_EQUAL')
+
+    def draw_pin_spheres_callback(self):
+        """
+        Persistent draw callback for pin spheres.
+        This runs independently from hover/highlight and always shows pinned bones.
+        """
+        try:
+            # Find all armatures in the scene
+            for obj in bpy.context.scene.objects:
+                if obj.type == 'ARMATURE':
+                    self.draw_pin_spheres(obj)
+        except (ReferenceError, AttributeError):
+            # Operator was removed, callback will be cleaned up
+            pass
+
+    def draw_pin_spheres(self, armature):
+        """Draw purple spheres at pinned bone locations (DAZ-style visual indicator)"""
+        if not armature or armature.type != 'ARMATURE':
+            return
+
+        import math
+        from mathutils import Matrix, Vector
+
+        # Find all pinned bones in the armature
+        pinned_bones = []
+        for bone in armature.data.bones:
+            if is_bone_pinned_translation(bone) or is_bone_pinned_rotation(bone):
+                pose_bone = armature.pose.bones.get(bone.name)
+                if pose_bone:
+                    # Get bone head position in world space
+                    world_matrix = armature.matrix_world @ pose_bone.matrix
+                    world_pos = world_matrix.to_translation()
+
+                    # Offset sphere outside mesh (along bone's -X axis to avoid body interior)
+                    bone_x_axis = world_matrix.to_3x3() @ Vector((-1, 0, 0))  # Bone's -X axis
+                    offset_distance = 0.0375  # Move 3.75cm along -X axis (25% closer)
+                    world_pos_offset = world_pos + (bone_x_axis.normalized() * offset_distance)
+
+                    pinned_bones.append((bone.name, world_pos_offset))
+
+        if not pinned_bones:
+            return
+
+        # Create sphere vertices (icosphere approximation)
+        # Using 20 vertices for a simple sphere
+        sphere_verts = []
+        segments = 8
+        rings = 4
+        radius = 0.0075  # Sphere size in world units (1/4 of original)
+
+        for ring in range(rings + 1):
+            theta = math.pi * ring / rings
+            for seg in range(segments):
+                phi = 2 * math.pi * seg / segments
+                x = radius * math.sin(theta) * math.cos(phi)
+                y = radius * math.sin(theta) * math.sin(phi)
+                z = radius * math.cos(theta)
+                sphere_verts.append((x, y, z))
+
+        # Draw a sphere at each pinned bone location
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+
+        for bone_name, world_pos in pinned_bones:
+            # Transform sphere vertices to world position
+            transformed_verts = []
+            for vert in sphere_verts:
+                transformed = Vector(vert) + world_pos
+                transformed_verts.append(transformed)
+
+            # Create batch for this sphere
+            batch = batch_for_shader(shader, 'POINTS', {"pos": transformed_verts})
+
+            # Draw purple sphere
+            shader.bind()
+            shader.uniform_float("color", (0.7, 0.3, 1.0, 1.0))  # Purple/magenta, fully opaque
+            gpu.state.point_size_set(8.0)  # Larger point size for visibility
+            batch.draw(shader)
 
 
 def register():
@@ -2307,6 +3549,221 @@ def unregister():
             for kmi in km.keymap_items:
                 if kmi.idname == VIEW3D_OT_daz_bone_select.bl_idname:
                     km.keymap_items.remove(kmi)
+
+
+# ============================================================================
+# FABRIK IK SOLVER - Analytical Limb IK for Pins
+# ============================================================================
+
+def fabrik_solve(bone_positions, bone_lengths, target_pos, root_pos, max_iterations=10, tolerance=0.001):
+    """
+    FABRIK (Forward And Backward Reaching Inverse Kinematics) solver
+
+    Args:
+        bone_positions: List of Vector positions [root, joint1, joint2, ..., tip]
+        bone_lengths: List of bone lengths [len0, len1, ..., len_n-1]
+        target_pos: Target position for the tip (pinned position)
+        root_pos: Fixed root position (collar)
+        max_iterations: Maximum iterations
+        tolerance: Distance tolerance for convergence
+
+    Returns:
+        List of solved bone positions
+    """
+    positions = [p.copy() for p in bone_positions]
+    n = len(positions)
+
+    # Check if target is reachable
+    total_length = sum(bone_lengths)
+    dist_to_target = (target_pos - root_pos).length
+
+    if dist_to_target > total_length:
+        # Target unreachable - stretch toward it
+        direction = (target_pos - root_pos).normalized()
+        positions[0] = root_pos
+        for i in range(len(bone_lengths)):
+            positions[i + 1] = positions[i] + direction * bone_lengths[i]
+        return positions
+
+    # FABRIK iterations
+    for iteration in range(max_iterations):
+        # Check convergence
+        if (positions[-1] - target_pos).length < tolerance:
+            break
+
+        # Forward pass (tip to root)
+        positions[-1] = target_pos  # Tip locked at target
+        for i in range(n - 2, -1, -1):
+            # Direction from child to parent
+            direction = (positions[i] - positions[i + 1]).normalized()
+            # Place parent at correct distance from child
+            positions[i] = positions[i + 1] + direction * bone_lengths[i]
+
+        # Backward pass (root to tip)
+        positions[0] = root_pos  # Root locked at origin
+        for i in range(n - 1):
+            # Direction from parent to child
+            direction = (positions[i + 1] - positions[i]).normalized()
+            # Place child at correct distance from parent
+            positions[i + 1] = positions[i] + direction * bone_lengths[i]
+
+    return positions
+
+
+def extract_rotation_from_positions(armature, bone_name, current_pos, next_pos, parent_matrix=None):
+    """
+    Extract quaternion rotation for a bone based on FABRIK positions
+
+    SIMPLIFIED APPROACH:
+    1. Compute target direction in world space (from FABRIK)
+    2. Get bone's current direction in world space (including parent transforms)
+    3. Compute rotation difference in world space
+    4. Convert to local space
+
+    Args:
+        armature: Armature object
+        bone_name: Name of the bone
+        current_pos: World position of bone head (from FABRIK)
+        next_pos: World position of bone tail/child head (from FABRIK)
+        parent_matrix: Parent bone's world matrix (NOT USED - we compute it fresh)
+
+    Returns:
+        Quaternion rotation in bone's local space
+    """
+    pose_bone = armature.pose.bones[bone_name]
+    edit_bone = armature.data.bones[bone_name]
+
+    # Target direction in world space (where FABRIK wants the bone to point)
+    target_direction_world = (next_pos - current_pos).normalized()
+
+    # Get bone's CURRENT world matrix (not rest!)
+    bone_world_matrix = armature.matrix_world @ pose_bone.matrix
+
+    # Get bone's CURRENT Y-axis direction in world space
+    # Bones point along +Y in Blender
+    bone_current_y_world = bone_world_matrix.to_3x3() @ Vector((0, 1, 0))
+    bone_current_y_world.normalize()
+
+    # Compute rotation from CURRENT direction to TARGET direction in world space
+    rotation_world = bone_current_y_world.rotation_difference(target_direction_world)
+
+    # Convert world-space rotation to bone's local space
+    # We need to account for the parent's world rotation
+    if pose_bone.parent:
+        parent_world_matrix = armature.matrix_world @ pose_bone.parent.matrix
+        parent_world_rot = parent_world_matrix.to_3x3().to_quaternion()
+    else:
+        parent_world_rot = armature.matrix_world.to_3x3().to_quaternion()
+
+    # Current bone rotation in local space
+    bone_current_local = pose_bone.rotation_quaternion.copy()
+
+    # New rotation = current_local * rotation_world (in local space)
+    # But rotation_world is in world space, so convert it:
+    rotation_local_delta = parent_world_rot.inverted() @ rotation_world @ parent_world_rot
+
+    # Apply delta to current rotation
+    rotation_local_new = rotation_local_delta @ bone_current_local
+
+    return rotation_local_new
+
+
+def apply_fabrik_to_limb(armature, bone_chain, pinned_bone_name, dragged_bone_name, mouse_target_pos):
+    """
+    Apply FABRIK IK to a limb where tip is pinned and user is dragging a middle bone
+
+    Args:
+        armature: Armature object
+        bone_chain: List of bone names from root to tip (e.g., ['lCollar', 'lShldrBend', 'lForearmBend', 'lHand'])
+        pinned_bone_name: Name of pinned bone (tip of chain)
+        dragged_bone_name: Name of bone being dragged
+        mouse_target_pos: World position of mouse target
+
+    Returns:
+        dict: {'success': bool, 'rotations': {bone_name: quaternion}}
+    """
+    print(f"\n=== FABRIK Solve: Pinned={pinned_bone_name}, Dragged={dragged_bone_name} ===")
+
+    # Get current bone positions
+    bone_positions = []
+    bone_lengths = []
+
+    for bone_name in bone_chain:
+        pose_bone = armature.pose.bones[bone_name]
+        bone_world_matrix = armature.matrix_world @ pose_bone.matrix
+        bone_head_world = bone_world_matrix.translation
+        bone_positions.append(bone_head_world.copy())
+
+        # Get bone length
+        edit_bone = armature.data.bones[bone_name]
+        bone_length = edit_bone.length
+        bone_lengths.append(bone_length)
+
+    # Add tip position (hand position)
+    tip_bone = armature.pose.bones[bone_chain[-1]]
+    tip_world_matrix = armature.matrix_world @ tip_bone.matrix
+    tip_tail_world = tip_world_matrix @ Vector((0, tip_bone.length, 0))
+    bone_positions.append(tip_tail_world.copy())
+
+    print(f"  Chain: {' → '.join(bone_chain)}")
+    print(f"  Bone lengths: {[round(l, 3) for l in bone_lengths]}")
+    print(f"  Root pos: {bone_positions[0]}")
+    print(f"  Tip pos (current): {bone_positions[-1]}")
+
+    # Get pinned target position
+    pin_empty_name = f"PIN_translation_{armature.name}_{pinned_bone_name}"
+    pin_empty = bpy.data.objects.get(pin_empty_name)
+
+    if not pin_empty:
+        print(f"  ✗ Pin Empty not found: {pin_empty_name}")
+        return {'success': False}
+
+    target_pos = pin_empty.matrix_world.translation.copy()
+    print(f"  Target pos (pinned): {target_pos}")
+
+    # Root position (collar)
+    root_pos = bone_positions[0].copy()
+
+    # Run FABRIK solver
+    solved_positions = fabrik_solve(
+        bone_positions=bone_positions,
+        bone_lengths=bone_lengths,
+        target_pos=target_pos,
+        root_pos=root_pos,
+        max_iterations=10,
+        tolerance=0.001
+    )
+
+    print(f"  Solved tip pos: {solved_positions[-1]}")
+    print(f"  Error: {(solved_positions[-1] - target_pos).length:.6f}")
+
+    # Extract rotations from solved positions
+    rotations = {}
+
+    for i, bone_name in enumerate(bone_chain):
+        current_pos = solved_positions[i]
+        next_pos = solved_positions[i + 1]
+
+        # Get parent matrix for local space conversion
+        pose_bone = armature.pose.bones[bone_name]
+        if pose_bone.parent:
+            parent_world_matrix = armature.matrix_world @ pose_bone.parent.matrix
+        else:
+            parent_world_matrix = armature.matrix_world
+
+        # Extract rotation
+        rotation = extract_rotation_from_positions(
+            armature=armature,
+            bone_name=bone_name,
+            current_pos=current_pos,
+            next_pos=next_pos,
+            parent_matrix=parent_world_matrix
+        )
+
+        rotations[bone_name] = rotation
+        print(f"  {bone_name}: rotation = {rotation}")
+
+    return {'success': True, 'rotations': rotations}
 
 
 # ============================================================================
