@@ -1587,6 +1587,80 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     self._mouse_down_pos = None
                     return {'PASS_THROUGH'}
 
+            # DOUBLE-CLICK DETECTION: Switch to object mode and select armature (DAZ-style)
+            import time
+            current_time = time.time()
+            current_pos = (event.mouse_region_x, event.mouse_region_y)
+
+            is_double_click = False
+            if self._last_click_time > 0:
+                time_delta = current_time - self._last_click_time
+                if time_delta < 0.3 and self._last_click_pos:  # Within 300ms
+                    # Check if clicks are close in position (within 5 pixels)
+                    pos_delta = ((current_pos[0] - self._last_click_pos[0])**2 +
+                                (current_pos[1] - self._last_click_pos[1])**2)**0.5
+                    if pos_delta < 5:
+                        is_double_click = True
+
+            # Update click tracking
+            self._last_click_time = current_time
+            self._last_click_pos = current_pos
+
+            # Handle double-click: select armature in object mode
+            if is_double_click and not self._is_dragging:
+                print("\n=== Double-click detected: Selecting armature ===")
+
+                # Clean up any active IK chains first
+                if hasattr(self, '_ik_target_bone_name') and self._ik_target_bone_name:
+                    print("  Cleaning up active IK chain before armature selection...")
+                    self.end_ik_drag(context, cancel=True)
+
+                # Find armature from hovered mesh
+                armature_to_select = None
+                if self._hover_mesh:
+                    # _hover_mesh is already a mesh object, not a name
+                    mesh_obj = self._hover_mesh
+                    if mesh_obj:
+                        # Find armature modifier or parent
+                        for mod in mesh_obj.modifiers:
+                            if mod.type == 'ARMATURE' and mod.object:
+                                armature_to_select = mod.object
+                                break
+                        if not armature_to_select and mesh_obj.parent and mesh_obj.parent.type == 'ARMATURE':
+                            armature_to_select = mesh_obj.parent
+
+                if armature_to_select:
+                    # Switch to object mode
+                    if context.mode != 'OBJECT':
+                        bpy.ops.object.mode_set(mode='OBJECT')
+
+                    # Deselect all
+                    bpy.ops.object.select_all(action='DESELECT')
+
+                    # Select the armature
+                    armature_to_select.select_set(True)
+                    context.view_layer.objects.active = armature_to_select
+
+                    print(f"  ✓ Selected armature in object mode: {armature_to_select.name}")
+                    self._just_selected_armature = True
+
+                    # Consume the event
+                    return {'RUNNING_MODAL'}
+                else:
+                    print("  ⚠️ No armature found for double-click selection")
+
+                # Reset double-click tracking to avoid triple-click issues
+                self._last_click_time = 0
+                self._last_click_pos = None
+
+            # If we just selected armature (previous double-click), return to pose mode
+            if self._just_selected_armature and not is_double_click:
+                print("  Returning to pose mode after armature selection")
+                if context.mode != 'POSE':
+                    bpy.ops.object.mode_set(mode='POSE')
+                self._just_selected_armature = False
+                # Continue with normal click handling below...
+
             # Only handle click if we're hovering over a bone (otherwise pass through for gizmos)
             if not self._hover_bone_name or not self._hover_armature:
                 self._mouse_down_pos = None
@@ -1775,6 +1849,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._soft_pin_initial_pos = None
         self._soft_pin_stiffness = 0.8  # 0.0=no resistance, 1.0=maximum resistance
         self._soft_pin_muted_constraints = []  # Track muted constraints for cleanup
+
+        # Double-click detection for armature selection (DAZ-style)
+        self._last_click_time = 0.0
+        self._last_click_pos = None
+        self._just_selected_armature = False  # Track if we just switched to object mode
 
         # Initialize rotation state (for pectoral bones)
         self._is_rotating = False
