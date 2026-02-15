@@ -9,6 +9,15 @@ from mathutils import Vector, Euler, Quaternion, Matrix
 from mathutils.bvhtree import BVHTree
 import gpu
 from gpu_extras.batch import batch_for_shader
+import sys
+import os
+
+# Import shared utilities from daz_shared_utils
+from daz_shared_utils import (
+    get_bend_axis,
+    get_twist_axis,
+    apply_rotation_from_delta
+)
 
 
 bl_info = {
@@ -21,6 +30,205 @@ bl_info = {
 
 # DEBUG MODE: Set to True to preserve IK chain for inspection
 DEBUG_PRESERVE_IK_CHAIN = False  # Set to True to keep IK chain for inspection
+
+
+# ============================================================================
+# IK RIG TEMPLATES - Pre-defined optimal IK setups for each bone type
+# ============================================================================
+# Instead of calculating everything dynamically, we use tested templates
+# for consistent, predictable behavior across all Genesis 8 DAZ rigs
+
+IK_RIG_TEMPLATES = {
+    'hand': {
+        'description': 'Full arm IK chain for hand dragging',
+        'chain_length': 4,  # collar → shoulder → forearm → hand
+        'stiffness': {
+            'collar': 0.75,     # Stable but allows some movement
+            'shldr': 0.1,       # Very flexible for natural arm movement
+            'shoulder': 0.1,    # Alias for shldr
+            'forearm': 0.0,     # Bends freely (main bend point)
+            'lorearm': 0.0,     # Alias for forearm
+            'hand': 0.0         # End effector, no resistance
+        },
+        'pole_target': {
+            'enabled': True,
+            'reference_bone': 'forearm',  # Place pole relative to elbow
+            'method': 'perpendicular_to_line',  # Project elbow perpendicular to shoulder-hand
+            'distance_multiplier': 2.0   # Extend 2x the elbow offset for stability
+        },
+        'constraints': {
+            'collar': 'damped_track'  # Track shoulder naturally
+        },
+        'prebend': None  # Arms don't need prebend
+    },
+
+    'forearm': {
+        'description': 'Forearm IK chain (shorter than hand)',
+        'chain_length': 3,  # collar → shoulder → forearm
+        'stiffness': {
+            'collar': 0.75,
+            'shldr': 0.1,
+            'shoulder': 0.1,
+            'forearm': 0.0,
+            'lorearm': 0.0
+        },
+        'pole_target': {
+            'enabled': True,
+            'reference_bone': 'forearm',
+            'method': 'perpendicular_to_line',
+            'distance_multiplier': 2.0
+        },
+        'constraints': {
+            'collar': 'damped_track'
+        },
+        'prebend': None
+    },
+
+    'foot': {
+        'description': 'Full leg IK chain for foot dragging',
+        'chain_length': 3,  # thigh → shin → foot
+        'stiffness': {
+            'thigh': 0.2,       # Some resistance for stability
+            'shin': 0.0,        # Bends freely (main bend point)
+            'calf': 0.0,        # Alias for shin
+            'foot': 0.0         # End effector
+        },
+        'pole_target': {
+            'enabled': True,
+            'reference_bone': 'shin',  # Place pole relative to knee
+            'method': 'perpendicular_to_line',
+            'distance_multiplier': 2.0
+        },
+        'constraints': {},
+        'prebend': {
+            'bone_pattern': 'shin',  # Apply to shin/calf
+            'axis': (1, 0, 0),       # X-axis (forward bend)
+            'angle': 0.5             # 0.5 radians (~29°)
+        }
+    },
+
+    'shin': {
+        'description': 'Shin IK chain (shorter than foot)',
+        'chain_length': 2,  # thigh → shin
+        'stiffness': {
+            'thigh': 0.2,
+            'shin': 0.0,
+            'calf': 0.0
+        },
+        'pole_target': {
+            'enabled': True,
+            'reference_bone': 'shin',
+            'method': 'perpendicular_to_line',
+            'distance_multiplier': 2.0
+        },
+        'constraints': {},
+        'prebend': {
+            'bone_pattern': 'shin',
+            'axis': (1, 0, 0),
+            'angle': 0.5
+        }
+    }
+}
+
+
+def get_ik_template(bone_name):
+    """
+    Identify which IK rig template to use based on bone name.
+    Returns template dict or None if no template found.
+    """
+    bone_lower = bone_name.lower()
+
+    # Match bone patterns to templates
+    if 'hand' in bone_lower:
+        return IK_RIG_TEMPLATES.get('hand')
+    elif 'forearm' in bone_lower or 'lorearm' in bone_lower:
+        return IK_RIG_TEMPLATES.get('forearm')
+    elif 'foot' in bone_lower:
+        return IK_RIG_TEMPLATES.get('foot')
+    elif 'shin' in bone_lower or 'calf' in bone_lower:
+        return IK_RIG_TEMPLATES.get('shin')
+
+    # Add more bone types as needed
+    return None
+
+
+def calculate_pole_position(template, posed_positions, daz_bones, clicked_bone_world_tail, armature):
+    """
+    Calculate pole target position based on template settings and current pose.
+
+    Args:
+        template: IK rig template dict
+        posed_positions: Dict of bone_name → {'head': Vector, 'tail': Vector} in world space
+        daz_bones: List of PoseBone objects in the IK chain
+        clicked_bone_world_tail: World position of clicked bone's tail (target position)
+        armature: Armature object
+
+    Returns:
+        (pole_world_head, pole_world_tail) tuple of world space Vectors, or None if disabled
+    """
+    pole_config = template.get('pole_target')
+    if not pole_config or not pole_config.get('enabled'):
+        return None
+
+    method = pole_config.get('method')
+    reference_pattern = pole_config.get('reference_bone', '').lower()
+    distance_mult = pole_config.get('distance_multiplier', 2.0)
+
+    # Find reference bone (e.g., forearm for elbow, shin for knee)
+    reference_bone = None
+    for bone in daz_bones:
+        if reference_pattern in bone.name.lower():
+            reference_bone = bone
+            break
+
+    if not reference_bone or reference_bone.name not in posed_positions:
+        print(f"  ⚠️  Pole reference bone not found: {reference_pattern}")
+        return None
+
+    if method == 'perpendicular_to_line':
+        # Get current reference bone position (e.g., elbow)
+        ref_world = posed_positions[reference_bone.name]['head']
+
+        # Find chain start (shoulder for arms, hip for legs)
+        chain_start_world = None
+        for bone in daz_bones:
+            bone_lower = bone.name.lower()
+            if 'shldr' in bone_lower or 'shoulder' in bone_lower or 'thigh' in bone_lower:
+                if bone.name in posed_positions:
+                    chain_start_world = posed_positions[bone.name]['head']
+                    break
+
+        if not chain_start_world:
+            print(f"  ⚠️  Chain start not found for pole calculation")
+            return None
+
+        # Calculate pole position perpendicular to start-target line
+        line_vec = clicked_bone_world_tail - chain_start_world
+        ref_vec = ref_world - chain_start_world
+
+        # Project reference onto line
+        line_dir = line_vec.normalized()
+        projection_length = ref_vec.dot(line_dir)
+        projection = chain_start_world + line_dir * projection_length
+
+        # Offset perpendicular to line
+        offset = ref_world - projection
+
+        # Extend offset for visibility and stability
+        pole_distance = max(offset.length * distance_mult, 0.2)  # Minimum 20cm
+        if offset.length > 0.001:
+            pole_offset_dir = offset.normalized()
+        else:
+            # Fallback: use world Z if arm is straight
+            pole_offset_dir = Vector((0, 0, 1))
+
+        pole_world_head = ref_world + pole_offset_dir * pole_distance
+        pole_world_tail = pole_world_head + pole_offset_dir * 0.05  # 5cm for visibility
+
+        print(f"  ✓ Calculated pole position: {pole_world_head} (method: {method}, offset: {pole_distance:.3f}m)")
+        return (pole_world_head, pole_world_tail)
+
+    return None
 
 
 # ============================================================================
@@ -261,13 +469,13 @@ def get_smart_chain_length(bone_name):
     """
     bone_lower = bone_name.lower()
 
-    # Hands - full chain for ragdoll pulling
-    # Hand → forearm → upper arm → collar → chest → spine → abdomen → hip
-    # IK stiffness will create natural falloff (parent bones resist more)
+    # Hands - stop at collar to preserve torso rotations
+    # Hand → forearm → upper arm → collar
+    # Excludes torso bones so manual torso rotations aren't affected by arm IK
     if 'hand' in bone_lower:
         # Exclude finger bones
         if not any(finger in bone_lower for finger in ['thumb', 'index', 'mid', 'ring', 'pinky', 'carpal']):
-            return 9  # Extended chain including hip for stability
+            return 4  # Stop at collar (excludes chest/abdomen/spine)
 
     # Feet - medium chain (foot → shin → thigh → pelvis)
     # Includes pelvis for more freedom, excludes hip to prevent whole-body spinning
@@ -276,9 +484,9 @@ def get_smart_chain_length(bone_name):
         if not any(toe in bone_lower for toe in ['toe', 'metatarsal']):
             return 4  # Medium chain: pelvis is root (prevents hip movement, allows leg freedom)
 
-    # Forearms - full arm chain including collar + torso (for pinned hand dragging)
+    # Forearms - stop at collar to preserve torso rotations
     if any(part in bone_lower for part in ['forearm', 'lorearm']):
-        return 7  # Forearm + upper arm + collar + chest + abdomen + spine for torso bending
+        return 3  # Forearm + upper arm + collar (excludes torso)
 
     # Shins - medium chain to thigh
     if any(part in bone_lower for part in ['shin', 'calf']):
@@ -296,8 +504,12 @@ def get_smart_chain_length(bone_name):
     if any(toe in bone_lower for toe in ['toe', 'metatarsal']):
         return 2
 
+    # Chest - longer chain to reach lower back
+    if 'chest' in bone_lower:
+        return 4
+
     # Spine/torso - medium chain
-    if any(part in bone_lower for part in ['abdomen', 'chest', 'spine', 'pelvis']):
+    if any(part in bone_lower for part in ['abdomen', 'spine', 'pelvis']):
         return 3
 
     # Neck - short chain
@@ -340,11 +552,20 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
     clicked_bone = armature.pose.bones[bone_name]
 
-    # Determine chain length
-    if chain_length is None:
-        chain_length = get_smart_chain_length(bone_name)
-
-    print(f"Creating IK chain for: {bone_name}")
+    # ==================================================================
+    # STEP 0: Look up IK rig template for this bone type
+    # ==================================================================
+    ik_template = get_ik_template(bone_name)
+    if ik_template:
+        print(f"Creating IK chain for: {bone_name} (using template: {ik_template['description']})")
+        # Use template chain length
+        if chain_length is None:
+            chain_length = ik_template['chain_length']
+    else:
+        print(f"Creating IK chain for: {bone_name} (no template - using fallback)")
+        # Fallback to old logic if no template
+        if chain_length is None:
+            chain_length = get_smart_chain_length(bone_name)
 
     # ==================================================================
     # STEP 0.5: Clean up any existing temp IK chain (from previous drag in debug mode)
@@ -363,26 +584,43 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
         if existing_target:
             print(f"  [DEBUG] Found existing IK chain, dissolving: {existing_target}")
-            # Find the associated .ik bones and constraint info
-            # We need to call dissolve_ik_chain with the old chain info
-            # For now, just remove the temp constraints manually
+
+            # CRITICAL: Cache rotations BEFORE cleanup (preserve pose from first drag)
+            cleanup_rotation_cache = {}
             for pose_bone in armature.pose.bones:
-                # Remove temp constraints from previous drag
+                if pose_bone.rotation_mode == 'QUATERNION':
+                    cleanup_rotation_cache[pose_bone.name] = pose_bone.rotation_quaternion.copy()
+                else:
+                    cleanup_rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
+
+            # Remove temp constraints from previous drag
+            for pose_bone in armature.pose.bones:
                 constraints_to_remove = [c for c in pose_bone.constraints
-                                        if 'IK_Temp' in c.name or 'IK_CopyRot_Temp' in c.name or 'IK_Pin_Temp' in c.name]
+                                        if 'IK_Temp' in c.name or 'IK_CopyRot_Temp' in c.name or
+                                           'IK_Pin_Temp' in c.name or 'Shoulder_Track_Temp' in c.name]
                 for constraint in constraints_to_remove:
                     pose_bone.constraints.remove(constraint)
 
             # Switch to edit mode to delete old .ik bones
             bpy.ops.object.mode_set(mode='EDIT')
             edit_bones = armature.data.edit_bones
-            bones_to_remove = [b.name for b in edit_bones if '.ik' in b.name]
+            bones_to_remove = [b.name for b in edit_bones if '.ik' in b.name or '.shoulder.target' in b.name]
             for bone_name_to_remove in bones_to_remove:
                 if bone_name_to_remove in edit_bones:
                     edit_bones.remove(edit_bones[bone_name_to_remove])
             bpy.ops.object.mode_set(mode='POSE')
+
+            # CRITICAL: Restore rotations after cleanup (preserve pose from first drag)
+            for bone_name_cache, rotation in cleanup_rotation_cache.items():
+                pose_bone = armature.pose.bones.get(bone_name_cache)
+                if pose_bone:
+                    if pose_bone.rotation_mode == 'QUATERNION':
+                        pose_bone.rotation_quaternion = rotation
+                    else:
+                        pose_bone.rotation_euler = rotation
+
             bpy.context.view_layer.update()
-            print(f"  [DEBUG] Cleaned up {len(bones_to_remove)} old .ik bones and constraints")
+            print(f"  [DEBUG] Cleaned up {len(bones_to_remove)} old .ik bones, restored rotations")
 
     # ==================================================================
     # STEP 1: Collect non-twist, non-pectoral bones for the chain
@@ -471,10 +709,11 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
     if pinned_child:
         daz_bones.append(pinned_child)
-        # Capture pinned child's CURRENT world position for soft pin mode target
-        # This prevents snap by starting IK target at the pin location
-        pinned_child_world_head = armature.matrix_world @ pinned_child.head
-        pinned_child_world_tail = armature.matrix_world @ pinned_child.tail
+        # Capture pinned child's CURRENT POSED world position for soft pin mode target
+        # PoseBone.head/tail already give posed positions in armature space
+        pinned_child_eval = armature_eval.pose.bones[pinned_child.name]
+        pinned_child_world_head = armature.matrix_world @ Vector(pinned_child_eval.head)
+        pinned_child_world_tail = armature.matrix_world @ Vector(pinned_child_eval.tail)
         print(f"  ✓ Extended chain to include pinned descendant: {pinned_child.name}")
 
     daz_bone_names = [b.name for b in daz_bones]
@@ -489,9 +728,45 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # ==================================================================
     # STEP 1.5: Capture current world position of clicked bone BEFORE entering EDIT mode
     # ==================================================================
-    # CRITICAL: Get the CURRENT posed position, not rest position
-    clicked_bone_world_head = armature.matrix_world @ clicked_bone.head
-    clicked_bone_world_tail = armature.matrix_world @ clicked_bone.tail
+    # CRITICAL: Force fresh evaluation AFTER cleanup to ensure restored rotations are included
+    bpy.context.view_layer.update()
+    # CRITICAL: Get the CURRENT posed position from EVALUATED bone (includes all constraints/keyframes)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    armature_eval = armature.evaluated_get(depsgraph)
+    clicked_bone_eval = armature_eval.pose.bones[bone_name]
+
+    # PoseBone.head/tail already give posed positions in armature space - just transform to world
+    clicked_bone_world_head = armature.matrix_world @ Vector(clicked_bone_eval.head)
+    clicked_bone_world_tail = armature.matrix_world @ Vector(clicked_bone_eval.tail)
+    print(f"  DEBUG: Captured {bone_name} EVALUATED world tail: {clicked_bone_world_tail}")
+
+    # ==================================================================
+    # STEP 1.6: Cache ALL bone rotations BEFORE mode switch
+    # ==================================================================
+    # Mode switching (POSE → EDIT → POSE) discards un-keyframed rotations
+    # Cache them now so we can restore after returning to POSE mode
+    rotation_cache = {}
+    for pose_bone in armature.pose.bones:
+        if pose_bone.rotation_mode == 'QUATERNION':
+            rotation_cache[pose_bone.name] = pose_bone.rotation_quaternion.copy()
+        else:
+            rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
+    print(f"  Cached rotations for {len(rotation_cache)} bones before mode switch")
+
+    # ==================================================================
+    # STEP 1.7: Capture POSED world positions for all bones in chain
+    # ==================================================================
+    # CRITICAL: We need .ik bones to start at POSED positions, not REST positions
+    # Edit mode shows bones at REST, so we capture POSED positions here and use them later
+    posed_positions = {}
+    for daz_pose_bone in daz_bones:
+        bone_eval = armature_eval.pose.bones[daz_pose_bone.name]
+        posed_positions[daz_pose_bone.name] = {
+            'head': armature.matrix_world @ Vector(bone_eval.head),
+            'tail': armature.matrix_world @ Vector(bone_eval.tail)
+            # Note: roll will be copied from edit bone (doesn't change with pose)
+        }
+    print(f"  Captured POSED positions for {len(posed_positions)} bones in chain")
 
     # ==================================================================
     # STEP 2: Switch to EDIT mode and create all bones
@@ -501,6 +776,7 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
     ik_control_names = []
     prev_ik_edit = None
+    armature_inv = armature.matrix_world.inverted()
 
     # Create IK control bones with proper parent hierarchy
     for i, daz_pose_bone in enumerate(daz_bones):
@@ -510,19 +786,22 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
         ik_name = f"{daz_pose_bone.name}.ik"
         ik_edit = edit_bones.new(ik_name)
 
-        # Copy transform from DAZ bone
-        ik_edit.head = daz_edit.head.copy()
-        ik_edit.tail = daz_edit.tail.copy()
-        ik_edit.roll = daz_edit.roll
+        # CRITICAL: Set to POSED positions (captured before mode switch)
+        # This ensures .ik bones start where DAZ bones actually are, not at REST positions
+        posed = posed_positions[daz_pose_bone.name]
+        ik_edit.head = armature_inv @ posed['head']
+        ik_edit.tail = armature_inv @ posed['tail']
+        ik_edit.roll = daz_edit.roll  # Roll from edit bone (doesn't change with pose)
         ik_edit.use_deform = False  # Don't deform mesh
 
         # CRITICAL: Set parent to previous IK bone (creates chain)
         if prev_ik_edit:
             ik_edit.parent = prev_ik_edit
-            # CRITICAL: Connect bones by adjusting previous bone's tail to this bone's head
-            # This fixes disconnected bone issues (e.g., DAZ chest bones)
-            prev_ik_edit.tail = ik_edit.head.copy()
-            print(f"  Connected {prev_ik_edit.name} → {ik_name}")
+            # NOTE: DO NOT force-connect bones - preserve DAZ bone offsets
+            # Force-connecting creates a straight chain, but DAZ spine bones have offsets.
+            # When Copy Rotation activates, DAZ bones snap/arch trying to match the straight chain.
+            # prev_ik_edit.tail = ik_edit.head.copy()  # ← DISABLED
+            print(f"  Parented {prev_ik_edit.name} → {ik_name} (preserving offset)")
         else:
             # Root bone - parent to DAZ parent (or None)
             if daz_edit.parent:
@@ -546,15 +825,24 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # Convert world positions back to armature local space
     armature_inv = armature.matrix_world.inverted()
 
-    # In soft pin mode, position target at PINNED CHILD (hand) to prevent snap
-    # Otherwise, position at clicked bone (normal drag behavior)
+    # In soft pin mode, position target at PINNED CHILD's TIP (tail) to prevent snap
+    # Otherwise, position at clicked bone's TIP (tail) to prevent spine arching
     if soft_pin_mode and pinned_child_world_head is not None:
-        target_edit.head = armature_inv @ pinned_child_world_head
-        target_edit.tail = armature_inv @ pinned_child_world_tail
-        print(f"  Positioned IK target at pinned child for zero-snap initialization")
+        # CRITICAL: Position target at TAIL of pinned child, not spanning the whole bone
+        # This prevents the IK from pulling toward the hand's base instead of its tip
+        target_edit.head = armature_inv @ pinned_child_world_tail  # At tip
+        target_offset = Vector((0, 0, 0.1))  # 10cm upward offset
+        target_edit.tail = armature_inv @ (pinned_child_world_tail + target_offset)
+        print(f"  Positioned IK target at pinned child tip for zero-snap initialization")
     else:
-        target_edit.head = armature_inv @ clicked_bone_world_head
-        target_edit.tail = armature_inv @ clicked_bone_world_tail
+        # CRITICAL: Position target at TAIL of clicked bone, not spanning the whole bone
+        # This prevents the IK from pulling the spine to meet the bone's head position
+        target_local = armature_inv @ clicked_bone_world_tail
+        target_edit.head = target_local  # At tip
+        print(f"  DEBUG: Target local pos: {target_local}, from world: {clicked_bone_world_tail}")
+        # Create a small bone extending upward (for visibility and manipulation)
+        target_offset = Vector((0, 0, 0.1))  # 10cm upward offset
+        target_edit.tail = armature_inv @ (clicked_bone_world_tail + target_offset)
 
     # Copy roll from rest position (roll doesn't change with posing)
     clicked_edit = edit_bones[bone_name]
@@ -563,25 +851,48 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     target_edit.parent = None  # CRITICAL: No parent for free movement
     target_edit.use_deform = False
 
-    # Create POLE TARGET bone for soft pin mode (lever/fulcrum)
-    # This controls the elbow direction when hand is pinned
+    # ==================================================================
+    # Create POLE TARGET bone using template settings
+    # ==================================================================
     pole_target_name = None
 
-    # Detect if this is a leg chain (for other logic, but NOT for pole target)
+    # Detect if this is a leg chain (for pre-bend logic)
     is_leg_chain = any(any(part in bone_name.lower() for part in ['shin', 'thigh', 'foot', 'leg'])
                        for bone_name in daz_bone_names)
 
-    if soft_pin_mode:
+    # Check if template specifies pole target
+    if ik_template and ik_template.get('pole_target', {}).get('enabled'):
+        # Calculate pole position using template method
+        pole_positions = calculate_pole_position(
+            ik_template,
+            posed_positions,
+            daz_bones,
+            clicked_bone_world_tail,
+            armature
+        )
+
+        if pole_positions:
+            pole_world_head, pole_world_tail = pole_positions
+            pole_target_name = target_name + ".pole"
+            pole_target_edit = edit_bones.new(pole_target_name)
+
+            # Set pole position (already calculated in world space)
+            pole_target_edit.head = armature_inv @ pole_world_head
+            pole_target_edit.tail = armature_inv @ pole_world_tail
+            pole_target_edit.roll = clicked_edit.roll
+            pole_target_edit.parent = None
+            pole_target_edit.use_deform = False
+            print(f"  ✓ Created pole target: {pole_target_name} (template-based)")
+    elif soft_pin_mode:
+        # Fallback: soft pin mode (lever/fulcrum) - position at clicked bone
         pole_target_name = target_name + ".pole"
         pole_target_edit = edit_bones.new(pole_target_name)
-
-        # ARM soft pin: Position at the ELBOW (clicked bone) for proper pole control
         pole_target_edit.head = armature_inv @ clicked_bone_world_head
         pole_target_edit.tail = armature_inv @ clicked_bone_world_tail
         pole_target_edit.roll = clicked_edit.roll
         pole_target_edit.parent = None
         pole_target_edit.use_deform = False
-        print(f"  Created pole target bone: {pole_target_name} at elbow position")
+        print(f"  ✓ Created pole target: {pole_target_name} (soft pin mode)")
 
     # Create shoulder target bones for collar guidance (prevents collar snapping)
     shoulder_target_names = []
@@ -590,13 +901,28 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
             shoulder_target_name = f"{collar_name}.shoulder.target"
             shoulder_target_edit = edit_bones.new(shoulder_target_name)
 
-            # Position at collar's current world position
-            collar_pose = daz_bones[daz_bone_names.index(collar_name)]
-            collar_world_head = armature.matrix_world @ collar_pose.head
-            collar_world_tail = armature.matrix_world @ collar_pose.tail
+            # Position at SHOULDER bone (next bone in chain), not collar's tail
+            # DAZ order: Collar → Shoulder → Twist → Forearm (twist bones come AFTER joints)
+            # Shoulder target should point at the shoulder joint, not collar's tail
+            collar_idx = daz_bone_names.index(collar_name)
 
-            shoulder_target_edit.head = armature_inv @ collar_world_head
-            shoulder_target_edit.tail = armature_inv @ collar_world_tail
+            # Find the next bone in chain after collar (should be shoulder)
+            if collar_idx + 1 < len(daz_bones):
+                shoulder_bone_name = daz_bones[collar_idx + 1].name
+                # Use POSED position from our captured positions ✅
+                shoulder_world_head = posed_positions[shoulder_bone_name]['head']
+
+                shoulder_target_edit.head = armature_inv @ shoulder_world_head  # At shoulder joint
+                # Create small bone extending outward for visibility
+                target_offset = Vector((0.05, 0, 0))  # 5cm outward offset
+                shoulder_target_edit.tail = armature_inv @ (shoulder_world_head + target_offset)
+            else:
+                # Fallback: use collar tail if no next bone (shouldn't happen)
+                # Use POSED position from our captured positions ✅
+                collar_world_tail = posed_positions[collar_name]['tail']
+                shoulder_target_edit.head = armature_inv @ collar_world_tail
+                target_offset = Vector((0.05, 0, 0))
+                shoulder_target_edit.tail = armature_inv @ (collar_world_tail + target_offset)
             shoulder_target_edit.roll = edit_bones[collar_name].roll
             shoulder_target_edit.parent = None  # Free to move
             shoulder_target_edit.use_deform = False
@@ -608,6 +934,22 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # STEP 3: Switch to POSE mode and copy initial pose
     # ==================================================================
     bpy.ops.object.mode_set(mode='POSE')
+
+    # ==================================================================
+    # STEP 3.1: RESTORE all cached bone rotations after mode switch
+    # ==================================================================
+    # Mode switch discarded un-keyframed rotations - restore them now
+    rotations_restored = 0
+    for bone_name_cache, rotation in rotation_cache.items():
+        pose_bone = armature.pose.bones.get(bone_name_cache)
+        if pose_bone:
+            if pose_bone.rotation_mode == 'QUATERNION':
+                pose_bone.rotation_quaternion = rotation
+            else:
+                pose_bone.rotation_euler = rotation
+            rotations_restored += 1
+    if rotations_restored > 0:
+        print(f"  ✓ Restored {rotations_restored} bone rotations after mode switch")
 
     # CRITICAL: Update after mode switch to ensure pose is current
     # This ensures any manual rotations (R key) are properly loaded
@@ -679,10 +1021,8 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
             # X axis stays unlocked for forward/back knee bend
             print(f"  Locked shin IK Y/Z axes (knee bends forward/back only): {ik_name}")
 
-        # PHASE 3: Ragdoll Pulling - IK Stiffness on Parent Bones Only
-        # Apply MAXIMUM stiffness to essentially LOCK parent bones
-        # They'll only move when IK solver absolutely can't find a solution (limb stretched past limits)
-        # Middle joints (forearm, shin) stay at 0.0 to allow free bending
+        # PHASE 3: IK Stiffness Assignment
+        # Use template values if available, otherwise fall back to hardcoded defaults
         stiffness = 0.0
         daz_name_lower = daz_name.lower()
 
@@ -700,30 +1040,35 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
             # being influenced by IK, matching DAZ Studio behavior
             pin_status = get_pin_status_text(data_bone)
             print(f"  ⚓ PINNED: {daz_name} - will add pin constraints, {pin_status}")
-
-            # Add appropriate constraints after IK chain is created (see Step 4.8 below)
             # stiffness remains 0.0 for pinned bones - constraints handle the pinning
-        # REMOVED: "Parent of pinned" high stiffness logic
-        # This was causing bones in the drag chain to be too rigid, preventing natural IK solving
-        # The Copy Location constraint on the pinned .ik bone is sufficient to maintain the pin
-        # Lock parent bones with near-maximum stiffness (0.99 ≈ locked)
-        elif 'collar' in daz_name_lower or 'clavicle' in daz_name_lower:
-            stiffness = 0.75  # Collar: balanced stiffness - stable but not locked
-        elif 'shldr' in daz_name_lower or 'shoulder' in daz_name_lower:
-            stiffness = 0.1  # Shoulder: very flexible for natural arm movement
-        elif 'chest' in daz_name_lower:
-            stiffness = 0.999  # Chest: very high resistance, minimal bending
-        elif 'abdomen' in daz_name_lower or 'spine' in daz_name_lower:
-            stiffness = 0.999  # Spine: extreme resistance, barely bends
-        elif 'hip' in daz_name_lower:
-            # Hip is the root body controller - lock rotation, allow only translation
-            stiffness = 0.99  # Essentially locked
-            ik_bone.lock_ik_x = True
-            ik_bone.lock_ik_y = True
-            ik_bone.lock_ik_z = True
-            print(f"  Locked hip IK rotation (translation only, prevents character spinning)")
-        elif 'pelvis' in daz_name_lower:
-            stiffness = 0.99  # Pelvis: nearly locked (prevents leg IK from pushing pelvis/other leg)
+        else:
+            # Try template stiffness first
+            if ik_template:
+                template_stiffness = ik_template['stiffness']
+                # Check each pattern in template
+                for pattern, value in template_stiffness.items():
+                    if pattern in daz_name_lower:
+                        stiffness = value
+                        break
+
+            # Fallback to hardcoded defaults for bones not in template
+            if stiffness == 0.0 and not ik_template:
+                if 'collar' in daz_name_lower or 'clavicle' in daz_name_lower:
+                    stiffness = 0.75
+                elif 'shldr' in daz_name_lower or 'shoulder' in daz_name_lower:
+                    stiffness = 0.1
+                elif 'chest' in daz_name_lower:
+                    stiffness = 0.99
+                elif 'abdomen' in daz_name_lower or 'spine' in daz_name_lower:
+                    stiffness = 0.99
+                elif 'hip' in daz_name_lower:
+                    stiffness = 0.99
+                    ik_bone.lock_ik_x = True
+                    ik_bone.lock_ik_y = True
+                    ik_bone.lock_ik_z = True
+                    print(f"  Locked hip IK rotation (translation only, prevents character spinning)")
+                elif 'pelvis' in daz_name_lower:
+                    stiffness = 0.99
 
         if stiffness > 0:
             ik_bone.ik_stiffness_x = stiffness
@@ -731,21 +1076,22 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
             ik_bone.ik_stiffness_z = stiffness
             print(f"  IK stiffness: {daz_name} = {stiffness:.1f} (ragdoll parent)")
 
-    # CRITICAL: Lock rotation on the TIP bone ONLY if it's an end effector (hand, foot)
-    # This preserves user's manual R rotations on hands/feet
-    # Mid-limb bones (shoulder, forearm, collar) should NOT be locked as tip
+    # CRITICAL: ALWAYS lock rotation on the TIP bone (end of IK chain)
+    # This prevents the IK solver from rotating the tip instead of moving it
+    # The tip bone should only translate to reach the target, not rotate
     tip_bone = armature.pose.bones[ik_control_names[-1]]
     tip_bone_daz_name = daz_bone_names[-1]
     tip_lower = tip_bone_daz_name.lower()
     is_end_effector = any(part in tip_lower for part in ['hand', 'foot'])
 
+    # Lock rotation for ALL tip bones (not just end effectors)
+    tip_bone.lock_ik_x = True
+    tip_bone.lock_ik_y = True
+    tip_bone.lock_ik_z = True
     if is_end_effector:
-        tip_bone.lock_ik_x = True
-        tip_bone.lock_ik_y = True
-        tip_bone.lock_ik_z = True
         print(f"  Locked tip bone rotation (end effector): {tip_bone.name}")
     else:
-        print(f"  Tip bone rotation unlocked (mid-limb can rotate): {tip_bone.name}")
+        print(f"  Locked tip bone rotation (mid-limb): {tip_bone.name}")
 
     # NOTE: Intentionally NOT copying Limit Rotation constraints to IK limits
     # Reason: IK limits constrain the solver during solving (can prevent solutions)
@@ -807,15 +1153,16 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     ik_constraint.influence = 0.0
 
     # ==================================================================
-    # STEP 3.5: Enable Pole Target for Soft Pin Mode
+    # STEP 3.5: Enable Pole Target (template-based or soft pin mode)
     # ==================================================================
-    # When soft_pin_mode is active, enable the pole target on the IK constraint
-    # The pole target bone was already created in EDIT mode above
-    if soft_pin_mode and pole_target_name:
+    # Enable pole target if one was created (either from template or soft pin mode)
+    if pole_target_name:
         ik_constraint.pole_target = armature
         ik_constraint.pole_subtarget = pole_target_name
         ik_constraint.pole_angle = -1.5708  # -90° (π/2) for DAZ/MHX rigs
-        print(f"  ✓ Enabled pole target: {pole_target_name} (pole angle: -90°)")
+
+        source = "template" if (ik_template and ik_template.get('pole_target', {}).get('enabled')) else "soft pin"
+        print(f"  ✓ Enabled pole target: {pole_target_name} (angle: -90°, source: {source})")
 
     # ==================================================================
     # STEP 3.75: Apply static pre-bend to leg IK chains (before Copy Rotation)
@@ -824,6 +1171,7 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # This seeds the IK solver with the correct bend direction (knee forward)
     # ONLY apply if leg is in rest pose (straight) - if already bent, skip pre-bend
     # Since Copy Rotation isn't active yet, this won't affect the DAZ bones (no pop)
+    leg_prebend_applied = None  # Track if leg pre-bend was applied (None = not a leg)
     if is_leg_chain:
         from mathutils import Quaternion
 
@@ -864,8 +1212,12 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
                 bpy.context.view_layer.update()
                 print(f"  ✓ Leg pre-bend applied (IK solver will prefer forward knee bend)")
+                # Return flag: pre-bend was applied (limb was in rest pose)
+                leg_prebend_applied = True
             else:
                 print(f"  Leg already bent - skipping pre-bend (using current pose as seed)")
+                # Return flag: pre-bend was skipped (limb already bent - use current pose)
+                leg_prebend_applied = False
 
     # ==================================================================
     # STEP 4: Add Copy Rotation constraints from DAZ bones to IK bones
@@ -875,16 +1227,15 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # This preserves the tip's manual rotation (from R key) while IK controls the chain
 
     for i, (daz_name, ik_name) in enumerate(zip(daz_bone_names, ik_control_names)):
-        # Skip Copy Rotation for tip bone ONLY if it's an end effector (hand, foot)
-        # Mid-limb bones (shoulder, forearm, collar) should get Copy Rotation even as tip
+        # ALWAYS skip Copy Rotation for the tip bone (end of IK chain)
+        # The tip is controlled by IK movement, not rotation copying
+        # This prevents rotation artifacts when dragging mid-limb bones (shin/forearm)
         if i == len(daz_bone_names) - 1:
             daz_lower = daz_name.lower()
             is_end_effector = any(part in daz_lower for part in ['hand', 'foot'])
-            if is_end_effector:
-                print(f"  Skipping Copy Rotation for tip bone (end effector): {daz_name}")
-                continue
-            else:
-                print(f"  Adding Copy Rotation for tip bone (mid-limb): {daz_name}")
+            bone_type = "end effector" if is_end_effector else "mid-limb"
+            print(f"  Skipping Copy Rotation for tip bone ({bone_type}): {daz_name}")
+            continue
 
         daz_pose = armature.pose.bones[daz_name]
 
@@ -900,7 +1251,17 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
         copy_rot.subtarget = ik_name  # Copy from IK control bone
         copy_rot.target_space = 'LOCAL'  # Copy in local space!
         copy_rot.owner_space = 'LOCAL'   # Apply in local space!
-        copy_rot.influence = 0.0  # Start disabled - activate WITH IK on first mouse move
+
+        # Set graduated influence based on bone name for smoother torso control
+        daz_name_lower = daz_name.lower()
+        if 'abdomenlower' in daz_name_lower or 'abdomen2' in daz_name_lower:
+            copy_rot.influence = 0.5  # Lower abdomen - lowest influence
+        elif 'abdomenupper' in daz_name_lower or 'abdomen' in daz_name_lower:
+            copy_rot.influence = 0.7  # Upper abdomen - medium influence
+        elif 'chestlower' in daz_name_lower or 'chest' in daz_name_lower:
+            copy_rot.influence = 0.875  # Lower chest - high influence
+        else:
+            copy_rot.influence = 0.0  # Other bones - start disabled, activate on first mouse move
 
         # CRITICAL: Move Copy Rotation to TOP of constraint stack (index 0)
         # This ensures it runs BEFORE Limit Rotation, so limits can clamp the result
@@ -1047,7 +1408,7 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
     print(f"  ✓ IK chain ready")
 
-    return target_name, ik_control_names, daz_bone_names, shoulder_target_names
+    return target_name, ik_control_names, daz_bone_names, shoulder_target_names, leg_prebend_applied
 
 
 def copy_rotation_temp_to_real(armature, temp_bone_names, real_bone_names):
@@ -1136,6 +1497,15 @@ def dissolve_ik_chain(armature, target_bone_name, ik_control_names, daz_bone_nam
 
     bpy.context.view_layer.update()
 
+    # STEP 2.5: Cache ALL bone rotations BEFORE mode switch (for cleanup)
+    # Mode switching discards un-keyframed rotations - cache them now
+    rotation_cache = {}
+    for pose_bone in armature.pose.bones:
+        if pose_bone.rotation_mode == 'QUATERNION':
+            rotation_cache[pose_bone.name] = pose_bone.rotation_quaternion.copy()
+        else:
+            rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
+
     # STEP 3: Delete .ik control bones and .ik.target bone
     # CRITICAL: Ensure armature is active before mode switch
     if bpy.context.view_layer.objects.active != armature:
@@ -1166,6 +1536,25 @@ def dissolve_ik_chain(armature, target_bone_name, ik_control_names, daz_bone_nam
         print(f"  Removed pole target: {pole_target_name}")
 
     bpy.ops.object.mode_set(mode='POSE')
+
+    # STEP 3.5: RESTORE all cached bone rotations after mode switch
+    # CRITICAL: Skip bones that were in the IK chain - they should keep their new pose!
+    # Only restore rotations for bones that weren't affected by the IK drag (e.g., torso)
+    rotations_restored = 0
+    for bone_name_cache, rotation in rotation_cache.items():
+        # Skip bones that were in the IK chain - they have new poses from the drag
+        if bone_name_cache in daz_bone_names:
+            continue
+
+        pose_bone = armature.pose.bones.get(bone_name_cache)
+        if pose_bone:
+            if pose_bone.rotation_mode == 'QUATERNION':
+                pose_bone.rotation_quaternion = rotation
+            else:
+                pose_bone.rotation_euler = rotation
+            rotations_restored += 1
+    if rotations_restored > 0:
+        print(f"  ✓ Restored {rotations_restored} non-IK bone rotations after cleanup")
 
     # NOTE: Pin helper Empties are NOT removed here - they are persistent
     # and should only be removed when user explicitly unpins the bone
@@ -1506,6 +1895,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _hover_bone_name = None
     _hover_armature = None
     _base_body_mesh = None  # The main figure mesh (detected automatically)
+    _hover_control_point_id = None  # For multi-bone controls
+    _hover_bone_names = None  # List of bone names for multi-bone controls
 
     # Click detection to ignore gizmo drags
     _mouse_down_pos = None
@@ -1528,6 +1919,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _rotation_bone = None
     _rotation_initial_quat = None
     _rotation_initial_mouse = None
+    _rotation_target_empty = None
+    _rotation_constraint = None
+    _rotation_mouse_button = None  # 'LEFT' or 'RIGHT' - tracks which button started rotation
+    _right_click_used_for_drag = False  # Track if right-click started a drag (to suppress context menu)
+    _rotation_bones = []  # List of bones for multi-bone group rotation
+    _rotation_initial_quats = []  # List of initial quaternions for multi-bone rotation
 
     # Undo stack for Ctrl+Z
     _undo_stack = []  # List of {frame, bones: [(name, rotation, mode)]} entries
@@ -1666,37 +2063,48 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._mouse_down_pos = None
                 return {'PASS_THROUGH'}
 
-            # Do a fresh raycast to verify we hit mesh (not clicking through to background)
-            region = context.region
+            # POSEBRIDGE MODE: Skip raycast check - 2D control point hit detection is sufficient
+            posebridge_mode = hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active
 
-            # Safety check: ensure we're in a 3D viewport
-            if not context.space_data or context.space_data.type != 'VIEW_3D':
-                return {'PASS_THROUGH'}
+            if not posebridge_mode:
+                # Do a fresh raycast to verify we hit mesh (not clicking through to background)
+                region = context.region
 
-            rv3d = context.space_data.region_3d
-            if not rv3d:
-                return {'PASS_THROUGH'}
+                # Safety check: ensure we're in a 3D viewport
+                if not context.space_data or context.space_data.type != 'VIEW_3D':
+                    return {'PASS_THROUGH'}
 
-            coord = (event.mouse_region_x, event.mouse_region_y)
-            view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-            ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+                rv3d = context.space_data.region_3d
+                if not rv3d:
+                    return {'PASS_THROUGH'}
 
-            # Try to hit mesh
-            hit_mesh = False
-            for obj in context.scene.objects:
-                if obj.type == 'MESH':
-                    result, location, normal, index = obj.ray_cast(
-                        obj.matrix_world.inverted() @ ray_origin,
-                        obj.matrix_world.inverted().to_3x3() @ view_vector
-                    )
-                    if result:
-                        hit_mesh = True
-                        break
+                coord = (event.mouse_region_x, event.mouse_region_y)
+                view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+                ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
 
-            # If we didn't hit any mesh, pass through (clicking empty space)
-            if not hit_mesh:
-                self._mouse_down_pos = None
-                return {'PASS_THROUGH'}
+                # Try to hit mesh
+                hit_mesh = False
+                for obj in context.scene.objects:
+                    if obj.type == 'MESH':
+                        # Skip LineArt copy meshes (hidden, no valid mesh data)
+                        if 'LineArt_Copy' in obj.name:
+                            continue
+                        # Skip hidden objects
+                        if obj.hide_viewport or obj.hide_get():
+                            continue
+
+                        result, location, normal, index = obj.ray_cast(
+                            obj.matrix_world.inverted() @ ray_origin,
+                            obj.matrix_world.inverted().to_3x3() @ view_vector
+                        )
+                        if result:
+                            hit_mesh = True
+                            break
+
+                # If we didn't hit any mesh, pass through (clicking empty space)
+                if not hit_mesh:
+                    self._mouse_down_pos = None
+                    return {'PASS_THROUGH'}
 
             # Record mouse position on press (to detect drags vs clicks)
             self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
@@ -1710,6 +2118,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Prepare for potential drag
                 self._drag_bone_name = self._hover_bone_name
                 self._drag_armature = self._hover_armature
+                self._rotation_mouse_button = 'LEFT'  # Track which button will start the rotation
 
                 # Consume event to prevent box select
                 return {'RUNNING_MODAL'}
@@ -1738,7 +2147,26 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            # Cancel rotation if active
+            # POSEBRIDGE MODE: Check if hovering over any bone - if so, start RMB rotation
+            posebridge_mode = hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active
+            if posebridge_mode and self._hover_bone_name and self._hover_armature:
+                if not self._is_rotating:
+                    # Start rotation for any bone with right-click
+                    print(f"  Right-click on {self._hover_bone_name}: Starting RMB rotation")
+
+                    # Select bone
+                    self.select_bone(context)
+
+                    # Prepare for drag
+                    self._drag_bone_name = self._hover_bone_name
+                    self._drag_armature = self._hover_armature
+                    self._rotation_mouse_button = 'RIGHT'  # Track right-click
+                    self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
+
+                    # Consume event
+                    return {'RUNNING_MODAL'}
+
+            # Cancel rotation if active (non-head bones or ESC alternative)
             if self._is_rotating:
                 print("  Right-click: Canceling rotation")
                 self.end_rotation(context, cancel=True)
@@ -1749,6 +2177,26 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 print("  Right-click: Canceling IK drag")
                 self.end_ik_drag(context, cancel=True)
                 return {'RUNNING_MODAL'}
+
+            # Clear drag preparation state
+            if self._drag_bone_name:
+                self._drag_bone_name = None
+                self._drag_armature = None
+                self._mouse_down_pos = None
+
+            return {'PASS_THROUGH'}
+
+        elif event.type == 'RIGHTMOUSE' and event.value == 'RELEASE':
+            # End rotation if active (for right-click head rotations)
+            if self._is_rotating and self._rotation_mouse_button == 'RIGHT':
+                self.end_rotation(context, cancel=False)
+                return {'RUNNING_MODAL'}
+
+            # Suppress context menu if right-click was used for drag
+            if self._right_click_used_for_drag:
+                print("  Right-click release: Suppressing context menu (was used for drag)")
+                self._right_click_used_for_drag = False  # Clear flag
+                return {'RUNNING_MODAL'}  # Consume event to prevent menu
 
             # Clear drag preparation state
             if self._drag_bone_name:
@@ -1800,6 +2248,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self.undo_last_drag(context)
             # Force viewport refresh
             refresh_3d_viewports(context)
+            return {'RUNNING_MODAL'}
+
+        elif event.type == 'X' and event.value == 'PRESS' and event.alt:
+            # Alt+X: Clean up temp IK chains (debug mode)
+            if DEBUG_PRESERVE_IK_CHAIN:
+                self.cleanup_temp_ik_chains(context)
+                self.report({'INFO'}, "Cleaned up temp IK chains")
+            else:
+                self.report({'INFO'}, "Debug mode is off - chains auto-cleanup")
             return {'RUNNING_MODAL'}
 
         elif event.type == 'ESC' and event.value == 'PRESS':
@@ -1876,7 +2333,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Start modal
         context.window_manager.modal_handler_add(self)
-        context.area.header_text_set("DAZ Bone Select Active - Click to select, P to pin, ESC to exit")
+        context.area.header_text_set("DAZ Bone Select Active - P to pin | Alt+Shift+R to clear pose | ESC to exit")
 
         # Register draw handler for highlighting
         self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
@@ -1923,6 +2380,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
     def check_hover(self, context, event):
         """Check what's under mouse using dual raycast (prioritizes body mesh)"""
+
+        # POSEBRIDGE MODE: Use 2D control point hit detection instead of 3D raycast
+        # Check this BEFORE bounds checking, since PoseBridge handles multi-viewport detection
+        if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+            self.check_posebridge_hover(context, event)
+            return
 
         # Skip hover check if mouse is over UI regions (header, toolbar, etc.)
         # This prevents interference with UI elements like transform orientation dropdown
@@ -2086,10 +2549,161 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # No hit
             self.clear_hover(context)
 
+    def check_posebridge_hover(self, context, event):
+        """Check for control point hits in PoseBridge mode (2D hit detection)"""
+
+        # Get PoseBridge settings
+        settings = context.scene.posebridge_settings
+
+        # Get active armature from PoseBridge settings
+        armature = None
+        if settings.active_armature_name:
+            armature = bpy.data.objects.get(settings.active_armature_name)
+
+        if not armature or armature.type != 'ARMATURE':
+            self.clear_hover(context)
+            return
+
+        # Find which 3D viewport region the mouse is currently in
+        region = None
+        rv3d = None
+        mouse_x = event.mouse_x
+        mouse_y = event.mouse_y
+
+        for area in context.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+
+            # Check all regions in this area
+            for reg in area.regions:
+                if reg.type != 'WINDOW':
+                    continue
+
+                # Check if mouse is within this region's bounds
+                if (reg.x <= mouse_x < reg.x + reg.width and
+                    reg.y <= mouse_y < reg.y + reg.height):
+                    # Found the region! Get its space's region_3d
+                    region = reg
+                    # Get the VIEW_3D space for this area (usually just one)
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            rv3d = space.region_3d
+                            break
+                    break
+
+            if region:
+                break
+
+        if not region or not rv3d:
+            return
+
+        # Import PoseBridge utilities
+        addon_dir = os.path.dirname(os.path.abspath(__file__))
+        posebridge_dir = os.path.join(addon_dir, 'posebridge')
+        if posebridge_dir not in sys.path:
+            sys.path.insert(0, addon_dir)
+
+        # Import shared utilities and PoseBridgeDrawHandler
+        from daz_shared_utils import get_genesis8_control_points
+        try:
+            from posebridge.drawing import PoseBridgeDrawHandler
+        except ImportError:
+            # PoseBridge not available, fallback to normal mode
+            return
+
+        # USE FIXED CONTROL POINT POSITIONS (from T-pose)
+        fixed_control_points = settings.control_points_fixed
+
+        if not fixed_control_points or len(fixed_control_points) == 0:
+            # No fixed positions stored yet - clear hover and return
+            self.clear_hover(context)
+            return
+
+        # Mouse position relative to the detected region
+        mouse_region_x = event.mouse_x - region.x
+        mouse_region_y = event.mouse_y - region.y
+
+        # Find closest control point
+        closest_bone = None
+        closest_cp_id = None
+        closest_cp = None
+        closest_distance = 20.0  # Hit threshold in pixels
+
+        from mathutils import Vector
+
+        for cp in fixed_control_points:
+            bone_name = cp.bone_name
+
+            # Get fixed 3D position (from T-pose, with Z offset already applied)
+            fixed_pos_3d = Vector(cp.position_3d_fixed)
+
+            # Project fixed 3D position to 2D viewport coordinates
+            pos_2d = view3d_utils.location_3d_to_region_2d(
+                region,
+                rv3d,
+                fixed_pos_3d
+            )
+
+            if pos_2d is None:
+                continue  # Bone is behind camera
+
+            # Calculate distance from mouse
+            distance = ((mouse_region_x - pos_2d[0])**2 + (mouse_region_y - pos_2d[1])**2)**0.5
+
+            # Update if this is the closest control point
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_bone = bone_name
+                closest_cp_id = cp.id
+                closest_cp = cp
+
+        # Update hover state
+        if closest_bone and closest_cp:
+            # Find mesh associated with armature for highlighting
+            mesh_obj = None
+            for obj in context.scene.objects:
+                if obj.type == 'MESH':
+                    for mod in obj.modifiers:
+                        if mod.type == 'ARMATURE' and mod.object == armature:
+                            mesh_obj = obj
+                            break
+                    if mesh_obj:
+                        break
+
+            # Update hover state (for mesh highlighting)
+            self._hover_mesh = mesh_obj
+            self._hover_bone_name = closest_bone
+            self._hover_armature = armature
+
+            # Store control point info for multi-bone handling
+            if closest_cp.control_type == 'multi':
+                # For multi-bone controls, store the ID and bone list
+                self._hover_control_point_id = closest_cp_id
+                self._hover_bone_names = closest_cp.label.split(',')  # Bone list stored in label
+            else:
+                self._hover_control_point_id = None
+                self._hover_bone_names = None
+
+            # Update PoseBridgeDrawHandler (for control point yellow highlight)
+            # Use ID for multi-bone controls, bone name for single controls
+            PoseBridgeDrawHandler._hovered_control_point = closest_cp_id if closest_cp.control_type == 'multi' else closest_bone
+
+            # Update header
+            display_name = closest_cp.id if closest_cp.control_type == 'multi' else closest_bone
+            if display_name != self._last_bone:
+                text = f"PoseBridge: {display_name} | Click+Drag to rotate | ESC to exit"
+                context.area.header_text_set(text)
+                self._last_bone = display_name
+                context.area.tag_redraw()
+        else:
+            # No control point under mouse
+            self.clear_hover(context)
+            PoseBridgeDrawHandler._hovered_control_point = None
+
     def clear_hover(self, context):
         """Clear hover state"""
         if self._last_bone:
-            context.area.header_text_set("DAZ Bone Select Active - Click to select | P to pin | U to unpin | ESC to exit")
+            context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
             self._last_bone = ""
             self._hover_mesh = None
             self._hover_bone_name = None
@@ -2263,6 +2877,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 current_mode = context.mode
 
                 try:
+                    # CACHE all bone rotations before mode switch
+                    # (Mode switching discards un-keyframed rotations)
+                    rotation_cache = {}
+                    for pose_bone in armature.pose.bones:
+                        if pose_bone.rotation_mode == 'QUATERNION':
+                            rotation_cache[pose_bone.name] = pose_bone.rotation_quaternion.copy()
+                        else:
+                            rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
+
                     # Go to edit mode
                     bpy.ops.object.mode_set(mode='EDIT')
 
@@ -2284,6 +2907,20 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                     # Go back to pose mode
                     bpy.ops.object.mode_set(mode='POSE')
+
+                    # RESTORE all bone rotations after mode switch
+                    rotations_restored = 0
+                    for bone_name_cache, rotation in rotation_cache.items():
+                        pose_bone = armature.pose.bones.get(bone_name_cache)
+                        if pose_bone:
+                            if pose_bone.rotation_mode == 'QUATERNION':
+                                pose_bone.rotation_quaternion = rotation
+                            else:
+                                pose_bone.rotation_euler = rotation
+                            rotations_restored += 1
+
+                    if rotations_restored > 0:
+                        print(f"  ✓ Preserved rotations for {rotations_restored} bones")
 
                     # Set active again in pose mode
                     armature.data.bones.active = armature.data.bones[bone_name]
@@ -2315,6 +2952,78 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         print(f"\n=== Starting IK Drag: {self._drag_bone_name} ===")
 
+        # POSEBRIDGE MODE: Use rotation mode for all bones instead of IK
+        if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+            print("  → PoseBridge mode: Starting rotation mode")
+
+            # Check if this is a multi-bone group control
+            if self._hover_bone_names:
+                # Multi-bone group rotation
+                print(f"  → Multi-bone group: {self._hover_bone_names}")
+                context.area.header_text_set(f"PoseBridge: {self._hover_control_point_id} (Group) - Drag to rotate | ESC to cancel")
+
+                # Store initial state for all bones in group
+                self._is_rotating = True
+                self._rotation_bones = []  # List of bones
+                self._rotation_initial_quats = []  # List of initial rotations
+
+                for bone_name in self._hover_bone_names:
+                    if bone_name in self._drag_armature.pose.bones:
+                        bone = self._drag_armature.pose.bones[bone_name]
+                        bone.rotation_mode = 'QUATERNION'
+                        self._rotation_bones.append(bone)
+                        self._rotation_initial_quats.append(bone.rotation_quaternion.copy())
+
+                self._rotation_bone = None  # Not used for multi-bone
+                self._rotation_initial_mouse = (event.mouse_x, event.mouse_y)
+
+                # Don't set _right_click_used_for_drag yet - wait for actual movement
+
+                # Clear drag bone name
+                self._drag_bone_name = None
+
+                print(f"  Initialized {len(self._rotation_bones)} bones for group rotation")
+                return
+            else:
+                # Single bone rotation
+                context.area.header_text_set(f"PoseBridge: {self._drag_bone_name} - Drag to rotate | ESC to cancel")
+
+                # Get the bone
+                bone = self._drag_armature.pose.bones[self._drag_bone_name]
+
+                # Force quaternion mode
+                bone.rotation_mode = 'QUATERNION'
+
+                # Store initial state
+                self._is_rotating = True
+                self._rotation_bone = bone
+                self._rotation_initial_quat = bone.rotation_quaternion.copy()
+                self._rotation_initial_mouse = (event.mouse_x, event.mouse_y)
+
+                # Initialize twist bone storage and check for shoulder/forearm bend bones
+                if not hasattr(self, '_twist_bone_initial_quats'):
+                    self._twist_bone_initial_quats = {}
+
+                bone_lower = bone.name.lower()
+                if (('shldr' in bone_lower or 'shoulder' in bone_lower or
+                     'forearm' in bone_lower or 'lorearm' in bone_lower) and
+                    'bend' in bone_lower):
+                    twist_bone_name = bone.name.replace('Bend', 'Twist')
+                    if twist_bone_name in self._drag_armature.pose.bones:
+                        twist_bone = self._drag_armature.pose.bones[twist_bone_name]
+                        twist_bone.rotation_mode = 'QUATERNION'
+                        self._twist_bone_initial_quats[twist_bone_name] = twist_bone.rotation_quaternion.copy()
+                        print(f"  Also initialized twist bone: {twist_bone_name}")
+
+                # Don't set _right_click_used_for_drag yet - wait for actual movement
+
+                # Clear drag bone name (rotation is now active)
+                # Keep _drag_armature for undo system
+                self._drag_bone_name = None
+
+                print(f"  Initial rotation: {self._rotation_initial_quat}")
+                return
+
         # Check if the bone being dragged is pinned - store for later, but DON'T unpin yet
         # (we need pins active during chain creation so parent bones get locked)
         data_bone = self._drag_armature.data.bones.get(self._drag_bone_name)
@@ -2330,28 +3039,21 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # If bone shouldn't use IK, check if it's a pectoral (use rotation mode)
         if not ik_bone_name:
-            # Pectoral bones: Start rotation mode instead of IK
+            # Pectoral bones: Use Blender's trackball rotate
             if is_pectoral(self._drag_bone_name):
-                print("  → Pectoral bone: Starting rotation mode")
-                context.area.header_text_set(f"{self._drag_bone_name} - Drag to rotate | Release to apply")
+                print("  → Pectoral bone: Using Blender's trackball rotate")
 
-                # Get the bone
-                bone = self._drag_armature.pose.bones[self._drag_bone_name]
+                # The bone is already selected from select_bone()
+                # Just invoke Blender's trackball rotate operator
+                try:
+                    bpy.ops.transform.trackball('INVOKE_DEFAULT')
+                    print("  ✓ Invoked trackball rotate")
+                except Exception as e:
+                    print(f"  ✗ Could not invoke trackball rotate: {e}")
 
-                # Force quaternion mode
-                bone.rotation_mode = 'QUATERNION'
-
-                # Store initial state
-                self._is_rotating = True
-                self._rotation_bone = bone
-                self._rotation_initial_quat = bone.rotation_quaternion.copy()
-                self._rotation_initial_mouse = (event.mouse_x, event.mouse_y)
-
-                # Clear drag bone name (rotation is now active)
-                # Keep _drag_armature for undo system
+                # Clear drag state - Blender's operator takes over
                 self._drag_bone_name = None
-
-                print(f"  Initial rotation: {self._rotation_initial_quat}")
+                self._drag_armature = None
                 return
             else:
                 # Other non-IK bones (twist bones, etc.): abort
@@ -2440,14 +3142,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             print("  ✗ Failed to create IK chain")
             return
 
-        # NEW: Unpack the 4 return values from create_ik_chain
-        target_bone_name, ik_control_names, daz_bone_names, shoulder_target_names = result
+        # NEW: Unpack the 5 return values from create_ik_chain
+        target_bone_name, ik_control_names, daz_bone_names, shoulder_target_names, leg_prebend_applied = result
 
-        # Store bone names
+        # Store bone names and pre-bend status
         self._ik_target_bone_name = target_bone_name
         self._ik_control_bone_names = ik_control_names
         self._ik_daz_bone_names = daz_bone_names
         self._shoulder_target_names = shoulder_target_names  # For collar Damped Track
+        self._leg_prebend_applied = leg_prebend_applied  # Track if leg was in rest pose
 
         # CRITICAL: In soft pin mode, track pinned child for pin location update on release
         # This must happen AFTER create_ik_chain so the pinned child is included in the chain
@@ -2572,14 +3275,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Debug first update only (flag resets each drag)
         if not self._debug_printed:
             self._debug_printed = True
-            print(f"  DEBUG: Initial mouse 2D: {self._drag_initial_mouse_pos}")
-            print(f"  DEBUG: Current mouse 2D: {mouse_pos}")
-            print(f"  DEBUG: Initial target pos: {self._drag_initial_target_pos}")
-            print(f"  DEBUG: Initial mouse 3D: {initial_mouse_3d}")
-            print(f"  DEBUG: Current mouse 3D: {current_mouse_3d}")
-            print(f"  DEBUG: Mouse delta: {mouse_delta}")
-            print(f"  DEBUG: New target pos: {new_world_location}")
-            print(f"  DEBUG: Soft pin active? {self._soft_pin_active}, child: {self._soft_pin_child_name}")
+            print(f"  First drag update: mouse {mouse_pos}, delta {mouse_delta.length:.3f}m")
 
         # POLE TARGET SYSTEM: Use pole target to control elbow direction
         # Hand stays at pin (IK target), elbow bends toward mouse (pole target)
@@ -2729,9 +3425,18 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             mouse_start = self._pre_bend_mouse_samples[0]
             mouse_current = self._pre_bend_mouse_samples[-1]
             mouse_delta = mouse_current - mouse_start
-            mouse_direction = mouse_delta.normalized() if mouse_delta.length > 0.001 else Vector((0, 0, 0))
 
-            print(f"  [PRE-BEND] Mouse direction: {mouse_direction}")
+            # CRITICAL: Require minimum movement before activating IK/Copy Rotation
+            # This prevents snap when user barely moves the mouse
+            MIN_MOVEMENT_THRESHOLD = 0.003  # 3mm minimum movement (balance between precision and snap prevention)
+
+            if mouse_delta.length < MIN_MOVEMENT_THRESHOLD:
+                # Not enough movement yet - keep collecting samples
+                print(f"  [PRE-BEND] Waiting for movement (current: {mouse_delta.length:.4f}m < {MIN_MOVEMENT_THRESHOLD}m)")
+                return  # Exit early, don't activate IK yet
+
+            mouse_direction = mouse_delta.normalized()
+            print(f"  [PRE-BEND] Mouse direction: {mouse_direction} (movement: {mouse_delta.length:.4f}m)")
 
             # Find the middle joint to pre-bend (forearm, shin, or spine)
             middle_bone = None
@@ -2766,7 +3471,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     break
 
             # Apply pre-bend if we found a joint
-            if middle_bone and mouse_delta.length > 0.001:
+            # SKIP if leg was already bent (preserves current pose for mid-limb drags)
+            skip_prebend_for_bent_leg = (hasattr(self, '_leg_prebend_applied') and
+                                         self._leg_prebend_applied == False and
+                                         'shin' in middle_bone.name.lower() if middle_bone else False)
+
+            if skip_prebend_for_bent_leg:
+                print(f"  [PRE-BEND] Skipping for already-bent leg (preserving current pose)")
+
+            if middle_bone and mouse_delta.length > 0.001 and not skip_prebend_for_bent_leg:
                 # Determine direction (positive or negative rotation) based on joint type
                 bend_sign = 1.0
 
@@ -2809,28 +3522,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # IK already activated (not first move)
             ik_just_activated = False
 
-        # Activate Copy Rotation constraints (but skip collar on ONLY the first frame to prevent snap)
+        # Activate Copy Rotation constraints simultaneously with IK (no delays)
         # CRITICAL: Only activate if IK has been activated (prevents snap on first mouse move)
         if self._pre_bend_applied:  # IK has been activated
             for daz_name in self._ik_daz_bone_names:
                 daz_bone = self._drag_armature.pose.bones[daz_name]
 
-                # Check if this is a collar bone
-                bone_lower = daz_name.lower()
-                is_collar = 'collar' in bone_lower or 'clavicle' in bone_lower
-
                 for constraint in daz_bone.constraints:
                     if constraint.name == "IK_CopyRot_Temp":
-                        # Skip collar ONLY on first IK activation frame (check == 0.0 to avoid false positives)
+                        # Activate ALL bones simultaneously (including collar)
                         if constraint.influence == 0.0:
-                            if ik_just_activated and is_collar:
-                                # First frame: Skip collar to prevent snap
-                                print(f"  Skipping Copy Rotation for {daz_name} on first frame (prevents snap)")
-                            else:
-                                # Activate normally (including collar on subsequent frames)
-                                constraint.influence = 1.0
-                                if is_collar:
-                                    print(f"  Activated Copy Rotation for {daz_name} (subsequent frame)")
+                            constraint.influence = 1.0
+                            if ik_just_activated:
+                                print(f"  Activated Copy Rotation for {daz_name} (simultaneous with IK)")
 
             print(f"  Activated Copy Rotation constraints")
         else:
@@ -3113,32 +3817,402 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._mouse_down_pos = None
 
         # Update header
-        context.area.header_text_set("DAZ Bone Select Active - Click to select | P to pin | U to unpin | ESC to exit")
+        context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
+
+    def clamp_rotation_to_constraints(self, bone, rotation_quat):
+        """
+        Clamp a rotation quaternion to respect LIMIT_ROTATION constraints on the bone.
+        Returns the clamped quaternion.
+        """
+        # Check if bone has LIMIT_ROTATION constraints
+        limit_constraint = None
+        for constraint in bone.constraints:
+            if constraint.type == 'LIMIT_ROTATION' and not constraint.mute:
+                limit_constraint = constraint
+                break
+
+        if not limit_constraint:
+            # No rotation limits, return unchanged
+            return rotation_quat
+
+        # Convert quaternion to Euler angles using the bone's rotation mode
+        # LIMIT_ROTATION works in Euler space
+        if bone.rotation_mode == 'QUATERNION':
+            euler = rotation_quat.to_euler('XYZ')
+        else:
+            # Use the bone's rotation mode
+            euler = rotation_quat.to_euler(bone.rotation_mode)
+
+        # Clamp each axis if the limit is enabled
+        if limit_constraint.use_limit_x:
+            if euler.x < limit_constraint.min_x:
+                euler.x = limit_constraint.min_x
+            elif euler.x > limit_constraint.max_x:
+                euler.x = limit_constraint.max_x
+
+        if limit_constraint.use_limit_y:
+            if euler.y < limit_constraint.min_y:
+                euler.y = limit_constraint.min_y
+            elif euler.y > limit_constraint.max_y:
+                euler.y = limit_constraint.max_y
+
+        if limit_constraint.use_limit_z:
+            if euler.z < limit_constraint.min_z:
+                euler.z = limit_constraint.min_z
+            elif euler.z > limit_constraint.max_z:
+                euler.z = limit_constraint.max_z
+
+        # Convert back to quaternion
+        return euler.to_quaternion()
 
     def update_rotation(self, context, event):
         """Update bone rotation during drag (for pectoral bones)"""
-        if not self._is_rotating or not self._rotation_bone:
+        # Check if we're rotating (either single bone or multi-bone group)
+        if not self._is_rotating:
+            return
+
+        # Handle multi-bone group rotation
+        if self._rotation_bones and len(self._rotation_bones) > 0:
+            self.update_multi_bone_rotation(context, event)
+            return
+
+        # Handle single bone rotation
+        if not self._rotation_bone:
+            return
+
+        # If using Track To constraint method, move the empty instead
+        if self._rotation_target_empty:
+            # Get viewport info
+            region = context.region
+            rv3d = context.space_data.region_3d
+
+            if region and rv3d:
+                # Get mouse position in region coordinates
+                mouse_coord = (event.mouse_region_x, event.mouse_region_y)
+
+                # Get bone head position in world space (rotation pivot point)
+                bone_head_world = self._drag_armature.matrix_world @ self._rotation_bone.head
+
+                # Project mouse position onto a plane at the bone's depth
+                # This makes the empty follow the mouse smoothly on screen
+                target_pos = view3d_utils.region_2d_to_location_3d(
+                    region,
+                    rv3d,
+                    mouse_coord,
+                    bone_head_world  # Use bone position as depth reference
+                )
+
+                # Move empty to target position
+                self._rotation_target_empty.location = target_pos
+
+                # Update viewport
+                context.view_layer.update()
+                context.area.tag_redraw()
             return
 
         # Calculate mouse delta
         delta_x = event.mouse_x - self._rotation_initial_mouse[0]
         delta_y = event.mouse_y - self._rotation_initial_mouse[1]
 
-        # Apply rotation based on mouse movement (sensitivity: 0.01 radians/pixel)
-        sensitivity = 0.01
+        # Track right-click drag for menu suppression (only if actual movement occurred)
+        if self._rotation_mouse_button == 'RIGHT' and not self._right_click_used_for_drag:
+            # Set flag if we've moved at least 3 pixels in any direction
+            if abs(delta_x) > 3 or abs(delta_y) > 3:
+                self._right_click_used_for_drag = True
 
-        # Horizontal drag = Z-axis rotation (twist)
-        # Vertical drag = X-axis rotation (bend forward/back)
-        angle_z = delta_x * sensitivity   # Horizontal movement = Z rotation
-        angle_x = delta_y * sensitivity   # Vertical movement = X rotation (fixed)
+        # POSEBRIDGE MODE: Multi-axis simultaneous rotation for natural posing
+        if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+            # Get PoseBridge sensitivity setting (default 0.01 if not set)
+            sensitivity = getattr(context.scene.posebridge_settings, 'sensitivity', 0.01)
 
-        # Create rotation quaternions
-        rot_z = Quaternion(Vector((0, 0, 1)), angle_z)
-        rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
+            bone_lower = self._rotation_bone.name.lower()
+            horiz_axis = None  # Axis for horizontal drag
+            vert_axis = None   # Axis for vertical drag
+            horiz_invert = False  # Invert horizontal direction
+            vert_invert = False   # Invert vertical direction
 
-        # Combine rotations and apply to bone
-        combined_rot = rot_z @ rot_x
-        self._rotation_bone.rotation_quaternion = combined_rot @ self._rotation_initial_quat
+            # HEAD
+            if 'head' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Y'  # Turn
+                    vert_axis = 'X'   # Nod
+                else:  # RIGHT
+                    horiz_axis = 'Z'  # Side tilt
+                    horiz_invert = True  # Invert direction per user testing
+                    vert_axis = 'X'   # Fine forward/back
+
+            # NECK
+            elif 'neck' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Y'  # Rotate
+                    vert_axis = 'X'   # Bend
+                else:  # RIGHT
+                    horiz_axis = 'Z'  # Side bend (tilt)
+                    horiz_invert = True  # Invert direction per user testing
+                    vert_axis = 'X'  # Fine forward/back (same as head)
+
+            # TORSO
+            elif any(part in bone_lower for part in ['chest', 'abdomen', 'pelvis']):
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = 'X'   # Bend
+                else:  # RIGHT
+                    horiz_axis = 'Z'  # Side lean
+                    horiz_invert = True  # Invert direction per user testing
+                    vert_axis = 'Y'   # Alt twist
+
+            # COLLAR
+            elif 'collar' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Z'  # Shrug/drop
+                    vert_axis = 'X'   # Forward/back
+                    # lCollar inversions
+                    if self._rotation_bone.name.startswith('l'):
+                        vert_invert = True
+                    # rCollar inversions (opposite)
+                    else:
+                        horiz_invert = True
+                        vert_invert = True
+                else:  # RIGHT
+                    horiz_axis = None  # Removed per user testing
+                    vert_axis = 'Y'   # Twist (changed from None per user testing)
+
+            # UPPER ARM (Shoulder)
+            elif 'shldr' in bone_lower or 'shoulder' in bone_lower:
+                print(f"[DEBUG] Shoulder detected! Bone: {self._rotation_bone.name}, Button: {self._rotation_mouse_button}")
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'X'  # Swing forward/back (horizontal drag)
+                    vert_axis = 'Z'   # Raise/lower (vertical drag)
+                    horiz_invert = True  # Invert horizontal direction
+                    print(f"[DEBUG] LMB shoulder: horiz_axis={horiz_axis}, vert_axis={vert_axis}, horiz_invert={horiz_invert}")
+                else:  # RIGHT
+                    horiz_axis = None  # No horizontal control
+                    vert_axis = 'Y'   # Twist (vertical drag)
+                    vert_invert = True  # Invert twist direction
+                    print(f"[DEBUG] RMB shoulder: horiz_axis={horiz_axis}, vert_axis={vert_axis}")
+
+            # FOREARM (Elbow)
+            elif 'forearm' in bone_lower or 'lorearm' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'X'  # Bend elbow
+                    vert_axis = 'Y'   # Twist (targets forearmTwist bone)
+                    horiz_invert = True  # Invert horizontal bend direction
+                    vert_invert = True  # Invert twist direction
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            # HAND
+            elif 'hand' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Z'  # Side bend
+                    vert_axis = 'X'   # Up/down
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            # THIGH
+            elif 'thigh' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'X'  # Swing forward/back
+                    vert_axis = 'Z'   # Raise/lower
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist inward/outward
+                    vert_axis = 'Y'   # Side movement (same axis)
+
+            # SHIN (Knee)
+            elif 'shin' in bone_lower or 'knee' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = None
+                    vert_axis = 'X'   # Bend knee
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            # FOOT
+            elif 'foot' in bone_lower:
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Z'  # Tilt side-to-side
+                    vert_axis = 'X'   # Point/flex
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            # MIRROR FOR RIGHT SIDE: Invert all controls for right-side bones
+            # User configures controls for left side, right side mirrors them
+            # (collar handles its own inversions manually above)
+            if self._rotation_bone.name.startswith('r') and 'collar' not in bone_lower:
+                horiz_invert = not horiz_invert
+                vert_invert = not vert_invert
+
+            # Check if we need to use an alternate bone for vertical rotation
+            # (e.g., shoulder/forearm twist bones)
+            vert_target_bone = self._rotation_bone
+
+            # Initialize twist bone quaternion storage if needed
+            if not hasattr(self, '_twist_bone_initial_quats'):
+                self._twist_bone_initial_quats = {}
+
+            # Shoulder RMB vertical → shldrTwist bone
+            if (vert_axis == 'Y' and
+                self._rotation_mouse_button == 'RIGHT' and
+                ('shldr' in bone_lower or 'shoulder' in bone_lower) and
+                'bend' in bone_lower):
+                twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
+                if twist_bone_name in self._drag_armature.pose.bones:
+                    vert_target_bone = self._drag_armature.pose.bones[twist_bone_name]
+                    if twist_bone_name not in self._twist_bone_initial_quats:
+                        self._twist_bone_initial_quats[twist_bone_name] = vert_target_bone.rotation_quaternion.copy()
+
+            # Forearm LMB vertical → forearmTwist bone
+            elif (vert_axis == 'Y' and
+                  self._rotation_mouse_button == 'LEFT' and
+                  ('forearm' in bone_lower or 'lorearm' in bone_lower) and
+                  'bend' in bone_lower):
+                twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
+                if twist_bone_name in self._drag_armature.pose.bones:
+                    vert_target_bone = self._drag_armature.pose.bones[twist_bone_name]
+                    if twist_bone_name not in self._twist_bone_initial_quats:
+                        self._twist_bone_initial_quats[twist_bone_name] = vert_target_bone.rotation_quaternion.copy()
+
+            # Apply rotations - horizontal and vertical axes simultaneously
+            # Use a working copy to compose rotations without modifying the stored initial quat
+            current_quat = self._rotation_initial_quat.copy()
+
+            # Debug output for shoulder
+            if 'shldr' in bone_lower or 'shoulder' in bone_lower:
+                print(f"[DEBUG] About to apply rotation: delta_x={delta_x:.2f}, delta_y={delta_y:.2f}, horiz_axis={horiz_axis}, vert_axis={vert_axis}")
+
+            # Apply horizontal axis rotation (responds to horizontal mouse drag)
+            if horiz_axis is not None and abs(delta_x) > 0:
+                effective_delta_x = -delta_x if horiz_invert else delta_x
+                apply_rotation_from_delta(
+                    self._rotation_bone,
+                    current_quat,
+                    horiz_axis,
+                    effective_delta_x,
+                    sensitivity
+                )
+                current_quat = self._rotation_bone.rotation_quaternion.copy()
+
+            # Apply vertical axis rotation (responds to vertical mouse drag)
+            if vert_axis is not None and abs(delta_y) > 0:
+                # Use alternate bone if specified (e.g., twist bone for shoulder RMB)
+                target_bone = vert_target_bone
+                if target_bone != self._rotation_bone and target_bone.name in self._twist_bone_initial_quats:
+                    vert_current_quat = self._twist_bone_initial_quats[target_bone.name].copy()
+                else:
+                    vert_current_quat = current_quat
+
+                effective_delta_y = -delta_y if vert_invert else delta_y
+                apply_rotation_from_delta(
+                    target_bone,
+                    vert_current_quat,
+                    vert_axis,
+                    effective_delta_y,
+                    sensitivity
+                )
+
+            # Update view layer to evaluate constraints
+            context.view_layer.update()
+        else:
+            # Original pectoral bone rotation logic
+            # Apply rotation based on mouse movement (sensitivity: 0.01 radians/pixel)
+            sensitivity = 0.01
+
+            # Get viewport orientation to make rotation follow mouse regardless of armature rotation
+            region = context.region
+            rv3d = context.space_data.region_3d
+
+            if rv3d:
+                # Simple approach that works for normal armature orientation
+                # Get view matrix for screen-space calculations
+                view_matrix = rv3d.view_matrix
+
+                # Extract view axes (screen-aligned in world space)
+                view_right = Vector(view_matrix[0][:3])  # Screen horizontal axis
+                view_up = Vector(view_matrix[1][:3])     # Screen vertical axis
+
+                # Calculate rotation angles
+                angle_horizontal = delta_x * sensitivity  # Mouse horizontal movement
+                angle_vertical = delta_y * sensitivity    # Mouse vertical movement
+
+                # Create rotations around screen-aligned axes
+                rot_h = Quaternion(view_up, angle_horizontal)
+                rot_v = Quaternion(view_right, angle_vertical)
+                combined_rot_world = rot_h @ rot_v
+
+                # Get armature
+                armature = self._drag_armature
+                if armature:
+                    # Convert INITIAL bone rotation to world space
+                    armature_world_quat = armature.matrix_world.to_quaternion()
+                    initial_world_quat = armature_world_quat @ self._rotation_initial_quat
+
+                    # Apply rotation in world space
+                    new_world_quat = combined_rot_world @ initial_world_quat
+
+                    # Convert back to bone local space
+                    new_local_quat = armature_world_quat.inverted() @ new_world_quat
+
+                    # Apply to bone
+                    self._rotation_bone.rotation_quaternion = new_local_quat
+                else:
+                    # Fallback if no armature
+                    self._rotation_bone.rotation_quaternion = combined_rot_world @ self._rotation_initial_quat
+            else:
+                # Fallback to old method if no 3D view (shouldn't happen)
+                angle_z = delta_x * sensitivity
+                angle_x = delta_y * sensitivity
+                rot_z = Quaternion(Vector((0, 0, 1)), angle_z)
+                rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
+                combined_rot = rot_z @ rot_x
+                self._rotation_bone.rotation_quaternion = combined_rot @ self._rotation_initial_quat
+
+        # Update viewport
+        context.area.tag_redraw()
+        refresh_3d_viewports(context)
+
+    def update_multi_bone_rotation(self, context, event):
+        """Update multiple bones rotation during drag (Individual Origins behavior)"""
+        # Calculate mouse delta
+        delta_x = event.mouse_x - self._rotation_initial_mouse[0]
+        delta_y = event.mouse_y - self._rotation_initial_mouse[1]
+
+        # POSEBRIDGE MODE: Apply same rotation to all bones
+        if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+            # Get PoseBridge sensitivity setting
+            sensitivity = getattr(context.scene.posebridge_settings, 'sensitivity', 0.01)
+
+            # For neck group, use 4-way control scheme
+            # LEFT MOUSE: Y-axis (horizontal) and X-axis (vertical) like head
+            # RIGHT MOUSE: Z-axis (horizontal) for tilt
+            if self._rotation_mouse_button == 'LEFT':
+                # Horizontal movement (delta_x) rotates around Y axis (turn)
+                angle_y = delta_x * sensitivity
+                rot_y = Quaternion(Vector((0, 1, 0)), angle_y)
+
+                # Vertical movement (delta_y) rotates around X axis (nod)
+                angle_x = -delta_y * sensitivity
+                rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
+
+                # Combine rotations
+                combined_rot = rot_y @ rot_x
+            else:  # RIGHT MOUSE
+                # Horizontal movement (delta_x) rotates around Z axis (tilt)
+                # Inverted direction per user testing
+                angle_z = -delta_x * sensitivity
+                combined_rot = Quaternion(Vector((0, 0, 1)), angle_z)
+
+            # Apply same rotation to all bones (Individual Origins)
+            for i, bone in enumerate(self._rotation_bones):
+                initial_quat = self._rotation_initial_quats[i]
+                bone.rotation_quaternion = combined_rot @ initial_quat
+
+            print(f"  Multi-bone rotation: delta_x={delta_x:.2f}, delta_y={delta_y:.2f}, {len(self._rotation_bones)} bones")
+
+            # Update view layer
+            context.view_layer.update()
 
         # Update viewport
         context.area.tag_redraw()
@@ -3149,29 +4223,104 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not self._is_rotating:
             return
 
-        if cancel:
-            print(f"\n=== Canceling Rotation: {self._rotation_bone.name} ===")
-            # Restore initial rotation
-            self._rotation_bone.rotation_quaternion = self._rotation_initial_quat
-        else:
-            print(f"\n=== Ending Rotation: {self._rotation_bone.name} ===")
-            # Store undo state before keyframing
-            self.store_rotation_undo_state(context)
-            # Keyframe the rotation
-            self._rotation_bone.keyframe_insert(data_path="rotation_quaternion")
-            print(f"  ✓ Keyframed rotation: {self._rotation_bone.rotation_quaternion}")
+        # Bake the constrained rotation before cleanup
+        if self._rotation_constraint and self._rotation_bone and not cancel:
+            # Update to ensure constraint is evaluated
+            context.view_layer.update()
+
+            # Use evaluated depsgraph to get the constrained result
+            depsgraph = context.evaluated_depsgraph_get()
+            armature_eval = self._drag_armature.evaluated_get(depsgraph)
+            bone_eval = armature_eval.pose.bones[self._rotation_bone.name]
+
+            # Get the constrained rotation from matrix_basis (includes constraint effect)
+            constrained_quat = bone_eval.matrix_basis.to_quaternion()
+
+            # Apply to bone (this "bakes" the constrained rotation)
+            self._rotation_bone.rotation_quaternion = constrained_quat
+            print(f"  Baked constrained rotation: {constrained_quat}")
+
+        # Clean up Track To constraint and empty if they exist
+        if self._rotation_constraint and self._rotation_bone:
+            print("  Cleaning up Track To constraint")
+            self._rotation_bone.constraints.remove(self._rotation_constraint)
+            self._rotation_constraint = None
+
+        if self._rotation_target_empty:
+            print("  Removing target empty")
+            bpy.data.objects.remove(self._rotation_target_empty, do_unlink=True)
+            self._rotation_target_empty = None
+
+        # Handle multi-bone or single bone rotation
+        if self._rotation_bones and len(self._rotation_bones) > 0:
+            # Multi-bone rotation
+            if cancel:
+                print(f"\n=== Canceling Multi-Bone Rotation: {len(self._rotation_bones)} bones ===")
+                # Restore initial rotations for all bones
+                for i, bone in enumerate(self._rotation_bones):
+                    bone.rotation_quaternion = self._rotation_initial_quats[i]
+            else:
+                print(f"\n=== Ending Multi-Bone Rotation: {len(self._rotation_bones)} bones ===")
+                # Store undo state before keyframing
+                self.store_rotation_undo_state(context)
+                # Keyframe all bones
+                for bone in self._rotation_bones:
+                    bone.keyframe_insert(data_path="rotation_quaternion")
+                    print(f"  ✓ Keyframed: {bone.name}")
+        elif self._rotation_bone:
+            # Single bone rotation
+            if cancel:
+                print(f"\n=== Canceling Rotation: {self._rotation_bone.name} ===")
+                # Restore initial rotation
+                self._rotation_bone.rotation_quaternion = self._rotation_initial_quat
+                # Also restore twist bone if it was used
+                if hasattr(self, '_twist_bone_initial_quats'):
+                    bone_lower = self._rotation_bone.name.lower()
+                    if (('shldr' in bone_lower or 'shoulder' in bone_lower or
+                         'forearm' in bone_lower or 'lorearm' in bone_lower) and
+                        'bend' in bone_lower):
+                        twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
+                        if twist_bone_name in self._twist_bone_initial_quats:
+                            twist_bone = self._drag_armature.pose.bones[twist_bone_name]
+                            twist_bone.rotation_quaternion = self._twist_bone_initial_quats[twist_bone_name]
+                            print(f"  ✓ Restored twist bone: {twist_bone_name}")
+            else:
+                print(f"\n=== Ending Rotation: {self._rotation_bone.name} ===")
+                # Store undo state before keyframing
+                self.store_rotation_undo_state(context)
+                # Keyframe the rotation
+                self._rotation_bone.keyframe_insert(data_path="rotation_quaternion")
+                print(f"  ✓ Keyframed rotation: {self._rotation_bone.rotation_quaternion}")
+                # Also keyframe twist bone if it was used
+                if hasattr(self, '_twist_bone_initial_quats'):
+                    bone_lower = self._rotation_bone.name.lower()
+                    if (('shldr' in bone_lower or 'shoulder' in bone_lower or
+                         'forearm' in bone_lower or 'lorearm' in bone_lower) and
+                        'bend' in bone_lower):
+                        twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
+                        if twist_bone_name in self._twist_bone_initial_quats:
+                            twist_bone = self._drag_armature.pose.bones[twist_bone_name]
+                            twist_bone.keyframe_insert(data_path="rotation_quaternion")
+                            print(f"  ✓ Keyframed twist bone: {twist_bone_name}")
 
         # Clear rotation state
         self._is_rotating = False
         self._rotation_bone = None
         self._rotation_initial_quat = None
+        self._rotation_bones = []
+        self._rotation_initial_quats = []
         self._rotation_initial_mouse = None
+        self._rotation_mouse_button = None
+        self._right_click_used_for_drag = False
         self._mouse_down_pos = None
+        # Clear twist bone state if it exists
+        if hasattr(self, '_twist_bone_initial_quats'):
+            del self._twist_bone_initial_quats
 
         # Update viewport and header
         context.area.tag_redraw()
         refresh_3d_viewports(context)
-        context.area.header_text_set("DAZ Bone Select Active - Click to select | P to pin | U to unpin | ESC to exit")
+        context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
 
     def pin_selected_bone_translation(self, context):
         """Pin translation of the currently active bone"""
@@ -3261,6 +4410,71 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     area.tag_redraw()
         else:
             self.report({'INFO'}, f"{bone_name} was not pinned")
+
+    def cleanup_temp_ik_chains(self, context):
+        """Clean up all temporary IK chains (for debug mode)"""
+        print("\n=== Cleaning Up Temp IK Chains ===")
+
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            print("  No armature active")
+            return
+
+        # STEP 1: Cache all bone rotations BEFORE any changes (preserves DAZ poses)
+        rotation_cache = {}
+        for pose_bone in armature.pose.bones:
+            if pose_bone.rotation_mode == 'QUATERNION':
+                rotation_cache[pose_bone.name] = pose_bone.rotation_quaternion.copy()
+            else:
+                rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
+
+        # STEP 2: Remove all temp constraints FIRST (while still in POSE mode, before deleting bones)
+        constraints_removed = 0
+        for pose_bone in armature.pose.bones:
+            constraints_to_remove = [c for c in pose_bone.constraints
+                                    if 'Temp' in c.name or 'IK_' in c.name]
+            for c in constraints_to_remove:
+                constraint_name = c.name  # Store name before removal
+                pose_bone.constraints.remove(c)
+                constraints_removed += 1
+                print(f"  Removed constraint: {constraint_name} from {pose_bone.name}")
+
+        # STEP 3: Switch to edit mode to delete bones
+        if context.mode != 'EDIT_ARMATURE':
+            bpy.ops.object.mode_set(mode='EDIT')
+
+        edit_bones = armature.data.edit_bones
+        bones_removed = 0
+
+        # Delete all temp bones (.ik, .shoulder.target, .pole)
+        temp_bones = [b.name for b in edit_bones
+                     if '.ik' in b.name or '.shoulder.target' in b.name or b.name.endswith('.pole')]
+        for bone_name in temp_bones:
+            if bone_name in edit_bones:
+                edit_bones.remove(edit_bones[bone_name])
+                bones_removed += 1
+                print(f"  Removed: {bone_name}")
+
+        # STEP 5: Switch back to pose mode
+        bpy.ops.object.mode_set(mode='POSE')
+
+        # STEP 6: Restore all bone rotations after mode switch (preserves DAZ poses)
+        rotations_restored = 0
+        for bone_name_cache, rotation in rotation_cache.items():
+            pose_bone = armature.pose.bones.get(bone_name_cache)
+            if pose_bone:
+                if pose_bone.rotation_mode == 'QUATERNION':
+                    pose_bone.rotation_quaternion = rotation
+                else:
+                    pose_bone.rotation_euler = rotation
+                rotations_restored += 1
+
+        # Force evaluation with restored rotations
+        context.view_layer.update()
+        print(f"  ✓ Restored rotations for {rotations_restored} bones")
+
+        print(f"  ✓ Cleanup complete: {bones_removed} bones, {constraints_removed} constraints")
+        context.area.tag_redraw()
 
     def store_undo_state(self, context):
         """Store current bone rotations before dissolving IK for undo"""
@@ -3590,6 +4804,91 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             batch.draw(shader)
 
 
+class POSE_OT_clear_ik_pose(bpy.types.Operator):
+    """Clear IK pose by removing keyframes and resetting rotations to rest pose"""
+    bl_idname = "pose.clear_ik_pose"
+    bl_label = "Clear IK Pose"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'POSE' and
+                context.active_object and
+                context.active_object.type == 'ARMATURE')
+
+    def execute(self, context):
+        armature = context.active_object
+        selected_bones = context.selected_pose_bones
+
+        if not selected_bones:
+            self.report({'WARNING'}, "No bones selected")
+            return {'CANCELLED'}
+
+        # Get current frame
+        current_frame = context.scene.frame_current
+
+        # Track what we cleared
+        cleared_keyframes = 0
+        reset_bones = 0
+
+        # Clear keyframes and reset rotations for each selected bone
+        for pose_bone in selected_bones:
+            bone_name = pose_bone.name
+
+            # Remove rotation keyframes at current frame
+            try:
+                if armature.animation_data and armature.animation_data.action:
+                    action = armature.animation_data.action
+
+                    # Check if action has fcurves attribute (safety check)
+                    if not hasattr(action, 'fcurves'):
+                        print(f"  ⚠️  Action type: {type(action)} - has no fcurves, skipping keyframe removal")
+                        # Continue to reset rotations even if we can't clear keyframes
+                    else:
+                        fcurves = action.fcurves
+
+                        # Find and remove rotation keyframes for this bone
+                        for fc in fcurves:
+                            # Check if this fcurve belongs to this bone's rotation
+                            if (f'pose.bones["{bone_name}"]' in fc.data_path and
+                                'rotation' in fc.data_path):
+                                # Remove keyframe at current frame
+                                for kf in fc.keyframe_points:
+                                    if abs(kf.co[0] - current_frame) < 0.001:  # Frame match tolerance
+                                        fc.keyframe_points.remove(kf, fast=True)
+                                        cleared_keyframes += 1
+                                        break
+            except AttributeError as e:
+                print(f"  ⚠️  Error accessing animation data: {e}")
+                print(f"      Action type: {type(armature.animation_data.action) if armature.animation_data and armature.animation_data.action else 'None'}")
+                # Continue to reset rotations even if keyframe removal fails
+
+            # Reset rotation to rest pose
+            if pose_bone.rotation_mode == 'QUATERNION':
+                pose_bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)  # Identity quaternion
+            elif pose_bone.rotation_mode == 'AXIS_ANGLE':
+                pose_bone.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+            else:  # Euler
+                pose_bone.rotation_euler = (0.0, 0.0, 0.0)
+
+            # Also reset location and scale if they're not at rest
+            pose_bone.location = (0.0, 0.0, 0.0)
+            pose_bone.scale = (1.0, 1.0, 1.0)
+
+            reset_bones += 1
+
+        # Update scene
+        context.view_layer.update()
+
+        # Report results
+        self.report({'INFO'}, f"Cleared {cleared_keyframes} keyframes, reset {reset_bones} bones to rest pose")
+        print(f"\n=== Clear IK Pose ===")
+        print(f"  Cleared {cleared_keyframes} rotation keyframes at frame {current_frame}")
+        print(f"  Reset {reset_bones} bones to rest pose")
+
+        return {'FINISHED'}
+
+
 def register():
     # Register DAZ Bone Select operator
     bpy.utils.register_class(VIEW3D_OT_daz_bone_select)
@@ -3598,24 +4897,41 @@ def register():
     bpy.utils.register_class(POSE_OT_daz_powerpose_control)
     bpy.utils.register_class(VIEW3D_PT_daz_powerpose_main)
 
+    # Register Clear IK Pose operator
+    bpy.utils.register_class(POSE_OT_clear_ik_pose)
+
     # Keyboard shortcut: Ctrl+Shift+D for "DAZ select"
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon
     if kc:
         km = kc.keymaps.new(name='3D View', space_type='VIEW_3D')
+
+        # DAZ Bone Select: Ctrl+Shift+D
         km.keymap_items.new(
             VIEW3D_OT_daz_bone_select.bl_idname,
             'D', 'PRESS',
             ctrl=True, shift=True
         )
+
+        # Clear IK Pose: Alt+Shift+R (pose mode only)
+        km.keymap_items.new(
+            POSE_OT_clear_ik_pose.bl_idname,
+            'R', 'PRESS',
+            alt=True, shift=True
+        )
+
         print("Registered DAZ Bone Select - Activate with Ctrl+Shift+D")
         print("Registered PowerPose - Open N-panel > DAZ tab")
+        print("Registered Clear IK Pose - Alt+Shift+R to reset pose with keyframes")
 
 
 def unregister():
     # Unregister PowerPose classes
     bpy.utils.unregister_class(VIEW3D_PT_daz_powerpose_main)
     bpy.utils.unregister_class(POSE_OT_daz_powerpose_control)
+
+    # Unregister Clear IK Pose operator
+    bpy.utils.unregister_class(POSE_OT_clear_ik_pose)
 
     # Unregister DAZ Bone Select operator
     bpy.utils.unregister_class(VIEW3D_OT_daz_bone_select)
@@ -3626,7 +4942,8 @@ def unregister():
         km = kc.keymaps.get('3D View')
         if km:
             for kmi in km.keymap_items:
-                if kmi.idname == VIEW3D_OT_daz_bone_select.bl_idname:
+                if kmi.idname in (VIEW3D_OT_daz_bone_select.bl_idname,
+                                 POSE_OT_clear_ik_pose.bl_idname):
                     km.keymap_items.remove(kmi)
 
 
@@ -3886,7 +5203,7 @@ def get_twist_axis(bone):
     return 'Y'
 
 
-def apply_rotation_from_delta(bone, initial_rotation, axis, delta_x, delta_y, sensitivity=0.01):
+def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity=0.01):
     """
     Apply rotation to bone based on mouse delta.
 
@@ -3894,19 +5211,11 @@ def apply_rotation_from_delta(bone, initial_rotation, axis, delta_x, delta_y, se
         bone: Pose bone to rotate
         initial_rotation: Starting rotation (quaternion)
         axis: Rotation axis ('X', 'Y', or 'Z')
-        delta_x: Horizontal mouse movement (pixels)
-        delta_y: Vertical mouse movement (pixels)
+        delta: Mouse movement in pixels (caller decides which: delta_x or delta_y)
         sensitivity: Rotation multiplier (radians per pixel)
     """
-    # Determine rotation angle based on mouse delta
-    if axis == 'X':
-        angle = -delta_y * sensitivity  # Vertical drag
-    elif axis == 'Y':
-        angle = delta_x * sensitivity   # Horizontal drag
-    elif axis == 'Z':
-        angle = delta_x * sensitivity   # Horizontal drag
-    else:
-        angle = 0.0
+    # Calculate angle directly from delta
+    angle = delta * sensitivity
 
     # Create rotation quaternion
     axis_vector = Vector((
@@ -3936,18 +5245,27 @@ def get_genesis8_control_points():
         # Head
         {'id': 'head', 'bone_name': 'head', 'label': 'Head', 'group': 'head'},
 
-        # Arms
-        {'id': 'lHand', 'bone_name': 'lHand', 'label': 'Left Hand', 'group': 'arms'},
-        {'id': 'rHand', 'bone_name': 'rHand', 'label': 'Right Hand', 'group': 'arms'},
-        {'id': 'lForeArm', 'bone_name': 'lForeArm', 'label': 'Left Forearm', 'group': 'arms'},
-        {'id': 'rForeArm', 'bone_name': 'rForeArm', 'label': 'Right Forearm', 'group': 'arms'},
-        {'id': 'lShldr', 'bone_name': 'lShldr', 'label': 'Left Shoulder', 'group': 'arms'},
-        {'id': 'rShldr', 'bone_name': 'rShldr', 'label': 'Right Shoulder', 'group': 'arms'},
+        # Neck group (multi-bone control)
+        {'id': 'neck_group', 'bone_names': ['head', 'neckUpper', 'neckLower'], 'label': 'Neck Group', 'group': 'head', 'shape': 'diamond', 'offset': (-0.15, 0, 0)},
 
-        # Torso
-        {'id': 'chest', 'bone_name': 'chest', 'label': 'Chest', 'group': 'torso'},
-        {'id': 'abdomen', 'bone_name': 'abdomen', 'label': 'Abdomen', 'group': 'torso'},
-        {'id': 'pelvis', 'bone_name': 'pelvis', 'label': 'Pelvis', 'group': 'torso'},
+        # Arms - Left (collar to hand)
+        {'id': 'lCollar', 'bone_name': 'lCollar', 'label': 'Left Collar', 'group': 'arms'},
+        {'id': 'lShldr', 'bone_names': ['lShldrBend', 'lShldrTwist'], 'label': 'Left Shoulder', 'group': 'arms'},
+        {'id': 'lForeArm', 'bone_names': ['lForearmBend', 'lForearmTwist'], 'label': 'Left Forearm', 'group': 'arms'},
+        {'id': 'lHand', 'bone_name': 'lHand', 'label': 'Left Hand', 'group': 'arms'},
+
+        # Arms - Right (collar to hand)
+        {'id': 'rCollar', 'bone_name': 'rCollar', 'label': 'Right Collar', 'group': 'arms'},
+        {'id': 'rShldr', 'bone_names': ['rShldrBend', 'rShldrTwist'], 'label': 'Right Shoulder', 'group': 'arms'},
+        {'id': 'rForeArm', 'bone_names': ['rForearmBend', 'rForearmTwist'], 'label': 'Right Forearm', 'group': 'arms'},
+        {'id': 'rHand', 'bone_name': 'rHand', 'label': 'Right Hand', 'group': 'arms'},
+
+        # Torso (Genesis 8 specific bones - top to bottom)
+        {'id': 'chestUpper', 'bone_name': 'chestUpper', 'label': 'Upper Chest', 'group': 'torso'},
+        {'id': 'chestLower', 'bone_name': 'chestLower', 'label': 'Lower Chest', 'group': 'torso'},
+        {'id': 'abdomenUpper', 'bone_name': 'abdomenUpper', 'label': 'Upper Abdomen', 'group': 'torso'},
+        {'id': 'abdomenLower', 'bone_name': 'abdomenLower', 'label': 'Lower Abdomen', 'group': 'torso'},
+        {'id': 'pelvis', 'bone_name': 'pelvis', 'label': 'Pelvis', 'group': 'torso', 'position': 'tail'},
 
         # Legs
         {'id': 'lFoot', 'bone_name': 'lFoot', 'label': 'Left Foot', 'group': 'legs'},
@@ -4022,12 +5340,13 @@ class POSE_OT_daz_powerpose_control(bpy.types.Operator):
             delta_y = event.mouse_y - self.initial_mouse[1]
 
             # Apply rotation based on delta
+            # X axis uses vertical drag, Y/Z use horizontal drag
+            delta = delta_y if self.rotation_axis == 'X' else delta_x
             apply_rotation_from_delta(
                 self.bone,
                 self.initial_rotation,
                 self.rotation_axis,
-                delta_x,
-                delta_y,
+                delta,
                 sensitivity=0.01
             )
 
