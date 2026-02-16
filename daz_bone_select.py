@@ -3000,13 +3000,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._rotation_initial_quat = bone.rotation_quaternion.copy()
                 self._rotation_initial_mouse = (event.mouse_x, event.mouse_y)
 
-                # Initialize twist bone storage and check for shoulder/forearm bend bones
+                # Initialize twist bone storage and check for shoulder/forearm/thigh bend bones
                 if not hasattr(self, '_twist_bone_initial_quats'):
                     self._twist_bone_initial_quats = {}
 
                 bone_lower = bone.name.lower()
                 if (('shldr' in bone_lower or 'shoulder' in bone_lower or
-                     'forearm' in bone_lower or 'lorearm' in bone_lower) and
+                     'forearm' in bone_lower or 'lorearm' in bone_lower or
+                     'thigh' in bone_lower) and
                     'bend' in bone_lower):
                     twist_bone_name = bone.name.replace('Bend', 'Twist')
                     if twist_bone_name in self._drag_armature.pose.bones:
@@ -3936,20 +3937,24 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if self._rotation_mouse_button == 'LEFT':
                     horiz_axis = 'Y'  # Turn
                     vert_axis = 'X'   # Nod
+                    vert_invert = True  # Invert vertical direction
                 else:  # RIGHT
                     horiz_axis = 'Z'  # Side tilt
                     horiz_invert = True  # Invert direction per user testing
                     vert_axis = 'X'   # Fine forward/back
+                    vert_invert = True  # Invert vertical direction
 
             # NECK
             elif 'neck' in bone_lower:
                 if self._rotation_mouse_button == 'LEFT':
                     horiz_axis = 'Y'  # Rotate
                     vert_axis = 'X'   # Bend
+                    vert_invert = True  # Invert vertical direction
                 else:  # RIGHT
                     horiz_axis = 'Z'  # Side bend (tilt)
                     horiz_invert = True  # Invert direction per user testing
                     vert_axis = 'X'  # Fine forward/back (same as head)
+                    vert_invert = True  # Invert vertical direction
 
             # TORSO
             elif any(part in bone_lower for part in ['chest', 'abdomen', 'pelvis']):
@@ -3966,13 +3971,6 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if self._rotation_mouse_button == 'LEFT':
                     horiz_axis = 'Z'  # Shrug/drop
                     vert_axis = 'X'   # Forward/back
-                    # lCollar inversions
-                    if self._rotation_bone.name.startswith('l'):
-                        vert_invert = True
-                    # rCollar inversions (opposite)
-                    else:
-                        horiz_invert = True
-                        vert_invert = True
                 else:  # RIGHT
                     horiz_axis = None  # Removed per user testing
                     vert_axis = 'Y'   # Twist (changed from None per user testing)
@@ -4005,20 +4003,26 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # HAND
             elif 'hand' in bone_lower:
                 if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'Z'  # Side bend
-                    vert_axis = 'X'   # Up/down
-                else:  # RIGHT
                     horiz_axis = 'Y'  # Twist
-                    vert_axis = None
+                    vert_axis = 'Z'   # Up/down
+                    horiz_invert = True  # Invert twist direction
+                else:  # RIGHT
+                    horiz_axis = 'X'  # Side-to-side
+                    horiz_invert = True  # Invert side-to-side direction
+                    vert_axis = 'Z'   # Up/down
 
             # THIGH
             elif 'thigh' in bone_lower:
                 if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'X'  # Swing forward/back
-                    vert_axis = 'Z'   # Raise/lower
+                    horiz_axis = 'Y'  # Twist (targets ThighTwist bone)
+                    horiz_invert = True  # Invert twist direction
+                    vert_axis = 'X'   # Swing forward/back (targets ThighBend bone)
+                    vert_invert = True  # Invert forward/back direction
                 else:  # RIGHT
-                    horiz_axis = 'Y'  # Twist inward/outward
-                    vert_axis = 'Y'   # Side movement (same axis)
+                    horiz_axis = 'Z'  # Side-to-side (targets ThighBend bone)
+                    horiz_invert = True  # Invert side-to-side direction
+                    vert_axis = 'X'   # Swing forward/back (targets ThighBend bone)
+                    vert_invert = True  # Invert forward/back direction
 
             # SHIN (Knee)
             elif 'shin' in bone_lower or 'knee' in bone_lower:
@@ -4045,8 +4049,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 horiz_invert = not horiz_invert
                 vert_invert = not vert_invert
 
-            # Check if we need to use an alternate bone for vertical rotation
-            # (e.g., shoulder/forearm twist bones)
+            # Check if we need to use an alternate bone for horizontal/vertical rotation
+            # (e.g., shoulder/forearm/thigh twist bones)
+            horiz_target_bone = self._rotation_bone
             vert_target_bone = self._rotation_bone
 
             # Initialize twist bone quaternion storage if needed
@@ -4075,6 +4080,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     if twist_bone_name not in self._twist_bone_initial_quats:
                         self._twist_bone_initial_quats[twist_bone_name] = vert_target_bone.rotation_quaternion.copy()
 
+            # Thigh LMB horizontal Y axis → thighTwist bone
+            elif (horiz_axis == 'Y' and
+                  self._rotation_mouse_button == 'LEFT' and
+                  'thigh' in bone_lower and
+                  'bend' in bone_lower):
+                twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
+                if twist_bone_name in self._drag_armature.pose.bones:
+                    horiz_target_bone = self._drag_armature.pose.bones[twist_bone_name]
+                    if twist_bone_name not in self._twist_bone_initial_quats:
+                        self._twist_bone_initial_quats[twist_bone_name] = horiz_target_bone.rotation_quaternion.copy()
+
             # Apply rotations - horizontal and vertical axes simultaneously
             # Use a working copy to compose rotations without modifying the stored initial quat
             current_quat = self._rotation_initial_quat.copy()
@@ -4085,10 +4101,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Apply horizontal axis rotation (responds to horizontal mouse drag)
             if horiz_axis is not None and abs(delta_x) > 0:
+                # Use alternate bone if specified (e.g., twist bone for thigh RMB)
+                target_bone = horiz_target_bone
+                if target_bone != self._rotation_bone and target_bone.name in self._twist_bone_initial_quats:
+                    horiz_current_quat = self._twist_bone_initial_quats[target_bone.name].copy()
+                else:
+                    horiz_current_quat = current_quat
+
                 effective_delta_x = -delta_x if horiz_invert else delta_x
                 apply_rotation_from_delta(
-                    self._rotation_bone,
-                    current_quat,
+                    target_bone,
+                    horiz_current_quat,
                     horiz_axis,
                     effective_delta_x,
                     sensitivity
@@ -4186,7 +4209,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # For neck group, use 4-way control scheme
             # LEFT MOUSE: Y-axis (horizontal) and X-axis (vertical) like head
-            # RIGHT MOUSE: Z-axis (horizontal) for tilt
+            # RIGHT MOUSE: Z-axis (horizontal) for tilt, X-axis (vertical) for fine forward/back
+            # Keep axis rotations separate for per-bone filtering
+            rot_x = None
+            rot_y = None
+            rot_z = None
+
             if self._rotation_mouse_button == 'LEFT':
                 # Horizontal movement (delta_x) rotates around Y axis (turn)
                 angle_y = delta_x * sensitivity
@@ -4195,18 +4223,39 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Vertical movement (delta_y) rotates around X axis (nod)
                 angle_x = -delta_y * sensitivity
                 rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
-
-                # Combine rotations
-                combined_rot = rot_y @ rot_x
             else:  # RIGHT MOUSE
                 # Horizontal movement (delta_x) rotates around Z axis (tilt)
                 # Inverted direction per user testing
                 angle_z = -delta_x * sensitivity
-                combined_rot = Quaternion(Vector((0, 0, 1)), angle_z)
+                rot_z = Quaternion(Vector((0, 0, 1)), angle_z)
 
-            # Apply same rotation to all bones (Individual Origins)
+                # Vertical movement (delta_y) rotates around X axis (fine forward/back)
+                # Inverted direction to match head/neck
+                angle_x = -delta_y * sensitivity
+                rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
+
+            # Apply rotation to each bone with axis filtering (Individual Origins)
+            # Twist bones only receive Y-axis rotations, Bend bones receive all axes
             for i, bone in enumerate(self._rotation_bones):
                 initial_quat = self._rotation_initial_quats[i]
+
+                # Check if this is a twist bone (should only rotate on Y-axis)
+                is_twist_bone = 'twist' in bone.name.lower()
+
+                # Build combined rotation based on bone type
+                combined_rot = Quaternion()  # Identity quaternion
+
+                # Y-axis rotation (twist) - apply to ALL bones
+                if rot_y:
+                    combined_rot = rot_y @ combined_rot
+
+                # X and Z-axis rotations (bending) - only apply to non-twist bones
+                if not is_twist_bone:
+                    if rot_x:
+                        combined_rot = rot_x @ combined_rot
+                    if rot_z:
+                        combined_rot = rot_z @ combined_rot
+
                 bone.rotation_quaternion = combined_rot @ initial_quat
 
             print(f"  Multi-bone rotation: delta_x={delta_x:.2f}, delta_y={delta_y:.2f}, {len(self._rotation_bones)} bones")
@@ -5243,10 +5292,10 @@ def get_genesis8_control_points():
     """
     control_points = [
         # Head
-        {'id': 'head', 'bone_name': 'head', 'label': 'Head', 'group': 'head'},
+        {'id': 'head', 'bone_name': 'head', 'label': 'Head', 'group': 'head', 'offset': (0, 0, 0.075)},
 
         # Neck group (multi-bone control)
-        {'id': 'neck_group', 'bone_names': ['head', 'neckUpper', 'neckLower'], 'label': 'Neck Group', 'group': 'head', 'shape': 'diamond', 'offset': (-0.15, 0, 0)},
+        {'id': 'neck_group', 'bone_names': ['head', 'neckUpper', 'neckLower'], 'label': 'Neck Group', 'group': 'head', 'shape': 'diamond', 'reference_bone': 'neckUpper', 'offset': (-0.075, 0, 0)},
 
         # Arms - Left (collar to hand)
         {'id': 'lCollar', 'bone_name': 'lCollar', 'label': 'Left Collar', 'group': 'arms'},
@@ -5272,8 +5321,17 @@ def get_genesis8_control_points():
         {'id': 'rFoot', 'bone_name': 'rFoot', 'label': 'Right Foot', 'group': 'legs'},
         {'id': 'lShin', 'bone_name': 'lShin', 'label': 'Left Shin', 'group': 'legs'},
         {'id': 'rShin', 'bone_name': 'rShin', 'label': 'Right Shin', 'group': 'legs'},
-        {'id': 'lThigh', 'bone_name': 'lThigh', 'label': 'Left Thigh', 'group': 'legs'},
-        {'id': 'rThigh', 'bone_name': 'rThigh', 'label': 'Right Thigh', 'group': 'legs'},
+        {'id': 'lThigh', 'bone_names': ['lThighBend', 'lThighTwist'], 'label': 'Left Thigh', 'group': 'legs', 'position': 'tail'},
+        {'id': 'rThigh', 'bone_names': ['rThighBend', 'rThighTwist'], 'label': 'Right Thigh', 'group': 'legs', 'position': 'tail'},
+
+        # Group Nodes (diamond-shaped hierarchical controls)
+        {'id': 'lArm_group', 'bone_names': ['lShldrBend', 'lShldrTwist', 'lForearmBend', 'lForearmTwist'], 'label': 'Left Arm Group', 'group': 'arms', 'shape': 'diamond', 'reference_bone': 'lShldrTwist', 'offset': (0.075, 0, 0)},
+        {'id': 'rArm_group', 'bone_names': ['rShldrBend', 'rShldrTwist', 'rForearmBend', 'rForearmTwist'], 'label': 'Right Arm Group', 'group': 'arms', 'shape': 'diamond', 'reference_bone': 'rShldrTwist', 'offset': (-0.075, 0, 0)},
+        {'id': 'shoulders_group', 'bone_names': ['lCollar', 'rCollar', 'lShldrBend', 'rShldrBend'], 'label': 'Shoulders Group', 'group': 'torso', 'shape': 'diamond', 'reference_bone': 'chestUpper', 'offset': (0, 0, 0.075)},
+        {'id': 'torso_group', 'bone_names': ['abdomenLower', 'abdomenUpper', 'chestLower', 'chestUpper'], 'label': 'Torso Group', 'group': 'torso', 'shape': 'diamond', 'reference_bone': 'abdomenUpper', 'offset': (-0.1, 0, 0)},
+        {'id': 'lLeg_group', 'bone_names': ['lThighBend', 'lThighTwist', 'lShin'], 'label': 'Left Leg Group', 'group': 'legs', 'shape': 'diamond', 'reference_bone': 'lThighTwist', 'offset': (0.075, 0, 0)},
+        {'id': 'rLeg_group', 'bone_names': ['rThighBend', 'rThighTwist', 'rShin'], 'label': 'Right Leg Group', 'group': 'legs', 'shape': 'diamond', 'reference_bone': 'rThighTwist', 'offset': (-0.075, 0, 0)},
+        {'id': 'legs_group', 'bone_names': ['lThighBend', 'lThighTwist', 'lShin', 'rThighBend', 'rThighTwist', 'rShin'], 'label': 'Legs Group', 'group': 'legs', 'shape': 'diamond', 'reference_bone': 'pelvis', 'offset': (0, 0, -0.275)},
     ]
 
     return control_points

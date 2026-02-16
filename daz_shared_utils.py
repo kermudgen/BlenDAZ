@@ -207,6 +207,7 @@ def get_genesis8_control_points():
             'bone_name': 'head',
             'label': 'Head',
             'group': 'head',
+            'offset': (0, 0, 0.075),
             'controls': {
                 'lmb_horiz': 'Z',  # Turn head left/right
                 'lmb_vert': 'X',   # Tilt head up/down (nod)
@@ -222,7 +223,8 @@ def get_genesis8_control_points():
             'label': 'Neck Group',
             'group': 'head',
             'shape': 'diamond',
-            'offset': (-0.15, 0, 0),
+            'reference_bone': 'neckUpper',
+            'offset': (-0.075, 0, 0),
             'controls': {
                 'lmb_horiz': 'Z',  # Rotate all
                 'lmb_vert': 'X',   # Bend all
@@ -426,9 +428,10 @@ def get_genesis8_control_points():
         # ===== LEFT LEG =====
         {
             'id': 'lThigh',
-            'bone_name': 'lThigh',
+            'bone_names': ['lThighBend', 'lThighTwist'],
             'label': 'Left Thigh',
             'group': 'legs',
+            'position': 'tail',
             'controls': {
                 'lmb_horiz': 'X',  # Leg swing forward/back
                 'lmb_vert': 'Z',   # Raise/lower leg
@@ -464,9 +467,10 @@ def get_genesis8_control_points():
         # ===== RIGHT LEG =====
         {
             'id': 'rThigh',
-            'bone_name': 'rThigh',
+            'bone_names': ['rThighBend', 'rThighTwist'],
             'label': 'Right Thigh',
             'group': 'legs',
+            'position': 'tail',
             'controls': {
                 'lmb_horiz': 'X',
                 'lmb_vert': 'Z',
@@ -495,6 +499,113 @@ def get_genesis8_control_points():
                 'lmb_horiz': 'Z',
                 'lmb_vert': 'X',
                 'rmb_horiz': 'Y',
+                'rmb_vert': None
+            }
+        },
+
+        # ===== GROUP NODES (Diamond-shaped hierarchical controls) =====
+        {
+            'id': 'lArm_group',
+            'bone_names': ['lShldrBend', 'lShldrTwist', 'lForearmBend', 'lForearmTwist'],
+            'label': 'Left Arm Group',
+            'group': 'arms',
+            'shape': 'diamond',
+            'reference_bone': 'lShldrTwist',
+            'offset': (0.075, 0, 0),
+            'controls': {
+                'lmb_horiz': 'X',  # Swing forward/back
+                'lmb_vert': 'Z',   # Raise/lower
+                'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'rArm_group',
+            'bone_names': ['rShldrBend', 'rShldrTwist', 'rForearmBend', 'rForearmTwist'],
+            'label': 'Right Arm Group',
+            'group': 'arms',
+            'shape': 'diamond',
+            'reference_bone': 'rShldrTwist',
+            'offset': (-0.075, 0, 0),
+            'controls': {
+                'lmb_horiz': 'X',  # Swing forward/back
+                'lmb_vert': 'Z',   # Raise/lower
+                'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'shoulders_group',
+            'bone_names': ['lCollar', 'rCollar', 'lShldrBend', 'rShldrBend'],
+            'label': 'Shoulders Group',
+            'group': 'torso',
+            'shape': 'diamond',
+            'reference_bone': 'chestUpper',
+            'offset': (0, 0, 0.075),
+            'controls': {
+                'lmb_horiz': 'Z',  # Shrug/drop
+                'lmb_vert': 'X',   # Forward/back
+                'rmb_horiz': 'Y',  # Roll
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'torso_group',
+            'bone_names': ['abdomenLower', 'abdomenUpper', 'chestLower', 'chestUpper'],
+            'label': 'Torso Group',
+            'group': 'torso',
+            'shape': 'diamond',
+            'reference_bone': 'abdomenUpper',
+            'offset': (-0.1, 0, 0),
+            'controls': {
+                'lmb_horiz': 'Y',  # Twist
+                'lmb_vert': 'X',   # Bend forward/back
+                'rmb_horiz': 'Z',  # Side lean
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'lLeg_group',
+            'bone_names': ['lThighBend', 'lThighTwist', 'lShin'],
+            'label': 'Left Leg Group',
+            'group': 'legs',
+            'shape': 'diamond',
+            'reference_bone': 'lThighTwist',
+            'offset': (0.075, 0, 0),
+            'controls': {
+                'lmb_horiz': 'X',  # Swing forward/back
+                'lmb_vert': 'Z',   # Raise/lower
+                'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'rLeg_group',
+            'bone_names': ['rThighBend', 'rThighTwist', 'rShin'],
+            'label': 'Right Leg Group',
+            'group': 'legs',
+            'shape': 'diamond',
+            'reference_bone': 'rThighTwist',
+            'offset': (-0.075, 0, 0),
+            'controls': {
+                'lmb_horiz': 'X',  # Swing forward/back
+                'lmb_vert': 'Z',   # Raise/lower
+                'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'legs_group',
+            'bone_names': ['lThighBend', 'lThighTwist', 'lShin', 'rThighBend', 'rThighTwist', 'rShin'],
+            'label': 'Legs Group',
+            'group': 'legs',
+            'shape': 'diamond',
+            'reference_bone': 'pelvis',
+            'offset': (0, 0, -0.275),
+            'controls': {
+                'lmb_horiz': 'X',  # Swing forward/back
+                'lmb_vert': 'Z',   # Raise/lower
+                'rmb_horiz': 'Y',  # Twist
                 'rmb_vert': None
             }
         },
