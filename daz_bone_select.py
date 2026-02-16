@@ -9,14 +9,17 @@ from mathutils import Vector, Euler, Quaternion, Matrix
 from mathutils.bvhtree import BVHTree
 import gpu
 from gpu_extras.batch import batch_for_shader
+import blf
 import sys
 import os
+import math
 
 # Import shared utilities from daz_shared_utils
 from daz_shared_utils import (
     get_bend_axis,
     get_twist_axis,
-    apply_rotation_from_delta
+    apply_rotation_from_delta,
+    decompose_swing_twist
 )
 
 
@@ -1932,11 +1935,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     # GPU draw handlers
     _draw_handler = None  # For highlighting
     _pin_draw_handler = None  # For pin spheres (always visible)
+    _tooltip_draw_handler = None  # For tooltip text near mouse cursor
     _highlight_cache = {}  # Cache of {(mesh_name, bone_name): [triangle_verts]} for performance
     _last_highlighted_bone = None  # Track when to rebuild cache
 
     def modal(self, context, event):
         """Handle mouse events"""
+
+        # Clear tooltip on any mouse button press
+        if event.type in {'LEFTMOUSE', 'RIGHTMOUSE', 'MIDDLEMOUSE'} and event.value == 'PRESS':
+            if self._tooltip_text:
+                self._tooltip_text = None
+                self._tooltip_mouse_pos = None
+                context.area.tag_redraw()
 
         if event.type == 'MOUSEMOVE':
             # Debug: Check state
@@ -2111,6 +2122,34 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Hovering over a bone - prepare for potential drag
             if self._hover_bone_name and self._hover_armature:
+                # POSEBRIDGE MODE: Check if this is the special "base" node
+                posebridge_mode = hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active
+                if posebridge_mode and hasattr(self, '_hover_control_point_id'):
+                    # Check if this is the base node
+                    if self._hover_control_point_id == 'base':
+                        # Special handling: Switch to object mode and select armature
+                        print(f"  Base node clicked - switching to object mode")
+
+                        # Deselect all
+                        bpy.ops.object.select_all(action='DESELECT')
+
+                        # Switch to object mode
+                        if context.mode != 'OBJECT':
+                            bpy.ops.object.mode_set(mode='OBJECT')
+
+                        # Select the armature
+                        self._hover_armature.select_set(True)
+                        context.view_layer.objects.active = self._hover_armature
+
+                        print(f"  Armature '{self._hover_armature.name}' selected in object mode")
+
+                        # Clear mouse tracking
+                        self._mouse_down_pos = None
+
+                        # Consume event
+                        return {'RUNNING_MODAL'}
+
+                # Normal bone selection
                 # Select bone immediately (don't wait for release)
                 # This allows click-drag to work in one motion
                 self.select_bone(context)
@@ -2162,6 +2201,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     self._drag_armature = self._hover_armature
                     self._rotation_mouse_button = 'RIGHT'  # Track right-click
                     self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
+                    self._right_click_used_for_drag = True  # Claim this RMB to suppress context menu
 
                     # Consume event
                     return {'RUNNING_MODAL'}
@@ -2280,6 +2320,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._base_body_mesh = None
         self._mouse_down_pos = None
 
+        # Tooltip state (shows after 1 second of hovering)
+        self._hover_start_time = None
+        self._last_hovered_id = None
+        self._tooltip_shown = False
+        self._tooltip_text = None  # Text to display in tooltip
+        self._tooltip_mouse_pos = None  # Mouse position for tooltip
+
         # Initialize IK drag state
         self._is_dragging = False
         self._drag_bone_name = None
@@ -2345,6 +2392,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self.draw_pin_spheres_callback, (), 'WINDOW', 'POST_VIEW'
         )
 
+        # Register tooltip draw handler (shows text near mouse after 1 sec hover)
+        self._tooltip_draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            self.draw_tooltip_callback, (), 'WINDOW', 'POST_PIXEL'
+        )
+
         print("\n=== DAZ Bone Select & Pin & IK Started ===")
         print("  Hover over mesh to preview bone")
         print("  Left-click to select bone")
@@ -2371,6 +2423,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if self._pin_draw_handler:
             bpy.types.SpaceView3D.draw_handler_remove(self._pin_draw_handler, 'WINDOW')
             self._pin_draw_handler = None
+
+        if self._tooltip_draw_handler:
+            bpy.types.SpaceView3D.draw_handler_remove(self._tooltip_draw_handler, 'WINDOW')
+            self._tooltip_draw_handler = None
 
         # Clear highlight cache
         self._highlight_cache.clear()
@@ -2675,25 +2731,57 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._hover_bone_name = closest_bone
             self._hover_armature = armature
 
-            # Store control point info for multi-bone handling
+            # Store control point info for multi-bone handling and special nodes
             if closest_cp.control_type == 'multi':
                 # For multi-bone controls, store the ID and bone list
                 self._hover_control_point_id = closest_cp_id
                 self._hover_bone_names = closest_cp.label.split(',')  # Bone list stored in label
             else:
-                self._hover_control_point_id = None
+                # For single-bone controls, also store ID (for special nodes like "base")
+                self._hover_control_point_id = closest_cp_id
                 self._hover_bone_names = None
 
             # Update PoseBridgeDrawHandler (for control point yellow highlight)
             # Use ID for multi-bone controls, bone name for single controls
             PoseBridgeDrawHandler._hovered_control_point = closest_cp_id if closest_cp.control_type == 'multi' else closest_bone
 
-            # Update header
+            # Tooltip timer: Track hover time for detailed tooltips
+            import time
+            current_time = time.time()
+
+            # Check if we're hovering over a different control point
+            if closest_cp_id != self._last_hovered_id:
+                # New control point - reset timer
+                self._hover_start_time = current_time
+                self._last_hovered_id = closest_cp_id
+                self._tooltip_shown = False
+
+            # Check if we've been hovering for more than 1 second
+            show_tooltip = False
+            if self._hover_start_time and (current_time - self._hover_start_time) >= 1.0:
+                if not self._tooltip_shown:
+                    show_tooltip = True
+                    self._tooltip_shown = True
+
+            # Update header with basic info (always show simple text)
             display_name = closest_cp.id if closest_cp.control_type == 'multi' else closest_bone
             if display_name != self._last_bone:
                 text = f"PoseBridge: {display_name} | Click+Drag to rotate | ESC to exit"
                 context.area.header_text_set(text)
                 self._last_bone = display_name
+                context.area.tag_redraw()  # Trigger immediate highlight update
+
+            # Set tooltip text for GPU drawing (appears after 1 second hover)
+            if show_tooltip:
+                # Get human-readable name from control point label
+                tooltip_text = closest_cp.label
+                self._tooltip_text = tooltip_text
+                self._tooltip_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+                context.area.tag_redraw()
+            elif not show_tooltip and self._tooltip_text:
+                # Clear tooltip if we're not showing it anymore
+                self._tooltip_text = None
+                self._tooltip_mouse_pos = None
                 context.area.tag_redraw()
         else:
             # No control point under mouse
@@ -2708,6 +2796,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._hover_mesh = None
             self._hover_bone_name = None
             self._hover_armature = None
+
+            # Reset tooltip timer and clear tooltip
+            self._hover_start_time = None
+            self._last_hovered_id = None
+            self._tooltip_shown = False
+            self._tooltip_text = None
+            self._tooltip_mouse_pos = None
+
             context.area.tag_redraw()  # Redraw to clear highlight
 
     def get_bone_from_hit(self, mesh_obj, hit_location, face_index=None):
@@ -3931,6 +4027,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             vert_axis = None   # Axis for vertical drag
             horiz_invert = False  # Invert horizontal direction
             vert_invert = False   # Invert vertical direction
+            horiz_armature_space = False  # Use armature-space for horizontal (default: local)
+            vert_armature_space = False   # Use armature-space for vertical (default: local)
 
             # HEAD
             if 'head' in bone_lower:
@@ -4012,17 +4110,23 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     vert_axis = 'Z'   # Up/down
 
             # THIGH
+            # Uses armature-space for spread/forward-back so movements are consistent
+            # regardless of current pose. Twist stays local (along bone length).
             elif 'thigh' in bone_lower:
                 if self._rotation_mouse_button == 'LEFT':
                     horiz_axis = 'Y'  # Twist (targets ThighTwist bone)
                     horiz_invert = True  # Invert twist direction
+                    horiz_armature_space = False  # Twist is LOCAL (around bone length)
                     vert_axis = 'X'   # Swing forward/back (targets ThighBend bone)
                     vert_invert = True  # Invert forward/back direction
+                    vert_armature_space = False  # LOCAL space - simpler behavior
                 else:  # RIGHT
-                    horiz_axis = 'Z'  # Side-to-side (targets ThighBend bone)
-                    horiz_invert = True  # Invert side-to-side direction
-                    vert_axis = 'X'   # Swing forward/back (targets ThighBend bone)
-                    vert_invert = True  # Invert forward/back direction
+                    horiz_axis = 'Z'  # Side-to-side spread (bone-local Z)
+                    horiz_invert = True  # Inverted for correct spread direction
+                    horiz_armature_space = False  # LOCAL space - simpler, adapts to pose
+                    vert_axis = 'X'   # Forward/back
+                    vert_invert = True  # Invert direction
+                    vert_armature_space = False  # LOCAL space
 
             # SHIN (Knee)
             elif 'shin' in bone_lower or 'knee' in bone_lower:
@@ -4099,42 +4203,162 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if 'shldr' in bone_lower or 'shoulder' in bone_lower:
                 print(f"[DEBUG] About to apply rotation: delta_x={delta_x:.2f}, delta_y={delta_y:.2f}, horiz_axis={horiz_axis}, vert_axis={vert_axis}")
 
-            # Apply horizontal axis rotation (responds to horizontal mouse drag)
-            if horiz_axis is not None and abs(delta_x) > 0:
-                # Use alternate bone if specified (e.g., twist bone for thigh RMB)
-                target_bone = horiz_target_bone
-                if target_bone != self._rotation_bone and target_bone.name in self._twist_bone_initial_quats:
-                    horiz_current_quat = self._twist_bone_initial_quats[target_bone.name].copy()
-                else:
-                    horiz_current_quat = current_quat
+            # Debug output for thigh - track gimbal lock issue
+            if 'thigh' in bone_lower:
+                print(f"\n[THIGH DEBUG] {self._rotation_bone.name}")
+                print(f"  Mouse Button: {self._rotation_mouse_button}")
+                print(f"  Delta: x={delta_x:.2f}, y={delta_y:.2f}")
+                print(f"  Axes: horiz={horiz_axis}, vert={vert_axis}")
+                print(f"  Target Bones: horiz={horiz_target_bone.name}, vert={vert_target_bone.name}")
+                print(f"  Inverted: horiz={horiz_invert}, vert={vert_invert}")
+                print(f"  Initial Quat: {self._rotation_initial_quat}")
+                print(f"  Current Quat: {self._rotation_bone.rotation_quaternion}")
 
-                effective_delta_x = -delta_x if horiz_invert else delta_x
-                apply_rotation_from_delta(
-                    target_bone,
-                    horiz_current_quat,
-                    horiz_axis,
-                    effective_delta_x,
-                    sensitivity
-                )
+            # Save current quaternions BEFORE applying rotation (for continuity check)
+            previous_quat = self._rotation_bone.rotation_quaternion.copy()
+            previous_twist_quats = {}
+            if horiz_target_bone != self._rotation_bone:
+                previous_twist_quats[horiz_target_bone.name] = horiz_target_bone.rotation_quaternion.copy()
+            if vert_target_bone != self._rotation_bone and vert_target_bone.name not in previous_twist_quats:
+                previous_twist_quats[vert_target_bone.name] = vert_target_bone.rotation_quaternion.copy()
+
+            # Check if both axes target the same bone (need combined rotation)
+            same_target = (horiz_target_bone == vert_target_bone)
+
+            if same_target and horiz_target_bone == self._rotation_bone:
+                # COMBINED ROTATION: Both axes target the main bone
+                # Build combined rotation quaternion and apply once
+                combined_rot = Quaternion()  # Identity
+
+                # Get bone's rest quaternion for armature-space transformations (conjugation)
+                rest_matrix = self._rotation_bone.bone.matrix_local.to_3x3()
+                rest_quat = rest_matrix.to_quaternion()
+
+                # Add horizontal axis rotation
+                if horiz_axis is not None and abs(delta_x) > 0:
+                    effective_delta_x = -delta_x if horiz_invert else delta_x
+                    angle_h = effective_delta_x * sensitivity
+                    armature_axis_h = Vector((
+                        1 if horiz_axis == 'X' else 0,
+                        1 if horiz_axis == 'Y' else 0,
+                        1 if horiz_axis == 'Z' else 0
+                    ))
+                    # For armature-space: use conjugation to transform rotation properly
+                    if horiz_armature_space:
+                        R_armature_h = Quaternion(armature_axis_h, angle_h)
+                        rot_h = rest_quat.inverted() @ R_armature_h @ rest_quat
+                    else:
+                        rot_h = Quaternion(armature_axis_h, angle_h)
+                    combined_rot = rot_h @ combined_rot
+
+                # Add vertical axis rotation
+                if vert_axis is not None and abs(delta_y) > 0:
+                    effective_delta_y = -delta_y if vert_invert else delta_y
+                    angle_v = effective_delta_y * sensitivity
+                    armature_axis_v = Vector((
+                        1 if vert_axis == 'X' else 0,
+                        1 if vert_axis == 'Y' else 0,
+                        1 if vert_axis == 'Z' else 0
+                    ))
+                    # For armature-space: use conjugation to transform rotation properly
+                    if vert_armature_space:
+                        R_armature_v = Quaternion(armature_axis_v, angle_v)
+                        rot_v = rest_quat.inverted() @ R_armature_v @ rest_quat
+                    else:
+                        rot_v = Quaternion(armature_axis_v, angle_v)
+                    combined_rot = rot_v @ combined_rot
+
+                # Apply combined rotation to initial
+                self._rotation_bone.rotation_quaternion = combined_rot @ self._rotation_initial_quat
+            else:
+                # SEPARATE ROTATIONS: Axes target different bones
+
+                # Apply horizontal axis rotation (responds to horizontal mouse drag)
+                if horiz_axis is not None and abs(delta_x) > 0:
+                    target_bone = horiz_target_bone
+                    if target_bone != self._rotation_bone and target_bone.name in self._twist_bone_initial_quats:
+                        # Horizontal targets a different bone (e.g., twist bone) - use its initial rotation
+                        horiz_current_quat = self._twist_bone_initial_quats[target_bone.name].copy()
+                    else:
+                        # Horizontal targets the main bone - ALWAYS use the drag-start initial rotation
+                        horiz_current_quat = self._rotation_initial_quat.copy()
+
+                    effective_delta_x = -delta_x if horiz_invert else delta_x
+                    apply_rotation_from_delta(
+                        target_bone,
+                        horiz_current_quat,
+                        horiz_axis,
+                        effective_delta_x,
+                        sensitivity,
+                        use_armature_space=horiz_armature_space
+                    )
+
+                    # Quaternion continuity fix for horizontal rotation target
+                    if target_bone != self._rotation_bone and target_bone.name in previous_twist_quats:
+                        new_quat = target_bone.rotation_quaternion.copy()
+                        prev_quat = previous_twist_quats[target_bone.name]
+                        new_quat.make_compatible(prev_quat)
+                        target_bone.rotation_quaternion = new_quat
+
+                # Apply vertical axis rotation (responds to vertical mouse drag)
+                if vert_axis is not None and abs(delta_y) > 0:
+                    target_bone = vert_target_bone
+                    if target_bone != self._rotation_bone and target_bone.name in self._twist_bone_initial_quats:
+                        # Vertical targets a different bone (e.g., twist bone) - use its initial rotation
+                        vert_current_quat = self._twist_bone_initial_quats[target_bone.name].copy()
+                    else:
+                        # Vertical targets the main bone - ALWAYS use the drag-start initial rotation
+                        vert_current_quat = self._rotation_initial_quat.copy()
+
+                    effective_delta_y = -delta_y if vert_invert else delta_y
+                    apply_rotation_from_delta(
+                        target_bone,
+                        vert_current_quat,
+                        vert_axis,
+                        effective_delta_y,
+                        sensitivity,
+                        use_armature_space=vert_armature_space
+                    )
+
+                    # Quaternion continuity fix for vertical rotation target
+                    if target_bone != self._rotation_bone and target_bone.name in previous_twist_quats:
+                        new_quat = target_bone.rotation_quaternion.copy()
+                        prev_quat = previous_twist_quats[target_bone.name]
+                        new_quat.make_compatible(prev_quat)
+                        target_bone.rotation_quaternion = new_quat
+
+            # Quaternion continuity fix: ensure we stay on the same "side" of quaternion sphere
+            # This prevents sudden flips when crossing ±180° rotation
+            # Use make_compatible() to automatically choose the quaternion representation closest to previous frame
+            new_quat = self._rotation_bone.rotation_quaternion.copy()
+            original_w = new_quat.w
+            new_quat.make_compatible(previous_quat)
+            self._rotation_bone.rotation_quaternion = new_quat
+            if 'thigh' in bone_lower and abs(new_quat.w - original_w) > 0.01:
+                print(f"  [CONTINUITY FIX] Adjusted quaternion to maintain continuity (w: {original_w:.4f} → {new_quat.w:.4f})")
+
+            # Y-LOCK for ThighBend
+            # ThighBend should NEVER have Y rotation - only X (forward/back) and Z (spread)
+            # Any Y component from gimbal effects is simply removed, not transferred
+            if 'thigh' in bone_lower and 'bend' in bone_lower:
+                # Decompose current rotation into swing (X/Z) and twist (Y)
                 current_quat = self._rotation_bone.rotation_quaternion.copy()
+                swing_quat, twist_quat = decompose_swing_twist(current_quat, 'Y')
 
-            # Apply vertical axis rotation (responds to vertical mouse drag)
-            if vert_axis is not None and abs(delta_y) > 0:
-                # Use alternate bone if specified (e.g., twist bone for shoulder RMB)
-                target_bone = vert_target_bone
-                if target_bone != self._rotation_bone and target_bone.name in self._twist_bone_initial_quats:
-                    vert_current_quat = self._twist_bone_initial_quats[target_bone.name].copy()
-                else:
-                    vert_current_quat = current_quat
+                # Keep ONLY the swing component (Y-locked)
+                self._rotation_bone.rotation_quaternion = swing_quat
 
-                effective_delta_y = -delta_y if vert_invert else delta_y
-                apply_rotation_from_delta(
-                    target_bone,
-                    vert_current_quat,
-                    vert_axis,
-                    effective_delta_y,
-                    sensitivity
-                )
+                # Debug: show if we removed any Y rotation
+                twist_angle = 2.0 * math.acos(min(1.0, abs(twist_quat.w)))
+                if twist_angle > 0.01:  # Only log if > 0.5 degrees
+                    print(f"  [Y-LOCK] Removed {math.degrees(twist_angle):.1f} deg Y rotation from {self._rotation_bone.name}")
+
+            # Debug output for thigh - show final rotation after application
+            if 'thigh' in bone_lower:
+                print(f"  Final Quat: {self._rotation_bone.rotation_quaternion}")
+                # Convert to euler for easier interpretation
+                euler = self._rotation_bone.rotation_quaternion.to_euler('XYZ')
+                print(f"  Final Euler (deg): X={math.degrees(euler.x):.1f}, Y={math.degrees(euler.y):.1f}, Z={math.degrees(euler.z):.1f}")
 
             # Update view layer to evaluate constraints
             context.view_layer.update()
@@ -4608,6 +4832,50 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         context.view_layer.update()
         self.report({'INFO'}, f"Undone: Restored {len(bones_data)} bones")
         print(f"  ✓ Undo complete")
+
+    def draw_tooltip_callback(self):
+        """Draw tooltip text near mouse cursor after 1 second hover"""
+        # Safety check: verify operator still exists
+        try:
+            tooltip_text = self._tooltip_text
+            tooltip_pos = self._tooltip_mouse_pos
+        except ReferenceError:
+            return
+
+        # Only draw if we have text and position
+        if not tooltip_text or not tooltip_pos:
+            return
+
+        # Set up font
+        font_id = 0
+        blf.size(font_id, 14)
+        blf.color(font_id, 1.0, 1.0, 1.0, 0.95)  # White text with slight transparency
+
+        # Calculate text dimensions for background
+        text_width, text_height = blf.dimensions(font_id, tooltip_text)
+
+        # Position tooltip slightly offset from mouse (right and down)
+        x = tooltip_pos[0] + 15
+        y = tooltip_pos[1] - 20
+
+        # Draw semi-transparent background
+        padding = 6
+        vertices = (
+            (x - padding, y - padding),
+            (x + text_width + padding, y - padding),
+            (x + text_width + padding, y + text_height + padding),
+            (x - padding, y + text_height + padding)
+        )
+
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        batch = batch_for_shader(shader, 'TRI_FAN', {"pos": vertices})
+        shader.bind()
+        shader.uniform_float("color", (0.0, 0.0, 0.0, 0.75))  # Dark background
+        batch.draw(shader)
+
+        # Draw text on top
+        blf.position(font_id, x, y, 0)
+        blf.draw(font_id, tooltip_text)
 
     def draw_highlight_callback(self):
         """Draw callback to highlight mesh region weighted to hovered bone (DAZ-style)"""
@@ -5252,7 +5520,7 @@ def get_twist_axis(bone):
     return 'Y'
 
 
-def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity=0.01):
+def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity=0.01, use_armature_space=False):
     """
     Apply rotation to bone based on mouse delta.
 
@@ -5262,20 +5530,54 @@ def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity=0
         axis: Rotation axis ('X', 'Y', or 'Z')
         delta: Mouse movement in pixels (caller decides which: delta_x or delta_y)
         sensitivity: Rotation multiplier (radians per pixel)
+        use_armature_space: If True, rotate around armature-space axis instead of bone-local axis.
+                           This makes rotations consistent regardless of current bone pose.
+                           Use for "spread" and "forward/back" movements on limbs.
+                           Keep False for "twist" which should always be around the bone's length.
     """
     # Calculate angle directly from delta
     angle = delta * sensitivity
 
-    # Create rotation quaternion
-    axis_vector = Vector((
+    # Define axis in the appropriate coordinate space
+    armature_axis = Vector((
         1 if axis == 'X' else 0,
         1 if axis == 'Y' else 0,
         1 if axis == 'Z' else 0
     ))
-    rotation_quat = Quaternion(axis_vector, angle)
 
-    # Apply rotation (combine with initial rotation)
-    bone.rotation_quaternion = rotation_quat @ initial_rotation
+    if use_armature_space:
+        # Transform armature-space axis to bone-local space
+        # bone.bone.matrix_local is the bone's rest pose matrix in armature space
+        # Its inverse transforms armature-space vectors to bone-local space
+        rest_matrix = bone.bone.matrix_local.to_3x3()
+        local_axis = rest_matrix.inverted() @ armature_axis
+        local_axis.normalize()
+    else:
+        # Use bone-local axis directly (current behavior)
+        local_axis = armature_axis
+
+    # Create rotation quaternion
+    if use_armature_space:
+        # For armature-space rotation, we need to properly transform the rotation
+        # from armature space to bone-local space using quaternion conjugation:
+        # R_local = rest_quat.inverted() @ R_armature @ rest_quat
+
+        # Create rotation in armature space (around the original armature axis)
+        R_armature = Quaternion(armature_axis, angle)
+
+        # Get rest orientation as quaternion for conjugation
+        rest_matrix = bone.bone.matrix_local.to_3x3()
+        rest_quat = rest_matrix.to_quaternion()
+
+        # Transform rotation from armature space to bone-local space via conjugation
+        rotation_quat = rest_quat.inverted() @ R_armature @ rest_quat
+
+        # Apply: rotation in armature space, then initial pose
+        bone.rotation_quaternion = rotation_quat @ initial_rotation
+    else:
+        # For local-space, use the axis directly
+        rotation_quat = Quaternion(local_axis, angle)
+        bone.rotation_quaternion = rotation_quat @ initial_rotation
 
 
 def refresh_3d_viewports(context):

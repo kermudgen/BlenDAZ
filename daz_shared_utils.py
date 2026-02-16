@@ -148,6 +148,64 @@ def enforce_rotation_limits(bone):
     bone.rotation_quaternion = euler.to_quaternion()
 
 
+def decompose_swing_twist(quaternion, twist_axis='Y'):
+    """
+    Decompose a quaternion into swing and twist components.
+
+    This separates a rotation into:
+    - Swing: rotation around axes perpendicular to the twist axis (e.g., X and Z if twist_axis='Y')
+    - Twist: rotation around the twist axis only
+
+    Used for anatomically correct limb rotation where the "bend" bone should only
+    rotate on swing axes, and twist rotation should go to a dedicated twist bone.
+
+    Args:
+        quaternion: The quaternion to decompose
+        twist_axis: The axis to extract twist around ('X', 'Y', or 'Z')
+
+    Returns:
+        tuple: (swing_quaternion, twist_quaternion)
+
+    Mathematical basis:
+        q = swing * twist
+        twist is the projection of q onto the twist axis
+        swing = q * twist.inverted()
+    """
+    # Extract the twist component by zeroing out the non-twist axis components
+    # For twist around Y: keep w and y, zero x and z
+    w, x, y, z = quaternion.w, quaternion.x, quaternion.y, quaternion.z
+
+    if twist_axis == 'Y':
+        # Project onto Y axis: keep w and y components
+        twist = Quaternion((w, 0, y, 0))
+    elif twist_axis == 'X':
+        # Project onto X axis: keep w and x components
+        twist = Quaternion((w, x, 0, 0))
+    elif twist_axis == 'Z':
+        # Project onto Z axis: keep w and z components
+        twist = Quaternion((w, 0, 0, z))
+    else:
+        # Default to identity (no twist)
+        return quaternion.copy(), Quaternion()
+
+    # Normalize the twist quaternion (projection may not be unit length)
+    # Handle edge case where twist is zero (no twist component)
+    twist_length = (twist.w * twist.w + twist.x * twist.x +
+                   twist.y * twist.y + twist.z * twist.z) ** 0.5
+
+    if twist_length < 0.0001:
+        # No twist component - return original as swing, identity as twist
+        return quaternion.copy(), Quaternion()
+
+    twist = Quaternion((twist.w / twist_length, twist.x / twist_length,
+                       twist.y / twist_length, twist.z / twist_length))
+
+    # Swing is the remainder: swing = q * twist.inverted()
+    swing = quaternion @ twist.inverted()
+
+    return swing, twist
+
+
 def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity=0.01):
     """
     Apply rotation to bone based on mouse delta.
@@ -606,6 +664,66 @@ def get_genesis8_control_points():
                 'lmb_horiz': 'X',  # Swing forward/back
                 'lmb_vert': 'Z',   # Raise/lower
                 'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+
+        # ===== TOES =====
+        {
+            'id': 'lToe',
+            'bone_name': 'lToe',
+            'label': 'Left Toe',
+            'group': 'legs',
+            'position': 'tail',
+            'controls': {
+                'lmb_horiz': 'Z',  # Side tilt
+                'lmb_vert': 'X',   # Curl/extend toes
+                'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+        {
+            'id': 'rToe',
+            'bone_name': 'rToe',
+            'label': 'Right Toe',
+            'group': 'legs',
+            'position': 'tail',
+            'controls': {
+                'lmb_horiz': 'Z',  # Side tilt
+                'lmb_vert': 'X',   # Curl/extend toes
+                'rmb_horiz': 'Y',  # Twist
+                'rmb_vert': None
+            }
+        },
+
+        # ===== HIP (Pelvis mid-point) =====
+        {
+            'id': 'hip',
+            'bone_name': 'hip',  # Will try 'hip' first, fallback to 'pelvis'
+            'label': 'Hip',
+            'group': 'torso',
+            'position': 'mid',
+            'controls': {
+                'lmb_horiz': 'Z',  # Rotate hips
+                'lmb_vert': 'X',   # Tilt forward/back
+                'rmb_horiz': 'Y',  # Side tilt
+                'rmb_vert': None
+            }
+        },
+
+        # ===== BASE (Special - moves entire armature) =====
+        {
+            'id': 'base',
+            'bone_name': 'lFoot',  # Reference bone for positioning
+            'label': 'Base',
+            'group': 'base',
+            'position': 'head',  # Use head of lFoot
+            'special': 'armature_move',  # Special handling flag
+            'offset': (0.1, 0, 0),  # 0.1 units in X from lFoot
+            'controls': {
+                'lmb_horiz': None,
+                'lmb_vert': None,
+                'rmb_horiz': None,
                 'rmb_vert': None
             }
         },
