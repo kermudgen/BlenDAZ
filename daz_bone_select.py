@@ -275,6 +275,13 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     daz_bones = list(reversed(daz_bones))
 
     # ==================================================================
+    # Get evaluated armature for posed positions (needed for pinned child handling below)
+    # ==================================================================
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    armature_eval = armature.evaluated_get(depsgraph)
+
+    # ==================================================================
     # EXTENSION: Include pinned children in the chain
     # ==================================================================
     # If the tip bone (clicked bone) has pinned descendants, extend the chain to include them
@@ -348,7 +355,7 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # ==================================================================
     # CRITICAL: Force fresh evaluation AFTER cleanup to ensure restored rotations are included
     bpy.context.view_layer.update()
-    # CRITICAL: Get the CURRENT posed position from EVALUATED bone (includes all constraints/keyframes)
+    # Refresh evaluated armature (may have changed since pinned child handling)
     depsgraph = bpy.context.evaluated_depsgraph_get()
     armature_eval = armature.evaluated_get(depsgraph)
     clicked_bone_eval = armature_eval.pose.bones[bone_name]
