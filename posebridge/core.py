@@ -108,9 +108,8 @@ class PoseBridgeCharacter(PropertyGroup):
         description="Currently active panel view",
         items=[
             ('body', 'Body', 'Full body panel'),
-            ('head', 'Head', 'Head detail panel'),
-            ('hands_left', 'Hands Left', 'Left hand detail panel'),
-            ('hands_right', 'Hands Right', 'Right hand detail panel'),
+            ('hands', 'Hands', 'Both hands detail panel'),
+            ('face', 'Face', 'Face detail panel'),
         ],
         default='body'
     )
@@ -163,6 +162,17 @@ class PoseBridgeSettings(PropertyGroup):
         name="Active Armature",
         description="Name of the currently active armature for PoseBridge",
         default=""
+    )
+
+    active_panel: EnumProperty(
+        name="Active Panel",
+        description="Currently active panel view",
+        items=[
+            ('body', 'Body', 'Full body panel'),
+            ('hands', 'Hands', 'Both hands detail panel'),
+            ('face', 'Face', 'Face detail panel'),
+        ],
+        default='body'
     )
 
     control_points_fixed: CollectionProperty(

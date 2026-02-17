@@ -8,6 +8,62 @@ Track current development tasks, future features, and improvements needed.
 
 ## 🚧 Current Work
 
+### Init Script & Standin Mesh 🟡 Ready to Implement
+
+**Description**: Consolidate posebridge initialization + add standin mesh support
+
+#### Next Session Tasks
+- [ ] Create consolidated init script (`posebridge/init_posebridge.py`):
+  - [ ] Auto-detect or prompt for armature name
+  - [ ] Check for rest pose (warn if not)
+  - [ ] Register PoseBridge
+  - [ ] Generate outline + standin
+  - [ ] Move setup to Z -50m
+  - [ ] Capture control points
+  - [ ] Start modal operator
+- [ ] Modify `outline_generator_lineart.py` for standin:
+  - [ ] Don't hide `_LineArt_Copy` mesh (becomes standin)
+  - [ ] Rename to `_Standin` instead of `_LineArt_Copy`
+  - [ ] Strip materials from standin mesh
+
+#### Test Results
+- ✅ Confirmed: GP outline survives when source mesh is visible
+- ✅ Confirmed: Can reuse `_LineArt_Copy` as standin (no second copy needed)
+
+---
+
+### Hand Panel Implementation 🟡 Design Complete
+
+**Description**: Hand detail view with 21 control points per hand
+
+#### Design (see [SCRATCHPAD.md](SCRATCHPAD.md))
+- 15 circles: individual finger joints (3 per finger × 5 fingers)
+- 5 finger group diamonds: curl whole finger
+- 1 fist diamond: curl all fingers
+
+#### Tasks
+- [ ] Add hand cameras to outline generator (`PB_Camera_LeftHand`, `PB_Camera_RightHand`)
+- [ ] Define hand control points in `control_points.py`
+- [ ] Add view switching (Body/L Hand/R Hand/Face)
+- [ ] Wire up draw handler to check current view mode
+
+---
+
+### BlenDAZ N-Panel UI ⏸️ Paused
+
+**Description**: Centralized setup and configuration panel (punted for now)
+
+#### Tasks (for later)
+- [ ] Add settings properties to `posebridge/core.py`
+- [ ] Create N-Panel UI in `posebridge/panel_ui.py`
+- [ ] Wire up outline options (enable, thickness, color)
+
+---
+
+### PoseBridge Phase 1 MVP
+
+---
+
 ### PoseBridge Phase 1 MVP
 
 **Description**: Fixed control points with basic click-drag rotation for visual posing

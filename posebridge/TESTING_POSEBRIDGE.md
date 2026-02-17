@@ -383,18 +383,182 @@ Each control point has different rotation axes mapped to each input combination.
 
 ---
 
+## Hand Panel Testing (NEW - 2026-02-17)
+
+The hand panel provides detailed control over finger joints with 42 control points (21 per hand).
+
+### ✅ STEP 11: Generate Hand Panel
+
+**Prerequisites:**
+- Steps 1-6 completed (body panel working)
+- Standin mesh exists (e.g., `Fey Mesh_Standin` or `Fey Mesh_LineArt_Copy`)
+
+**Run in Text Editor:**
+
+1. Open **Text Editor**
+2. Open file: `D:\dev\BlenDAZ\posebridge\test_hand_integration.py`
+3. **IMPORTANT**: Edit lines 15-16 to match your scene:
+   ```python
+   STANDIN_NAME = "Fey Mesh_Standin"  # Your mesh name
+   ARMATURE_NAME = "Fey"               # Your armature name
+   ```
+4. Click **Run Script** button (▶)
+
+**Expected output in console:**
+```
+======================================================================
+HAND PANEL INTEGRATION TEST
+======================================================================
+
+Using standin mesh: Fey Mesh_Standin
+Using armature: Fey
+
+--- Step 1: Extract hands and calculate bone positions ---
+...
+Created hand mesh with X verts, Y faces
+...
+
+--- Step 2: Store hand control points ---
+Stored 42 hand control points
+
+--- Step 3: Verify control points ---
+  Body control points: 23
+  Hand control points: 42
+...
+
+======================================================================
+INTEGRATION TEST COMPLETE
+======================================================================
+```
+
+**Verify:**
+- [ ] Two hand meshes created: `PB_Hand_Left`, `PB_Hand_Right`
+- [ ] Hand camera created: `PB_Camera_Hands`
+- [ ] 42 hand control points stored (21 per hand)
+
+---
+
+### ✅ STEP 12: Switch to Hands View
+
+**Option A: Use N-Panel UI**
+1. Open N-Panel (press **N** in viewport)
+2. Find **DAZ** tab → **PoseBridge Editor**
+3. Expand **Panel Views** section
+4. Click **Hands** button
+
+**Option B: Python Console**
+```python
+bpy.context.scene.posebridge_settings.active_panel = 'hands'
+```
+
+**Switch viewport camera:**
+1. In left viewport (camera view), select `PB_Camera_Hands` in Outliner
+2. Press **Numpad 0** to view through hand camera
+
+**Verify:**
+- [ ] Panel Views shows "Current: Hands"
+- [ ] Viewport shows both hands side-by-side (dorsal view, thumbs inward)
+- [ ] Body control points are **hidden**
+- [ ] Hand control points are **visible**
+
+---
+
+### ✅ STEP 13: Test Hand Control Points
+
+**Control Point Types:**
+- **Circles (15 per hand)**: Individual finger joints
+- **Diamonds (5 per hand)**: Finger group controls (curl whole finger)
+- **Diamond (1 per hand)**: Fist control (curl all fingers)
+
+**Test individual joint (circle):**
+1. Hover over a finger joint circle (e.g., `lIndex2`)
+2. Circle turns **yellow**
+3. **Left-click drag up/down** → joint curls/extends
+4. **Left-click drag left/right** → joint spreads sideways
+
+**Test finger group (diamond):**
+1. Hover over a finger group diamond (e.g., `lIndex_group`)
+2. Diamond turns **yellow**
+3. **Left-click drag up/down** → all 3 joints of that finger curl together
+4. Each bone rotates around its **own origin** (natural curl motion)
+
+**Test fist control (diamond):**
+1. Hover over fist diamond (near palm center, `lHand_fist`)
+2. Diamond turns **yellow**
+3. **Left-click drag up** → all 15 finger bones curl into fist
+4. Each bone rotates around its **own origin**
+
+**Verify:**
+- [ ] Hover highlights work (yellow on hover)
+- [ ] Individual joints rotate correctly
+- [ ] Finger groups curl all 3 joints together
+- [ ] Fist control curls all fingers together
+- [ ] Mesh updates in real-time in right viewport
+- [ ] Control points stay **fixed** (don't move with bones)
+
+---
+
+### ✅ STEP 14: Switch Back to Body View
+
+**Option A: Use N-Panel UI**
+1. Click **Body** button in Panel Views
+
+**Option B: Python Console**
+```python
+bpy.context.scene.posebridge_settings.active_panel = 'body'
+```
+
+**Switch viewport camera:**
+1. Select `PB_Outline_LineArt_Camera` (or `PB_Camera`)
+2. Press **Numpad 0**
+
+**Verify:**
+- [ ] Body control points visible again
+- [ ] Hand control points hidden
+- [ ] Body outline visible
+
+---
+
+### Hand Panel Troubleshooting
+
+**No hand meshes created:**
+- Check standin mesh name matches your scene
+- Verify standin mesh has vertex groups (lHand, lThumb1, etc.)
+- Check System Console for errors
+
+**Hand control points in wrong positions:**
+- Armature must be in **T-pose** when extracting
+- Re-run `test_hand_integration.py` with correct armature name
+
+**Finger rotations feel wrong:**
+- Individual controls use X-axis (curl) and Z-axis (spread)
+- Group controls apply same rotation to all joints in finger
+- Check that you're dragging in correct direction (up/down for curl)
+
+**Can't see both hands:**
+- Check camera ortho_scale (default 0.5)
+- Verify hand positions at Z=-53m
+- Select `PB_Camera_Hands` and check its location
+
+---
+
 ## Success Criteria
 
 **All of these must be true:**
 
-✅ **Visual**
+✅ **Visual - Body Panel**
 - Control points visible in camera view
 - Control points turn yellow on hover
 - Outline visible and matches character pose (in T-pose initially)
 
+✅ **Visual - Hand Panel**
+- Hand meshes visible (dorsal view, thumbs inward)
+- 42 control points visible (circles for joints, diamonds for groups)
+- Control points positioned on correct finger joints
+
 ✅ **Fixed Positioning**
 - Control points **NEVER move** when bones rotate
-- Control points stay aligned with T-pose outline
+- Control points stay aligned with T-pose outline/mesh
 - All control points stay in exactly the same screen positions
 
 ✅ **Interaction**
@@ -402,6 +566,12 @@ Each control point has different rotation axes mapped to each input combination.
 - Click-drag rotates bones smoothly
 - Right-click cancels rotation
 - Mouse release creates keyframe
+
+✅ **View Switching**
+- Body/Hands buttons switch active panel
+- Camera switches appropriately
+- Control points filter by current view
+- Body points hidden when viewing hands (and vice versa)
 
 ✅ **Dual Viewport**
 - Left viewport: Fixed control panel (camera view)
@@ -478,13 +648,30 @@ When testing is complete, report:
 
 ---
 
-**Last Updated:** 2026-02-15
-**Phase:** Phase 1 MVP - Fixed Control Points + PowerPose Integration
+**Last Updated:** 2026-02-17
+**Phase:** Phase 1 MVP - Fixed Control Points + PowerPose Integration + Hand Panel
 **Status:** Testing in Progress
 
-**Recent Additions (2026-02-15):**
+**Recent Additions (2026-02-17):**
 
-**PowerPose-Style 4-Way Controls (Latest - Performance Optimized):**
+**Hand Panel Implementation:**
+- ✨ **42 hand control points** (21 per hand)
+- 🖐️ **15 circles per hand** - individual finger joint controls
+- 💎 **5 finger group diamonds per hand** - curl whole finger
+- ✊ **1 fist diamond per hand** - curl all fingers into fist
+- 🎥 **Hand camera** (`PB_Camera_Hands`) at Z=-53m
+- 🔄 **View switching** - Body/Hands buttons in N-Panel
+- Hand meshes extracted from standin using vertex groups
+- Dorsal view (back of hand up), thumbs pointing inward
+
+**Hand Control Points (42 total):**
+- Left Hand: lThumb1-3, lIndex1-3, lMid1-3, lRing1-3, lPinky1-3 (15)
+- Left Groups: lThumb_group, lIndex_group, lMid_group, lRing_group, lPinky_group, lHand_fist (6)
+- Right Hand: same pattern (21)
+
+**Previous Additions (2026-02-15):**
+
+**PowerPose-Style 4-Way Controls (Performance Optimized):**
 - ✨ **Complete DAZ PowerPose control scheme integration**
 - 🚀 **Fully optimized for smooth, responsive control** (rotation logic inlined, zero function call overhead)
 - ✅ **Original working axis mappings restored** (Head Y/Z, Torso Y/Z)

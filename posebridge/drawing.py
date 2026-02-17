@@ -112,8 +112,15 @@ class PoseBridgeDrawHandler:
             # No fixed positions stored yet - need to generate outline first
             return
 
-        # Draw each fixed control point
+        # Get active panel view
+        active_panel = settings.active_panel
+
+        # Draw each fixed control point that matches the active panel
         for cp in fixed_control_points:
+            # Filter by panel view - body control points have empty panel_view (legacy)
+            cp_panel = cp.panel_view if cp.panel_view else 'body'
+            if cp_panel != active_panel:
+                continue
             bone_name = cp.bone_name
 
             # Get fixed 3D position (from T-pose, with Z offset already applied)

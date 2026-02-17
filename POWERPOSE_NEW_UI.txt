@@ -1,0 +1,210 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║              POWERPOSE - NEW BUTTON LAYOUT (FIXED)                   ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════
+  PANEL APPEARANCE
+═══════════════════════════════════════════════════════════════════════
+
+  ┌─────────────────────────────────────────────┐
+  │ ╔═══════════════════════════════════════╗   │
+  │ ║          POWERPOSE                    ║   │
+  │ ╚═══════════════════════════════════════╝   │
+  │                                             │
+  │ Target: Genesis8Female                      │
+  │                                             │
+  │ Click Bend or Twist, then drag              │
+  │                                             │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ HEAD                                  │   │
+  │ ├───────────────────────────────────────┤   │
+  │ │ Head         [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ └───────────────────────────────────────┘   │
+  │                                             │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ ARMS                                  │   │
+  │ ├───────────────────────────────────────┤   │
+  │ │ Left Hand    [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Right Hand   [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Left Forearm [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Right Forearm[Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Left Shoulder[Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Right Shoulder[Bend] [Twist]          │ <-- TWO BUTTONS!
+  │ └───────────────────────────────────────┘   │
+  │                                             │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ TORSO                                 │   │
+  │ ├───────────────────────────────────────┤   │
+  │ │ Chest        [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Abdomen      [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Pelvis       [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ └───────────────────────────────────────┘   │
+  │                                             │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ LEGS                                  │   │
+  │ ├───────────────────────────────────────┤   │
+  │ │ Left Foot    [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Right Foot   [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Left Shin    [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Right Shin   [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Left Thigh   [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ │ Right Thigh  [Bend]  [Twist]          │ <-- TWO BUTTONS!
+  │ └───────────────────────────────────────┘   │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  INTERACTION FLOW
+═══════════════════════════════════════════════════════════════════════
+
+  STEP 1: Click [Bend] Button
+  ┌─────────────────────────────────────────┐
+  │                                         │
+  │  Left Forearm  [[Bend]]  [Twist]        │ <-- Click this
+  │                   ▲                     │
+  │                   │                     │
+  │              User clicks                │
+  └─────────────────────────────────────────┘
+
+  STEP 2: Drag Mouse
+  ┌─────────────────────────────────────────┐
+  │  Modal operator active                  │
+  │  Cursor changes                         │
+  │  Drag mouse up/down or left/right       │
+  │  → Bone rotates in viewport (real-time) │
+  └─────────────────────────────────────────┘
+
+  STEP 3: Release Mouse
+  ┌─────────────────────────────────────────┐
+  │  Rotation is keyframed                  │
+  │  Modal operator ends                    │
+  │  Ready for next action                  │
+  └─────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  BUTTON COMPARISON
+═══════════════════════════════════════════════════════════════════════
+
+  [Bend] Button                [Twist] Button
+  ──────────────               ───────────────
+  Icon: LOOP_BACK             Icon: FILE_REFRESH
+  Action: 'bend'              Action: 'twist'
+  Axis: Perpendicular         Axis: Bone length (Y)
+
+  Example (Forearm):          Example (Forearm):
+  → Bends elbow               → Twists forearm
+     ╲                           ⟲
+      ╲                          ↻
+
+
+═══════════════════════════════════════════════════════════════════════
+  USAGE EXAMPLES
+═══════════════════════════════════════════════════════════════════════
+
+  EXAMPLE 1: Bend Elbow
+  ┌─────────────────────────────────────────┐
+  │ 1. Click [Bend] next to "Left Forearm"  │
+  │ 2. Drag mouse downward                  │
+  │ 3. Watch elbow bend in viewport         │
+  │ 4. Release to keyframe                  │
+  └─────────────────────────────────────────┘
+
+  EXAMPLE 2: Twist Forearm (Pronation)
+  ┌─────────────────────────────────────────┐
+  │ 1. Click [Twist] next to "Left Forearm" │
+  │ 2. Drag mouse horizontally              │
+  │ 3. Watch forearm twist                  │
+  │ 4. Release to keyframe                  │
+  └─────────────────────────────────────────┘
+
+  EXAMPLE 3: Cancel Rotation
+  ┌─────────────────────────────────────────┐
+  │ 1. Click [Bend] button                  │
+  │ 2. Drag mouse (bone rotates)            │
+  │ 3. Press [ESC] key                      │
+  │ 4. Rotation reverts to original         │
+  └─────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  WHY TWO BUTTONS?
+═══════════════════════════════════════════════════════════════════════
+
+  PROBLEM: Right-click opens context menu in Blender
+  SOLUTION: Use explicit buttons instead
+
+  BENEFITS:
+  ✓ Clear and obvious what each button does
+  ✓ No conflicts with Blender's context menu
+  ✓ Works with any input device
+  ✓ More discoverable (no hidden functionality)
+  ✓ Standard Blender UI pattern
+  ✓ Accessible to new users
+
+
+═══════════════════════════════════════════════════════════════════════
+  COMPARISON: OLD vs NEW
+═══════════════════════════════════════════════════════════════════════
+
+  OLD (BROKEN):                 NEW (FIXED):
+  ┌─────────────────────┐       ┌─────────────────────────────────┐
+  │ ○ Left Forearm      │       │ Left Forearm  [Bend]  [Twist]   │
+  │                     │       │                                 │
+  │ Left-click = Bend   │       │ Click Bend = Bend               │
+  │ Right-click = Twist │       │ Click Twist = Twist             │
+  │    ▲                │       │    ▲           ▲                │
+  │    └─ Opens menu!   │       │    │           └─ Works!        │
+  │       (broken)      │       │    └─ Works!                    │
+  └─────────────────────┘       └─────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  KEYBOARD SHORTCUTS
+═══════════════════════════════════════════════════════════════════════
+
+  [ESC]         - Cancel rotation (during drag)
+  [Ctrl+Z]      - Undo last rotation
+  [Ctrl+Shift+Z]- Redo rotation
+
+  NO HOTKEYS NEEDED for PowerPose itself - just click buttons!
+
+
+═══════════════════════════════════════════════════════════════════════
+  TESTING CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+
+  Panel Appearance:
+  [ ] Panel opens in N-panel > DAZ tab
+  [ ] Two buttons appear next to each bone name
+  [ ] Buttons labeled "Bend" and "Twist"
+  [ ] Buttons have appropriate icons
+
+  Bend Functionality:
+  [ ] Click [Bend] button
+  [ ] Drag mouse → bone bends
+  [ ] Release → rotation keyframed
+  [ ] ESC → rotation cancels
+
+  Twist Functionality:
+  [ ] Click [Twist] button
+  [ ] Drag mouse → bone twists
+  [ ] Release → rotation keyframed
+  [ ] ESC → rotation cancels
+
+  General:
+  [ ] Viewport updates in real-time
+  [ ] Ctrl+Z undoes rotation
+  [ ] Multiple bones can be adjusted
+  [ ] No conflicts with right-click menu
+
+
+═══════════════════════════════════════════════════════════════════════
+
+  VERSION: 1.2.0 (Phase 1 MVP - Right-Click Fix Applied)
+  LAST UPDATED: 2026-02-08
+
+  Ready to test in Blender! 🚀
+
+═══════════════════════════════════════════════════════════════════════

@@ -1,0 +1,348 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║                  POWERPOSE USER GUIDE - PHASE 1                      ║
+║              Rotation-Based Panel Posing for Blender                 ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════
+  WHAT IS POWERPOSE?
+═══════════════════════════════════════════════════════════════════════
+
+PowerPose is a panel-based posing tool inspired by DAZ Studio's PowerPose.
+Instead of clicking in the 3D viewport, you click control point BUTTONS in
+a panel and drag your mouse to rotate bones directly.
+
+  KEY FEATURES:
+  - 2D panel interface (N-panel sidebar)
+  - Dual mouse button control (left=bend, right=twist)
+  - Real-time viewport updates
+  - Automatic keyframing
+  - Works alongside DAZ Bone Select (not a replacement!)
+
+
+═══════════════════════════════════════════════════════════════════════
+  OPENING POWERPOSE
+═══════════════════════════════════════════════════════════════════════
+
+  STEP 1: Open N-Panel
+  ┌─────────────────────────┐
+  │ 3D Viewport             │
+  │                         │
+  │  Press [N] key          │<-- Opens N-panel sidebar
+  │                         │
+  └─────────────────────────┘
+
+  STEP 2: Navigate to DAZ Tab
+  ┌─────────────────────────┐
+  │ ┌─────┐                 │
+  │ │ DAZ │ <-- Click here  │
+  │ └─────┘                 │
+  │ Item                    │
+  │ Tool                    │
+  │ View                    │
+  └─────────────────────────┘
+
+  STEP 3: See PowerPose Panel
+  ┌─────────────────────────┐
+  │ ╔═══════════════════╗   │
+  │ ║   POWERPOSE       ║   │
+  │ ╚═══════════════════╝   │
+  │                         │
+  │ Target: Genesis8Female  │
+  │                         │
+  │ Left-click: Bend        │
+  │ Right-click: Twist      │
+  │                         │
+  │ [HEAD]                  │
+  │ ○ Head                  │
+  │                         │
+  │ [ARMS]                  │
+  │ ○ Left Hand             │
+  │ ○ Right Hand            │
+  │ ○ Left Forearm          │
+  │ ○ Right Forearm         │
+  │ ...                     │
+  └─────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  BASIC USAGE
+═══════════════════════════════════════════════════════════════════════
+
+  LEFT-CLICK = BEND (Perpendicular Rotation)
+  ┌─────────────────────────────────────────┐
+  │  1. Left-click "Left Forearm" button    │
+  │  2. Drag mouse up/down or left/right    │
+  │  3. Watch elbow bend in viewport        │
+  │  4. Release mouse to keyframe           │
+  └─────────────────────────────────────────┘
+
+  RIGHT-CLICK = TWIST (Length Rotation)
+  ┌─────────────────────────────────────────┐
+  │  1. Right-click "Left Forearm" button   │
+  │  2. Drag mouse horizontally             │
+  │  3. Watch forearm twist                 │
+  │  4. Release mouse to keyframe           │
+  └─────────────────────────────────────────┘
+
+  CANCEL = ESC KEY
+  ┌─────────────────────────────────────────┐
+  │  1. Click and drag control point        │
+  │  2. Changed your mind?                  │
+  │  3. Press [ESC] key                     │
+  │  4. Rotation reverts to original        │
+  └─────────────────────────────────────────┘
+
+  UNDO = CTRL+Z
+  ┌─────────────────────────────────────────┐
+  │  1. Keyframed a rotation                │
+  │  2. Don't like it?                      │
+  │  3. Press [Ctrl+Z]                      │
+  │  4. Standard Blender undo works!        │
+  └─────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  CONTROL POINTS (GENESIS 8)
+═══════════════════════════════════════════════════════════════════════
+
+  HEAD REGION
+  ┌───────────────────┐
+  │ ○ Head            │ <-- Nods, tilts, turns
+  └───────────────────┘
+
+  ARMS REGION
+  ┌───────────────────┐
+  │ ○ Left Hand       │ <-- Wrist rotation
+  │ ○ Right Hand      │
+  │ ○ Left Forearm    │ <-- Elbow bend, forearm twist
+  │ ○ Right Forearm   │
+  │ ○ Left Shoulder   │ <-- Shoulder rotation
+  │ ○ Right Shoulder  │
+  └───────────────────┘
+
+  TORSO REGION
+  ┌───────────────────┐
+  │ ○ Chest           │ <-- Upper spine bend/twist
+  │ ○ Abdomen         │ <-- Lower spine bend/twist
+  │ ○ Pelvis          │ <-- Hip rotation
+  └───────────────────┘
+
+  LEGS REGION
+  ┌───────────────────┐
+  │ ○ Left Foot       │ <-- Ankle rotation
+  │ ○ Right Foot      │
+  │ ○ Left Shin       │ <-- Knee bend
+  │ ○ Right Shin      │
+  │ ○ Left Thigh      │ <-- Hip rotation
+  │ ○ Right Thigh     │
+  └───────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  VISUAL EXAMPLE: BENDING FOREARM
+═══════════════════════════════════════════════════════════════════════
+
+  BEFORE:                      AFTER LEFT-CLICK DRAG:
+
+   ┌─────────────┐              ┌─────────────┐
+   │             │              │             │
+   │    ARM      │              │    ARM      │
+   │    ───      │              │    ───╲     │  <-- Elbow bent
+   │       ───   │              │        ╲─── │
+   │          ─  │              │          ─  │
+   └─────────────┘              └─────────────┘
+
+   Straight arm                 Bent elbow
+
+
+═══════════════════════════════════════════════════════════════════════
+  VISUAL EXAMPLE: TWISTING FOREARM
+═══════════════════════════════════════════════════════════════════════
+
+  BEFORE:                      AFTER RIGHT-CLICK DRAG:
+
+   ┌─────────────┐              ┌─────────────┐
+   │             │              │             │
+   │    ARM      │              │    ARM      │
+   │    ───      │              │    ───      │
+   │       ═══   │              │       ⟲══   │  <-- Forearm twisted
+   │       Hand  │              │       Hand  │      (pronation)
+   └─────────────┘              └─────────────┘
+
+   Palm facing up               Palm rotated
+
+
+═══════════════════════════════════════════════════════════════════════
+  MOUSE DRAG BEHAVIOR
+═══════════════════════════════════════════════════════════════════════
+
+  HORIZONTAL DRAG:    Rotates around vertical or perpendicular axis
+  │                   Example: Head turns left/right
+  │  ───────>
+  │
+  └─────────────
+
+  VERTICAL DRAG:      Rotates around horizontal or secondary axis
+  │         ▲         Example: Head nods forward/back
+  │         │
+  │         │
+  └─────────────
+
+  DIAGONAL DRAG:      Combines both rotations
+  │        ╱          Example: Complex head tilt
+  │      ╱
+  │    ╱
+  └─────────────
+
+  SENSITIVITY: 0.01 radians per pixel (~0.57 degrees per pixel)
+  - Drag slowly = Fine control
+  - Drag quickly = Large rotations
+
+
+═══════════════════════════════════════════════════════════════════════
+  TYPICAL WORKFLOW
+═══════════════════════════════════════════════════════════════════════
+
+  STEP 1: Rough Pose (Use DAZ Bone Select)
+  ┌─────────────────────────────────────────┐
+  │ Press [Ctrl+Shift+D]                    │
+  │ Hover over hands/feet                   │
+  │ Drag limbs to approximate positions     │
+  │ Get overall pose "close enough"         │
+  │ Press [ESC] to exit tool                │
+  └─────────────────────────────────────────┘
+
+  STEP 2: Fine-Tune (Use PowerPose)
+  ┌─────────────────────────────────────────┐
+  │ Open N-panel > DAZ tab                  │
+  │ Left-click control points to adjust     │
+  │ Right-click to add twisting movements   │
+  │ Precise rotation control                │
+  └─────────────────────────────────────────┘
+
+  STEP 3: Polish (Either Tool)
+  ┌─────────────────────────────────────────┐
+  │ Use whichever tool feels natural        │
+  │ Switch back and forth as needed         │
+  │ Both use same keyframing system         │
+  └─────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════
+  TIPS & TRICKS
+═══════════════════════════════════════════════════════════════════════
+
+  ✓ START SLOW: Drag slowly at first to get a feel for sensitivity
+
+  ✓ USE BOTH BUTTONS: Left-click for bends, right-click for twists
+
+  ✓ ESC IS YOUR FRIEND: Don't like the rotation? Just press ESC!
+
+  ✓ COMBINE WITH IK: Use DAZ Bone Select for rough pose, PowerPose
+    for fine-tuning
+
+  ✓ ONE BONE AT A TIME: PowerPose rotates only the clicked bone,
+    unlike IK which affects entire chains
+
+  ✓ REAL-TIME FEEDBACK: Watch the viewport as you drag - what you
+    see is what you'll keyframe
+
+
+═══════════════════════════════════════════════════════════════════════
+  TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════
+
+  PROBLEM: Panel doesn't appear
+  SOLUTION: Press [N] key, click DAZ tab, ensure addon is enabled
+
+  PROBLEM: Control points don't work
+  SOLUTION: Ensure you're in Pose Mode with armature selected
+
+  PROBLEM: Wrong bone rotates
+  SOLUTION: Check bone names match Genesis 8 (lHand, rFoot, etc.)
+
+  PROBLEM: Rotations too sensitive
+  SOLUTION: Drag more slowly for fine control (sensitivity will be
+            adjustable in future phase)
+
+  PROBLEM: Rotation feels wrong
+  SOLUTION: Try the other mouse button - left for bend, right for twist
+
+
+═══════════════════════════════════════════════════════════════════════
+  KEYBOARD SHORTCUTS
+═══════════════════════════════════════════════════════════════════════
+
+  [N]           - Open/close N-panel sidebar
+  [ESC]         - Cancel rotation (during drag)
+  [Ctrl+Z]      - Undo last rotation
+  [Ctrl+Shift+Z]- Redo rotation
+
+  Note: PowerPose has NO dedicated hotkey - just open N-panel > DAZ tab
+
+
+═══════════════════════════════════════════════════════════════════════
+  COMPARING TOOLS
+═══════════════════════════════════════════════════════════════════════
+
+  USE POWERPOSE WHEN:                USE DAZ BONE SELECT WHEN:
+  ┌───────────────────────┐          ┌───────────────────────┐
+  │ ✓ Precise rotation    │          │ ✓ Natural limb pull   │
+  │ ✓ Panel workflow      │          │ ✓ Viewport workflow   │
+  │ ✓ Bend/twist separate │          │ ✓ IK chain posing     │
+  │ ✓ Single bone control │          │ ✓ Ragdoll feel        │
+  │ ✓ Fine-tuning poses   │          │ ✓ Quick rough poses   │
+  └───────────────────────┘          └───────────────────────┘
+
+  BEST PRACTICE: Use BOTH tools! They complement each other.
+
+
+═══════════════════════════════════════════════════════════════════════
+  WHAT'S NEXT? (FUTURE PHASES)
+═══════════════════════════════════════════════════════════════════════
+
+  PHASE 2: Visual Figure Outline
+  - Schematic body diagram in panel
+  - Control points positioned on body parts
+  - Better visual association
+
+  PHASE 3: Detail Panels
+  - Head panel (jaw, eyes, neck detail)
+  - Hands panel (per-finger control)
+  - Collapsible organization
+
+  PHASE 4: Group Controls
+  - "Entire Arm" control (shoulder + forearm together)
+  - "Torso" control (chest + abdomen + spine)
+  - User-adjustable sensitivity
+  - Rotation limits toggle
+
+  PHASE 5: Advanced Features
+  - Template selection (Genesis 1/3/8/8.1/custom)
+  - Coordinate system switching (World/Local)
+  - Symmetry options (mirror L/R)
+  - Pose presets integration
+
+
+═══════════════════════════════════════════════════════════════════════
+  NEED MORE HELP?
+═══════════════════════════════════════════════════════════════════════
+
+  Read the full documentation:
+  - POWERPOSE_README.md      - Comprehensive feature guide
+  - POWERPOSE_QUICKSTART.md  - 60-second quick start
+  - TOOL_COMPARISON.md       - PowerPose vs. DAZ Bone Select
+  - README.md                - Main BlenDAZ documentation
+
+  Report issues or feedback:
+  - GitHub: BlenDAZ repository (issues section)
+
+
+═══════════════════════════════════════════════════════════════════════
+
+  VERSION: 1.2.0 (Phase 1 MVP)
+  LAST UPDATED: 2026-02-08
+
+  Happy posing! 🎨
+
+═══════════════════════════════════════════════════════════════════════
