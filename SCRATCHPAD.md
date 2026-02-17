@@ -60,8 +60,9 @@ git reset --hard HEAD~1                       # Undo last commit
 | Order | Task | Risk | Status |
 |-------|------|------|--------|
 | 1 | Extract `ik_templates.py` | Low | [x] Done (c013065) |
-| 2 | Extract `bone_utils.py` | Low | [ ] Pending |
-| 3 | Create rotation cache context manager | Medium | [ ] Pending |
+| 2 | Extract `bone_utils.py` | Low | [x] Done (a8e5e56) |
+| 3a | Create rotation cache module | Low | [x] Done (fb79677) |
+| 3b | Replace existing cache patterns | Medium | [ ] Pending - TEST FIRST |
 | 4 | Extract `ik_chain.py` | Medium | [ ] Pending |
 | 5 | Make stiffness configurable | Medium | [ ] Pending |
 | 6 | Refactor chain building to class | Higher | [ ] Pending |
