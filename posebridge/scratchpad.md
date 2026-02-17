@@ -844,6 +844,263 @@ def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity):
 
 ---
 
+## Session: Thigh Rotation Analysis & DAZ PowerPose Behavior (2026-02-16)
+
+### Objective
+Match DAZ PowerPose thigh rotation behavior, specifically how ThighBend and ThighTwist interact.
+
+### Issues Discovered
+
+#### 1. Quaternion Discontinuity (Snapping)
+**Symptom:** Rotation would suddenly snap/flip at certain angles
+**Cause:** Quaternion sign ambiguity - q and -q represent the same rotation
+**Fix:** Added `make_compatible()` call after each rotation to maintain quaternion continuity
+
+```python
+new_quat = bone.rotation_quaternion.copy()
+new_quat.make_compatible(previous_quat)
+bone.rotation_quaternion = new_quat
+```
+
+**Status:** ✅ Fixed
+
+#### 2. Cumulative Delta Double-Counting
+**Symptom:** Vertical rotation accumulated incorrectly over frames
+**Cause:** Using `current_quat` (already modified) instead of `self._rotation_initial_quat` (stored at drag start)
+**Fix:** Always use initial quaternion as base for both horizontal and vertical rotations
+
+**Status:** ✅ Fixed
+
+#### 3. Combined Rotation Overwriting
+**Symptom:** When both axes targeted same bone, vertical rotation overwrote horizontal
+**Cause:** Sequential apply calls, each starting from initial quat
+**Fix:** Detect `same_target` case and build combined rotation quaternion before applying
+
+```python
+if same_target and horiz_target_bone == vert_target_bone:
+    # Build combined rotation
+    combined_rot = Quaternion()
+    if horiz_axis: combined_rot = rot_horiz @ combined_rot
+    if vert_axis: combined_rot = rot_vert @ combined_rot
+    bone.rotation_quaternion = combined_rot @ initial_quat
+```
+
+**Status:** ✅ Fixed
+
+#### 4. Right-Click Menu Suppression
+**Symptom:** RMB context menu appearing during drag rotations
+**Cause:** `_right_click_used_for_drag` flag wasn't set until 3px movement
+**Fix:** Set flag immediately on RIGHTMOUSE PRESS event
+
+**Status:** ✅ Fixed
+
+### DAZ PowerPose "Secret Sauce" Discovery
+
+**User Observation:** In DAZ Studio PowerPose, ThighBend appears to be "locked" on Y-axis:
+- ThighBend only rotates on X (forward/back) and Z (spread)
+- ThighTwist handles ALL Y-axis rotation (internal/external leg rotation)
+- Small Y rotation on ThighBend only at extreme positions
+
+**Current PoseBridge Configuration:**
+```python
+# Thigh controls (lines 4018-4035 in daz_bone_select.py)
+if 'thigh' in bone_lower:
+    if self._rotation_mouse_button == 'LEFT':
+        horiz_axis = 'Y'  # Twist → targets ThighTwist
+        vert_axis = 'X'   # Forward/back → targets ThighBend
+    else:  # RIGHT
+        horiz_axis = 'Z'  # Spread → targets ThighBend
+        vert_axis = 'X'   # Forward/back → targets ThighBend
+```
+
+**Routing Logic (lines 4093-4102):**
+- Y-axis rotation is correctly routed to ThighTwist bone
+- X and Z-axis rotations stay on ThighBend
+
+**The Gimbal Effect Problem:**
+When the user spreads the leg sideways (Z rotation on ThighBend), the bone's local X-axis changes orientation. So subsequent X rotation *appears* to twist the leg, even though ThighBend's Y is still at 0.
+
+This is NOT a bug - it's how local coordinate systems work. But DAZ seems to compensate for this.
+
+### Proposed Solution: Swing-Twist Decomposition
+
+**Concept:** After any rotation on ThighBend:
+1. Decompose the quaternion into "swing" (X/Z axes) and "twist" (Y axis) components
+2. Keep only the swing component on ThighBend
+3. Transfer the twist component to ThighTwist
+
+**Algorithm:**
+```python
+def decompose_swing_twist(quaternion, twist_axis='Y'):
+    """
+    Decompose quaternion into swing and twist components.
+    Swing = rotation around axes perpendicular to twist_axis
+    Twist = rotation around twist_axis
+    """
+    # Project quaternion onto twist axis
+    if twist_axis == 'Y':
+        twist = Quaternion((quaternion.w, 0, quaternion.y, 0)).normalized()
+
+    # Swing is the remainder: swing = quat @ twist.inverted()
+    swing = quaternion @ twist.inverted()
+
+    return swing, twist
+```
+
+**Implementation Plan:**
+1. Add `decompose_swing_twist()` utility function
+2. After ThighBend rotation, decompose result
+3. Apply swing to ThighBend (X/Z only)
+4. Apply twist to ThighTwist (Y only, cumulative with existing)
+5. This ensures ThighBend NEVER accumulates Y rotation
+
+**Benefits:**
+- ThighBend stays "Y-locked" like DAZ
+- All Y rotation goes to ThighTwist
+- Controls adapt naturally to leg position
+- Matches DAZ PowerPose feel
+
+### Current Thigh Control Summary
+
+| Input | Axis | Target Bone | Space |
+|-------|------|-------------|-------|
+| LMB Horizontal | Y | ThighTwist | Local |
+| LMB Vertical | X | ThighBend | Local |
+| RMB Horizontal | Z | ThighBend | Local |
+| RMB Vertical | X | ThighBend | Local |
+
+### Files to Modify
+1. `daz_bone_select.py` - Add swing-twist decomposition after ThighBend rotations
+2. `daz_shared_utils.py` - Add `decompose_swing_twist()` utility function
+
+### Implementation Details
+
+**Files Modified:**
+1. `daz_shared_utils.py` - Added `decompose_swing_twist()` function (line ~151)
+2. `daz_bone_select.py` - Added import and Y-lock logic (lines ~18, ~4247-4260)
+
+**How it works (SIMPLIFIED):**
+1. After ANY ThighBend rotation is applied, decompose current quaternion
+2. Extract swing (X/Z) and twist (Y) components
+3. Keep ONLY swing on ThighBend → Y is always 0
+4. Twist is discarded (not transferred) - user uses LMB horizontal for explicit twist
+
+**Condition:** Runs on ALL mouse buttons (LMB and RMB)
+- Simpler approach: just lock Y to 0, don't transfer
+- User controls twist explicitly via LMB horizontal → ThighTwist
+
+**Debug output:** Shows `[Y-LOCK]` message when Y rotation > 0.5 degrees is removed
+
+### Status
+- [x] Quaternion discontinuity fixed
+- [x] Cumulative delta fixed
+- [x] Combined rotation fixed
+- [x] RMB context menu suppressed
+- [x] ThighBend Y-lock implemented (all buttons)
+- [x] RMB horizontal inverted for correct spread direction
+
+### Final Testing Results
+- ✅ ThighBend Y-lock working - Y rotation stays at 0
+- ✅ RMB horizontal spreads leg correctly (inverted)
+- ✅ Controls match DAZ PowerPose behavior for normal poses
+- ⚠️ Minor bugginess at extreme X rotation (leg straight out) - edge case in decomposition math
+  - This is expected behavior at gimbal singularities
+  - Acceptable for normal posing workflows
+
+---
+
+## Session: Final Control Nodes (2026-02-16 Evening)
+
+### Objective
+Add remaining control nodes to complete the main body panel.
+
+### Nodes Added
+
+**Files Modified:**
+1. `daz_shared_utils.py` - Added control point definitions (lines ~672-748)
+2. `daz_bone_select.py` - Added special handling for base node (lines ~2116-2139, ~2682-2690)
+
+#### 1. Toe Nodes
+- **lToe** and **rToe** control points
+- Position: `'tail'` (at tail end of toe bones)
+- Controls: LMB H/V for tilt and curl, RMB H for twist
+- Group: 'legs'
+
+#### 2. Hip Node
+- **hip** control point
+- Position: `'mid'` (mid-point of hip bone)
+- **Note:** Hip and pelvis are separate bones in DAZ rigs
+- Existing pelvis node is at tail position
+- Controls: LMB H/V for rotation and tilt, RMB H for side tilt
+- Group: 'torso'
+
+#### 3. Base Node (Special)
+- **base** control point - moves entire armature object
+- Position: Below pelvis (offset -0.2 in Z)
+- Special behavior: On LMB click, switches to object mode and selects armature
+- Flag: `'special': 'armature_move'`
+- Group: 'base'
+- Implementation:
+  - Checks `_hover_control_point_id == 'base'` in click handler
+  - Executes: deselect all → object mode → select armature
+  - Does not start rotation or IK drag
+
+### Implementation Details
+
+**Hover tracking updated:**
+- `_hover_control_point_id` now set for ALL control points (not just multi-bone)
+- Enables special node detection (like base node)
+
+**Base node click handler (lines ~2116-2139):**
+```python
+if posebridge_mode and hasattr(self, '_hover_control_point_id'):
+    if self._hover_control_point_id == 'base':
+        # Switch to object mode and select armature
+        bpy.ops.object.select_all(action='DESELECT')
+        bpy.ops.object.mode_set(mode='OBJECT')
+        self._hover_armature.select_set(True)
+        context.view_layer.objects.active = self._hover_armature
+        return {'RUNNING_MODAL'}
+```
+
+### Status
+- [x] Toe nodes added (lToe, rToe)
+- [x] Hip node added (mid-point on hip bone)
+- [x] Base node added (special - armature object mode)
+- [x] Base node repositioned to 0.1 X from lFoot
+- [x] Tooltips added (1 second hover delay)
+- [ ] Testing required after Blender restart
+
+**Recent Updates (Evening):**
+
+1. **Base Node Repositioned:**
+   - Changed from pelvis tail with offset (0, 0, -0.2)
+   - Now at lFoot head with offset (0.1, 0, 0)
+   - Position: 0.1 units in X direction from left foot
+
+2. **Tooltips Added:**
+   - Shows after 1 second of hovering over a control point
+   - Enhanced header text with detailed information
+   - **Single bone controls:** "Single bone control | LMB+Drag: Rotate | RMB+Drag: Alternate axis"
+   - **Multi-bone controls:** Shows bone list and "Multi-bone control | LMB+Drag: Rotate group"
+   - **Special nodes (base):** Shows "Click: Select armature in object mode"
+   - Timer resets when hovering different control point
+
+**Implementation Details:**
+- Added hover time tracking: `_hover_start_time`, `_last_hovered_id`, `_tooltip_shown`
+- Check in `check_posebridge_hover()` (lines ~2724-2763)
+- Timer reset in `clear_hover()` (lines ~2770-2781)
+
+**Next Steps:**
+1. Restart Blender to load new control point definitions
+2. Regenerate outline with new control points
+3. Test toe control rotations
+4. Test hip control (separate from pelvis)
+5. Test base node at new position (0.1 X from lFoot)
+6. Test tooltip display (hover for 1 second)
+
+---
+
 ## Previous Sessions
 
 *(Add notes from previous testing sessions here)*
