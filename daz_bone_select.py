@@ -14,6 +14,16 @@ import sys
 import os
 import math
 
+# Ensure script directory is in path for local imports
+# Try __file__ first (works when loaded as addon), fall back to hardcoded path
+try:
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _script_dir = r"D:\dev\blendaz"  # Fallback for text editor execution
+
+if _script_dir not in sys.path:
+    sys.path.insert(0, _script_dir)
+
 # Import shared utilities from daz_shared_utils
 from daz_shared_utils import (
     get_bend_axis,
