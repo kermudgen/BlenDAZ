@@ -59,7 +59,7 @@ git reset --hard HEAD~1                       # Undo last commit
 
 | Order | Task | Risk | Status |
 |-------|------|------|--------|
-| 1 | Extract `ik_templates.py` | Low | [ ] Pending |
+| 1 | Extract `ik_templates.py` | Low | [x] Done (c013065) |
 | 2 | Extract `bone_utils.py` | Low | [ ] Pending |
 | 3 | Create rotation cache context manager | Medium | [ ] Pending |
 | 4 | Extract `ik_chain.py` | Medium | [ ] Pending |
