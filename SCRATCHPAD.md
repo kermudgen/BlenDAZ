@@ -14,7 +14,39 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 
 ---
 
-## Current Session: 2026-02-17
+## Current Session: 2026-02-18
+
+### Active Work: Second Drag Bug Fix + Bend/Twist Architecture
+
+#### Key Discoveries This Session
+
+1. **LOCAL vs POSE constraint space** — Root cause of second-drag snap-to-straight. `.ik` bones have different rest pose than DAZ bones (their rest IS the current posed position). LOCAL space reads `matrix_basis` (delta from rest), so Identity on .ik = "go to rest" on DAZ = snap to T-pose. POSE space matches armature-space matrices directly, bypassing rest pose entirely. **Fix: Changed Copy Rotation to POSE/POSE space.**
+
+2. **POSE space axis filtering doesn't work for bone-local twist** — `use_y = False` in POSE space filters armature Y axis, not the bone's local twist axis. When arm is posed away from rest, these don't align. Tried filtering Y for forearm (80% fix) and shoulder (made things worse). **Dead end for this approach.**
+
+3. **Swing/twist decomposition is the proper solution** — Removed Copy Rotation from bend bones entirely. Added manual post-processing in `update_ik_drag()`: read `.ik` bone's evaluated matrix, compute local rotation via `rest_offset.inv @ parent.matrix.inv @ ik.matrix`, decompose with `decompose_swing_twist(rot, 'Y')`, set bend bone = swing, twist bone = twist.
+
+4. **rotation_quaternion vs rotation_euler** — Setting `rotation_quaternion` on a bone in Euler mode does NOTHING. DAZ bones from Diffeomorphic may use Euler. Must always check `rotation_mode`. **Suspected cause of "arm not moving" with correct decomposition values.**
+
+5. **frame_set() ordering in dissolve** — Swapped `frame_set()` BEFORE STEP 3.5 cache restore to prevent prior-drag keyframes from overriding restored leg positions.
+
+6. **Keyframe reset warning spam** — Moved action/fcurves check outside per-bone loop (was printing 32 "no fcurves" warnings).
+
+#### Changes Made
+- `daz_bone_select.py` create_ik_chain(): Bend bones with twist counterparts skip Copy Rotation, tracked in `swing_twist_pairs`
+- `daz_bone_select.py` update_ik_drag(): Added swing/twist post-processing after IK solve
+- `daz_bone_select.py` dissolve_ik_chain(): Added swing/twist decomposition at bake time
+- Return value of create_ik_chain expanded to 6 values (added swing_twist_pairs)
+- All rotation setting now checks rotation_mode (QUATERNION vs Euler)
+
+#### Status
+- Second drag snap-to-straight: **FIXED** (POSE space)
+- Bend/twist separation: **In testing** (manual decomposition approach)
+- Rotation mode check: **Just added** (awaiting test results)
+
+---
+
+## Previous Session: 2026-02-17
 
 ### Active Work
 - Hand panel implementation - COMMITTED TO MASTER (d068918)

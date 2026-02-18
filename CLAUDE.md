@@ -90,14 +90,73 @@ Choose the simple explicit approach. Manual configuration is easier to understan
 - **Modify rotation**: Edit functions in daz_shared_utils.py, test with/without LIMIT_ROTATION constraints
 - **Hot reload**: Use reload_daz_bone_select.py pattern to avoid restarting Blender
 
-## Known Issues
+## Issue Status
 
-- **LIMIT_ROTATION constraints**: Diffeomorphic sometimes doesn't create constraints for head, shoulder twist, elbow, forearm twist bones
-  - Workaround: `enforce_rotation_limits()` falls back to IK limits or defaults
-- **Module caching**: Blender module caching can cause issues during development
-  - Workaround: Restart Blender or use reload scripts
-- **Control point recapture**: Must manually recapture after moving outline
-  - Run [recapture_control_points.py](posebridge/recapture_control_points.py)
+> **For AI assistants**: Read this section before investigating any bug. It records what is already known, what has already been tried, and what NOT to re-investigate. The goal is to prevent re-spinning on documented issues.
+
+---
+
+### 🟡 second_drag_bug — MOSTLY FIXED (2026-02-18, live testing in progress)
+**Symptom**: Second IK drag produces wrong result — snap-back, wrong initial position, or accumulated twist.
+
+**Root causes found (2026-02-18)**:
+1. **Constraint space mismatch**: Copy Rotation in LOCAL space reads `matrix_basis` (delta from rest pose). Since `.ik` bones' rest pose IS the current posed position, LOCAL copies Identity → DAZ bone snaps to T-pose. **Fixed: Changed to POSE space.**
+2. **Bend/twist not separated**: Copy Rotation (in ANY space) copies combined swing+twist to DAZ bend bones. Axis filtering (`use_y=False`) doesn't work because POSE space axes ≠ bone-local axes. **Fixed: Removed Copy Rotation from bend bones, added manual swing/twist decomposition using `decompose_swing_twist()`.**
+3. **rotation_mode not checked**: Setting `rotation_quaternion` on Euler-mode bones does nothing. Diffeomorphic imports may use Euler. **Fixed: Added rotation_mode check.**
+
+**Fixes applied (in code, confirmed partially working)**:
+- POSE space for Copy Rotation (non-bend bones) — confirmed fixes snap-to-straight
+- Swing/twist decomposition in `update_ik_drag()` post-processing — confirmed running, correct values
+- Swing/twist decomposition in `dissolve_ik_chain()` bake step — confirmed baking
+- rotation_mode check for all rotation setting — just added, awaiting test
+- Bake constraint results via evaluated depsgraph before removing — working
+- `frame_set()` before STEP 3.5 cache restore in dissolve (ordering fix) — working
+
+**Remaining gaps (in priority order)**:
+1. **Does rotation_mode fix make the arm visually move?** — Awaiting test. Console shows correct swing/twist values but mesh wasn't moving before this fix.
+2. **Collar bones not baked** — `Shoulder_Track_Temp` (Damped Track) is skipped by bake check. Collar relies on `INSERTKEY_VISUAL` + `frame_set()`.
+3. **`cleanup_temp_ik_chains()` (Alt+X debug cleanup) does NOT use new swing/twist approach** — uses old patterns. Only affects debug mode.
+
+**Key technical findings** (see TECHNICAL_REFERENCE.md for full details):
+- LOCAL space: reads `matrix_basis` (delta from rest). Breaks when target/owner have different rest poses.
+- POSE space: reads armature-space matrix. Rest-pose agnostic. Correct for orientation matching.
+- POSE axis filtering: axes are armature-space, NOT bone-local. Cannot filter bone twist this way.
+- `decompose_swing_twist(rot, 'Y')`: proper way to separate bend from twist for DAZ architecture.
+- Always check `bone.rotation_mode` before setting rotation (QUATERNION vs Euler).
+
+**History**: This bug has been worked on 4 times (Feb 8, 10, 17, 18). The Feb 18 session identified the constraint space as root cause and implemented swing/twist decomposition. Major breakthrough.
+
+**Last investigated**: 2026-02-18 (live testing with user)
+
+---
+
+### 🟡 arm_shrugs — OPEN (pre-existing, deferred)
+**Symptom**: Arm shrugs upward instead of reaching forward when dragging hand.
+**Status**: Pre-existing before `refactor/ik-chain-architecture` branch. Will address after refactor cleanup.
+**Don't re-investigate**: Pole targets — already confirmed disabled for arms (DAZ twist bone incompatibility). See TECHNICAL_REFERENCE.md:220-225.
+**Likely cause**: Stiffness tuning on shoulder/collar or chain length including collar.
+
+---
+
+### 🟡 knee_bends_backward — OPEN (pre-existing, deferred)
+**Symptom**: Knee bends backward, thigh twists on leg IK drag.
+**Status**: Pre-existing before refactor branch.
+**Known partial fix**: Pre-bend angle (0.8 radians) in `ik_templates.py`. Thigh Y-axis locked to prevent twist accumulation — daz_bone_select.py:731-736.
+**What to check**: Whether pre-bend is being read from template correctly (was hardcoded at one point — fixed, but verify).
+
+---
+
+### 🟡 ik_refactor_step_3b — OPEN (pending)
+**What it is**: Replace old rotation cache/restore patterns with the new baking approach in 3 remaining locations.
+**Status**: Identified in refactor plan but marked "TEST FIRST" — SCRATCHPAD.md:65.
+**Note**: Line numbers in SCRATCHPAD (747, 1503, 2387) have shifted since refactor. Search for `rotation_cache = {}` to find current locations.
+
+---
+
+### ✅ Low-priority / stable issues
+- **LIMIT_ROTATION missing**: Diffeomorphic doesn't always create constraints for head, shoulder twist, elbow, forearm twist. Workaround: `enforce_rotation_limits()` falls back to IK limits. Stable.
+- **Module caching**: Blender module caching during development. Workaround: restart Blender or use reload scripts.
+- **Control point recapture**: Must run manually after moving PoseBridge outline. Run `posebridge/recapture_control_points.py`.
 
 ## Documentation System
 
@@ -112,26 +171,31 @@ This project uses a five-file documentation system to help both humans and AI as
 ### For AI Assistants
 
 When working on this project:
-1. **Check [INDEX.md](INDEX.md) first** to find files before searching or grepping
-2. **Check [TODO.md](TODO.md)** for current priorities and planned work
-3. **Check [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** when debugging IK or rig issues
-4. **Follow the principles** in this document (especially "Code Simplicity Principle")
-5. **Update [SCRATCHPAD.md](SCRATCHPAD.md)** as you work:
+1. **Check the STATUS section above first** — if the bug is listed, read what's already known before investigating
+2. **Check [INDEX.md](INDEX.md)** to find files before searching or grepping
+3. **Check [TODO.md](TODO.md)** for current priorities and planned work
+4. **Check [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** when debugging IK or rig issues — especially the Research Findings section for non-obvious Blender/DAZ behaviors
+5. **Follow the principles** in this document (especially "Code Simplicity Principle")
+6. **Update [SCRATCHPAD.md](SCRATCHPAD.md)** as you work:
    - Document decisions made
    - Note what works and what doesn't
    - Capture bugs encountered and solutions
    - Record technical observations
-6. **Update [TODO.md](TODO.md)** when:
+7. **Update [TODO.md](TODO.md)** when:
    - Completing tasks (mark done, move to Recently Completed)
    - Discovering new bugs or issues
    - Identifying technical debt
    - Having ideas for future improvements
-7. **Update [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** when:
+8. **Update [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** when:
    - Discovering why something doesn't work
    - Finding solutions to tricky problems
    - Learning new facts about DAZ rigs or Blender IK
-8. **Prefer simple solutions** over complex ones
-9. **Ask questions** if requirements are unclear
+9. **Update the STATUS section in this file** when:
+   - A listed issue is confirmed fixed (change 🔴/🟡 to ✅, note what resolved it)
+   - A new open issue is discovered (add entry with root cause, what's known, what to check)
+   - New investigation narrows down a known issue (update "What to check" / "Don't re-investigate")
+10. **Prefer simple solutions** over complex ones
+11. **Ask questions** if requirements are unclear
 
 ### SCRATCHPAD.md Archiving
 
