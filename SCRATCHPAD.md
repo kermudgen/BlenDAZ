@@ -17,9 +17,76 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 ## Current Session: 2026-02-17
 
 ### Active Work
-- Hand panel implementation - MOSTLY COMPLETE
-- Icon system for DAZ PowerPose-style view switching - IN PROGRESS
-- User creating custom icon shapes from meshes
+- Hand panel implementation - COMMITTED TO MASTER (d068918)
+- Icon system for DAZ PowerPose-style view switching - IN PROGRESS (pending icon designs)
+- **IK Chain Architecture Refactoring** - STARTING NOW
+
+---
+
+## IK Chain Refactoring - 2026-02-17
+
+### Context
+Got stuck on ad hoc IK chain construction when working with Sonnet. Brought in Opus for fresh analysis. Decision: refactor for maintainability and reliability.
+
+### Branch
+`refactor/ik-chain-architecture` (created from master @ d068918)
+
+### Rollback Plan
+```bash
+# If things go wrong:
+git checkout master                           # Return to stable
+git branch -D refactor/ik-chain-architecture  # Delete failed branch
+
+# Or rollback specific commits:
+git reset --hard HEAD~1                       # Undo last commit
+```
+
+### Analysis Summary (Opus 4.5)
+
+**Current Architecture** (working but complex):
+1. DAZ Bones (original) → receive Copy Rotation from...
+2. .IK Control Bones → receive IK constraint targeting...
+3. Target/Pole Bones → what user drags
+
+**Identified Issues**:
+1. **Chain collection is ad hoc** - Skip conditions scattered in while loop (twist bones, pectorals, pinned bones)
+2. **Stiffness not configurable** - Templates are fixed, no runtime adjustment
+3. **Mode switching fragile** - Rotation cache/restore pattern duplicated in 3 places (lines 747, 1503, 2387)
+4. **Missing constraints** - Diffeomorphic doesn't always create LIMIT_ROTATION for head, shoulder twist, elbow, forearm twist
+5. **File too large** - daz_bone_select.py at 267KB does too much
+
+### Refactoring Plan (Incremental, One Commit Each)
+
+| Order | Task | Risk | Status |
+|-------|------|------|--------|
+| 1 | Extract `ik_templates.py` | Low | [x] Done (c013065) |
+| 2 | Extract `bone_utils.py` | Low | [x] Done (a8e5e56) |
+| 3a | Create rotation cache module | Low | [x] Done (fb79677) |
+| 3b | Replace existing cache patterns | Medium | [ ] Pending - TEST FIRST |
+| 4 | Extract `ik_chain.py` | Medium | [ ] Pending |
+| 5 | Make stiffness configurable | Medium | [ ] Pending |
+| 6 | Refactor chain building to class | Higher | [ ] Pending |
+
+### Test Checklist (Run After Each Change)
+- [x] Script loads without import errors
+- [ ] Basic arm IK drag works - **PRE-EXISTING ISSUE: arm shrugs instead of reaching**
+- [ ] Leg IK with pre-bend works - **PRE-EXISTING ISSUE: knee bends backward, thigh twists**
+- [ ] Soft pin behavior intact - works (tested with pinned hand)
+- [ ] No snap-back on release
+- [ ] Collar/shoulder movement smooth
+
+**Note**: Arm/leg IK issues existed on master before refactoring. Will address after cleanup.
+
+### Key Code Locations
+- `daz_bone_select.py:44-134` - IK_RIG_TEMPLATES
+- `daz_bone_select.py:534-1414` - create_ik_chain() main function
+- `daz_bone_select.py:631-660` - Bone hierarchy traversal
+- `daz_bone_select.py:747` - Rotation cache #1
+- `daz_bone_select.py:1503` - Rotation cache #2
+- `daz_bone_select.py:2387` - Rotation cache #3
+- `daz_shared_utils.py` - Rotation utilities, enforce_rotation_limits()
+
+---
 
 ### Decisions Made
 - **Outline for body view only** - Hand/face views use standin mesh with matcap, no GP outline
