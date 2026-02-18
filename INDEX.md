@@ -257,6 +257,15 @@ Pose blending system for creating and blending between multiple character poses 
 - Testing procedures
 - Documentation system guidelines
 
+### [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)
+**Purpose**: Hard-won technical knowledge about IK, DAZ rigs, and Blender integration
+- IK chain architecture (three-layer system)
+- DAZ Genesis 8/9 rig specifics (dual bend/twist bones)
+- Axis locking strategy
+- Research summary (Diffeomorphic, Rig On The Fly, DAZ Studio)
+- Troubleshooting guide
+- **When to consult**: Debugging IK issues, understanding why something doesn't work
+
 ### [README.md](README.md)
 **Purpose**: Project overview for users and developers
 - What BlenDAZ does
@@ -450,8 +459,9 @@ Pose blending system for creating and blending between multiple character poses 
 ## 📚 Related Documentation
 
 - [CLAUDE.md](CLAUDE.md) - Project context and development guidelines
-- [SCRATCHPAD.md](SCRATCHPAD.md) - Development journal (to be created)
-- [TODO.md](TODO.md) - Task tracking and roadmap (to be created)
+- [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) - Hard-won IK and DAZ rig knowledge
+- [SCRATCHPAD.md](SCRATCHPAD.md) - Development journal
+- [TODO.md](TODO.md) - Task tracking and roadmap
 - [PROJECT_SETUP_GUIDE.md](PROJECT_SETUP_GUIDE.md) - Documentation system setup guide
 
 ---

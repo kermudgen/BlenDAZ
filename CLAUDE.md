@@ -101,31 +101,37 @@ Choose the simple explicit approach. Manual configuration is easier to understan
 
 ## Documentation System
 
-This project uses a four-file documentation system to help both humans and AI assistants work effectively:
+This project uses a five-file documentation system to help both humans and AI assistants work effectively:
 
 1. **[CLAUDE.md](CLAUDE.md)** (this file) - Project context, philosophy, and development guidelines
 2. **[INDEX.md](INDEX.md)** - Complete file reference and quick lookup for all files
 3. **[SCRATCHPAD.md](SCRATCHPAD.md)** - Development journal for active work, experiments, and learnings
 4. **[TODO.md](TODO.md)** - Task tracking, roadmap, and project backlog
+5. **[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** - Hard-won knowledge about IK, DAZ rigs, and Blender integration
 
 ### For AI Assistants
 
 When working on this project:
 1. **Check [INDEX.md](INDEX.md) first** to find files before searching or grepping
 2. **Check [TODO.md](TODO.md)** for current priorities and planned work
-3. **Follow the principles** in this document (especially "Code Simplicity Principle")
-4. **Update [SCRATCHPAD.md](SCRATCHPAD.md)** as you work:
+3. **Check [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** when debugging IK or rig issues
+4. **Follow the principles** in this document (especially "Code Simplicity Principle")
+5. **Update [SCRATCHPAD.md](SCRATCHPAD.md)** as you work:
    - Document decisions made
    - Note what works and what doesn't
    - Capture bugs encountered and solutions
    - Record technical observations
-5. **Update [TODO.md](TODO.md)** when:
+6. **Update [TODO.md](TODO.md)** when:
    - Completing tasks (mark done, move to Recently Completed)
    - Discovering new bugs or issues
    - Identifying technical debt
    - Having ideas for future improvements
-6. **Prefer simple solutions** over complex ones
-7. **Ask questions** if requirements are unclear
+7. **Update [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** when:
+   - Discovering why something doesn't work
+   - Finding solutions to tricky problems
+   - Learning new facts about DAZ rigs or Blender IK
+8. **Prefer simple solutions** over complex ones
+9. **Ask questions** if requirements are unclear
 
 ### SCRATCHPAD.md Archiving
 

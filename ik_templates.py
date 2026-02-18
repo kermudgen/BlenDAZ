@@ -18,25 +18,22 @@ from mathutils import Vector
 
 IK_RIG_TEMPLATES = {
     'hand': {
-        'description': 'Full arm IK chain for hand dragging',
-        'chain_length': 4,  # collar → shoulder → forearm → hand
+        'description': 'Arm IK chain for hand dragging (shoulder + forearm + hand)',
+        'chain_length': 3,  # shoulder → forearm → hand (exclude collar for stability)
         'stiffness': {
-            'collar': 0.75,     # Stable but allows some movement
-            'shldr': 0.1,       # Very flexible for natural arm movement
-            'shoulder': 0.1,    # Alias for shldr
+            'shldr': 0.3,       # Some resistance to prevent wild swinging
+            'shoulder': 0.3,    # Alias for shldr
             'forearm': 0.0,     # Bends freely (main bend point)
             'lorearm': 0.0,     # Alias for forearm
             'hand': 0.0         # End effector, no resistance
         },
         'pole_target': {
-            'enabled': True,
-            'reference_bone': 'forearm',  # Place pole relative to elbow
-            'method': 'perpendicular_to_line',  # Project elbow perpendicular to shoulder-hand
-            'distance_multiplier': 2.0   # Extend 2x the elbow offset for stability
+            'enabled': False,  # Disabled - DAZ twist bones don't work with pole targets
+            'reference_bone': 'forearm',
+            'method': 'perpendicular_to_line',
+            'distance_multiplier': 2.0
         },
-        'constraints': {
-            'collar': 'damped_track'  # Track shoulder naturally
-        },
+        'constraints': {},  # No collar in chain, no damped track needed
         'prebend': None  # Arms don't need prebend
     },
 
@@ -51,7 +48,7 @@ IK_RIG_TEMPLATES = {
             'lorearm': 0.0
         },
         'pole_target': {
-            'enabled': True,
+            'enabled': False,  # Disabled - DAZ twist bones don't work with pole targets
             'reference_bone': 'forearm',
             'method': 'perpendicular_to_line',
             'distance_multiplier': 2.0
@@ -72,16 +69,16 @@ IK_RIG_TEMPLATES = {
             'foot': 0.0         # End effector
         },
         'pole_target': {
-            'enabled': True,
-            'reference_bone': 'shin',  # Place pole relative to knee
+            'enabled': False,  # Disabled - DAZ twist bones don't work with pole targets
+            'reference_bone': 'shin',
             'method': 'perpendicular_to_line',
             'distance_multiplier': 2.0
         },
         'constraints': {},
         'prebend': {
-            'bone_pattern': 'shin',  # Apply to shin/calf
+            'bone_pattern': 'shin',
             'axis': (1, 0, 0),       # X-axis (forward bend)
-            'angle': 0.5             # 0.5 radians (~29°)
+            'angle': 0.8             # 0.8 radians (~46°) - stronger hint for IK solver
         }
     },
 
@@ -94,7 +91,7 @@ IK_RIG_TEMPLATES = {
             'calf': 0.0
         },
         'pole_target': {
-            'enabled': True,
+            'enabled': False,  # Disabled - DAZ twist bones don't work with pole targets
             'reference_bone': 'shin',
             'method': 'perpendicular_to_line',
             'distance_multiplier': 2.0
@@ -103,7 +100,7 @@ IK_RIG_TEMPLATES = {
         'prebend': {
             'bone_pattern': 'shin',
             'axis': (1, 0, 0),
-            'angle': 0.5
+            'angle': 0.8             # 0.8 radians (~46°) - stronger hint for IK solver
         }
     }
 }
@@ -185,30 +182,28 @@ def calculate_pole_position(template, posed_positions, daz_bones, clicked_bone_w
             print(f"  ⚠️  Chain start not found for pole calculation")
             return None
 
-        # Calculate pole position perpendicular to start-target line
-        line_vec = clicked_bone_world_tail - chain_start_world
-        ref_vec = ref_world - chain_start_world
+        # Detect if this is a leg or arm chain
+        is_leg = any('shin' in b.name.lower() or 'thigh' in b.name.lower() or 'calf' in b.name.lower()
+                    for b in daz_bones)
 
-        # Project reference onto line
-        line_dir = line_vec.normalized()
-        projection_length = ref_vec.dot(line_dir)
-        projection = chain_start_world + line_dir * projection_length
+        # Use CONSISTENT WORLD-SPACE offset from TARGET position (not elbow/knee)
+        # This prevents twist accumulation across multiple drags
+        # Pole is positioned relative to the foot/hand target, matching dynamic update logic
+        pole_distance = 0.3  # 30cm offset
 
-        # Offset perpendicular to line
-        offset = ref_world - projection
-
-        # Extend offset for visibility and stability
-        pole_distance = max(offset.length * distance_mult, 0.2)  # Minimum 20cm
-        if offset.length > 0.001:
-            pole_offset_dir = offset.normalized()
+        if is_leg:
+            # Legs: pole forward (-Y) from foot position
+            pole_offset = Vector((0, -pole_distance, 0))
         else:
-            # Fallback: use world Z if arm is straight
-            pole_offset_dir = Vector((0, 0, 1))
+            # Arms: pole behind and down from hand position
+            pole_offset = Vector((0, pole_distance * 0.8, -pole_distance * 0.6))
 
-        pole_world_head = ref_world + pole_offset_dir * pole_distance
-        pole_world_tail = pole_world_head + pole_offset_dir * 0.05  # 5cm for visibility
+        # Position relative to TARGET (clicked_bone_world_tail), not elbow/knee
+        # This matches the dynamic pole update logic for consistency
+        pole_world_head = clicked_bone_world_tail + pole_offset
+        pole_world_tail = pole_world_head + pole_offset.normalized() * 0.05  # 5cm for visibility
 
-        print(f"  ✓ Calculated pole position: {pole_world_head} (method: {method}, offset: {pole_distance:.3f}m)")
+        print(f"  ✓ Calculated pole position: {pole_world_head} (method: target_relative, dist: {pole_distance:.3f}m)")
         return (pole_world_head, pole_world_tail)
 
     return None

@@ -726,6 +726,51 @@ if cp_panel != settings.active_panel:
 
 ---
 
+## IK Second Drag Bug Fix - 2026-02-17
+
+### Problem
+On the second IK drag in DEBUG mode, the .ik bones were floating far away from the actual arm mesh instead of overlaying the DAZ bones. This caused the arm to snap straight and not follow the mouse correctly.
+
+### Root Cause
+In `create_ik_chain()` cleanup code (lines 218-256), when cleaning up the old IK chain:
+1. We cached `rotation_quaternion` values from DAZ bones
+2. We removed Copy Rotation constraints
+3. We deleted .ik bones in EDIT mode
+4. We restored cached rotations
+
+**The bug**: Copy Rotation constraints REPLACE bone rotation but don't modify `rotation_quaternion`. When we cached rotations at step 1, we were caching the BASE rotation (pre-first-drag), not the constraint-applied rotation. When we removed constraints at step 2, bones snapped back to their original pose. Restoring the same cached values didn't help.
+
+Then when we captured `posed_positions` for the new .ik bones, we captured the snapped-back (wrong) positions.
+
+### Solution
+Instead of cache/restore, we now BAKE constraint results into actual bone rotations BEFORE removing constraints:
+
+```python
+# Get evaluated bone's final matrix (includes constraint effects)
+bone_eval = armature_eval.pose.bones[pose_bone.name]
+
+# Extract local rotation from final matrix
+if pose_bone.parent:
+    local_matrix = parent_eval.matrix.inverted() @ bone_eval.matrix
+else:
+    local_matrix = bone_eval.matrix
+
+loc, rot, scale = local_matrix.decompose()
+
+# Set bone's actual rotation to match constraint result
+pose_bone.rotation_quaternion = rot
+```
+
+After baking, removing the constraint doesn't cause snap-back because the bone's own rotation now matches what the constraint was producing.
+
+### Files Modified
+- `daz_bone_select.py`: Lines 218-278 (cleanup code in create_ik_chain)
+
+### Key Insight
+Copy Rotation constraints are "live" - they affect the final bone matrix but don't modify `pose_bone.rotation_quaternion`. To preserve constraint results after removing the constraint, you must decompose the final matrix and write the rotation back to the bone's rotation property.
+
+---
+
 ## Archive (Completed Work)
 
 ### ✅ Hand Panel Core Implementation - 2026-02-17
