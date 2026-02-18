@@ -68,11 +68,14 @@ git reset --hard HEAD~1                       # Undo last commit
 | 6 | Refactor chain building to class | Higher | [ ] Pending |
 
 ### Test Checklist (Run After Each Change)
-- [ ] Basic arm IK drag works
-- [ ] Leg IK with pre-bend works
-- [ ] Soft pin behavior intact
+- [x] Script loads without import errors
+- [ ] Basic arm IK drag works - **PRE-EXISTING ISSUE: arm shrugs instead of reaching**
+- [ ] Leg IK with pre-bend works - **PRE-EXISTING ISSUE: knee bends backward, thigh twists**
+- [ ] Soft pin behavior intact - works (tested with pinned hand)
 - [ ] No snap-back on release
 - [ ] Collar/shoulder movement smooth
+
+**Note**: Arm/leg IK issues existed on master before refactoring. Will address after cleanup.
 
 ### Key Code Locations
 - `daz_bone_select.py:44-134` - IK_RIG_TEMPLATES
