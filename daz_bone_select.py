@@ -1828,6 +1828,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     # Click detection to ignore gizmo drags
     _mouse_down_pos = None
     _click_threshold = 5  # pixels - if mouse moves more than this, it's a drag not a click
+    _accumulated_drag_distance = 0.0  # Track cumulative movement during detection phase
+    _accumulated_drag_threshold = 12  # pixels - trigger drag if accumulated movement exceeds this
+    _last_detection_mouse_pos = None  # Last mouse position during drag detection
 
     # IK drag state
     _is_dragging = False
@@ -1880,11 +1883,22 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Check if we should start IK drag or rotation
             if not self._is_dragging and not self._is_rotating and self._mouse_down_pos and self._drag_bone_name:
                 mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+
+                # Calculate direct distance from initial mouse-down position
                 distance = ((mouse_pos[0] - self._mouse_down_pos[0])**2 +
                            (mouse_pos[1] - self._mouse_down_pos[1])**2)**0.5
 
-                # If moved beyond threshold, start IK drag
-                if distance > self._click_threshold:
+                # Accumulate distance traveled (for slow, steady movements)
+                if self._last_detection_mouse_pos:
+                    movement = ((mouse_pos[0] - self._last_detection_mouse_pos[0])**2 +
+                               (mouse_pos[1] - self._last_detection_mouse_pos[1])**2)**0.5
+                    self._accumulated_drag_distance += movement
+                self._last_detection_mouse_pos = mouse_pos
+
+                # If moved beyond threshold (direct OR accumulated), start IK drag
+                if distance > self._click_threshold or self._accumulated_drag_distance > self._accumulated_drag_threshold:
+                    if self._accumulated_drag_distance > self._accumulated_drag_threshold and distance <= self._click_threshold:
+                        debug_print(f"  [DRAG] Triggered by accumulated distance: {self._accumulated_drag_distance:.1f}px (direct: {distance:.1f}px)", level=1)
                     self.start_ik_drag(context, event)
 
                 # Consume event during detection phase to prevent box select
@@ -1917,6 +1931,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # If clicking in header area or outside bounds, pass through
                 if mouse_y > region.height - 40 or mouse_y < 0 or mouse_x < 0 or mouse_x > region.width:
                     self._mouse_down_pos = None
+                    self._accumulated_drag_distance = 0.0
+                    self._last_detection_mouse_pos = None
                     return {'PASS_THROUGH'}
 
             # DOUBLE-CLICK DETECTION: Switch to object mode and select armature (DAZ-style)
@@ -1996,6 +2012,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Only handle click if we're hovering over a bone (otherwise pass through for gizmos)
             if not self._hover_bone_name or not self._hover_armature:
                 self._mouse_down_pos = None
+                self._accumulated_drag_distance = 0.0
+                self._last_detection_mouse_pos = None
                 return {'PASS_THROUGH'}
 
             # POSEBRIDGE MODE: Skip raycast check - 2D control point hit detection is sufficient
@@ -2039,10 +2057,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # If we didn't hit any mesh, pass through (clicking empty space)
                 if not hit_mesh:
                     self._mouse_down_pos = None
+                    self._accumulated_drag_distance = 0.0
+                    self._last_detection_mouse_pos = None
                     return {'PASS_THROUGH'}
 
             # Record mouse position on press (to detect drags vs clicks)
             self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
+            self._accumulated_drag_distance = 0.0  # Reset accumulated distance
+            self._last_detection_mouse_pos = self._mouse_down_pos  # Start tracking from mouse-down
 
             # Hovering over a bone - prepare for potential drag
             if self._hover_bone_name and self._hover_armature:
@@ -2069,6 +2091,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                         # Clear mouse tracking
                         self._mouse_down_pos = None
+                        self._accumulated_drag_distance = 0.0
+                        self._last_detection_mouse_pos = None
 
                         # Consume event
                         return {'RUNNING_MODAL'}
@@ -2106,6 +2130,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Clear mouse tracking
             self._mouse_down_pos = None
+            self._accumulated_drag_distance = 0.0
+            self._last_detection_mouse_pos = None
 
             return {'PASS_THROUGH'}
 
@@ -2147,6 +2173,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._drag_bone_name = None
                 self._drag_armature = None
                 self._mouse_down_pos = None
+                self._accumulated_drag_distance = 0.0
+                self._last_detection_mouse_pos = None
 
             return {'PASS_THROUGH'}
 
@@ -2167,6 +2195,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._drag_bone_name = None
                 self._drag_armature = None
                 self._mouse_down_pos = None
+                self._accumulated_drag_distance = 0.0
+                self._last_detection_mouse_pos = None
 
             return {'PASS_THROUGH'}
 
@@ -2243,6 +2273,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._hover_armature = None
         self._base_body_mesh = None
         self._mouse_down_pos = None
+        self._accumulated_drag_distance = 0.0
+        self._last_detection_mouse_pos = None
 
         # Tooltip state (shows after 1 second of hovering)
         self._hover_start_time = None
@@ -3227,6 +3259,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Mouse-direction pre-bend: track first mouse moves to determine bend direction
         self._pre_bend_mouse_samples = []  # Store first 2-3 mouse positions
         self._pre_bend_applied = False     # Track if we've applied the pre-bend yet
+        self._pre_bend_accumulated_distance = 0.0  # Track cumulative 3D movement for slow drags
 
         print(f"  Initial mouse pos stored: {self._drag_initial_mouse_pos}")
         print(f"  Initial target pos stored: {self._drag_initial_target_pos}")
@@ -3476,15 +3509,22 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     break
 
         # Collect first 2-3 mouse positions to determine direction
-        if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) < 3:
+        if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) < 10:  # Allow more samples for slow movements
             current_mouse_3d = view3d_utils.region_2d_to_location_3d(
                 context.region,
                 context.space_data.region_3d,
                 (event.mouse_region_x, event.mouse_region_y),
                 self._drag_depth_reference
             )
+
+            # Accumulate distance from previous sample
+            if len(self._pre_bend_mouse_samples) > 0:
+                prev_sample = self._pre_bend_mouse_samples[-1]
+                movement = (current_mouse_3d - prev_sample).length
+                self._pre_bend_accumulated_distance += movement
+
             self._pre_bend_mouse_samples.append(current_mouse_3d.copy())
-            debug_print(f"  [PRE-BEND] Sample {len(self._pre_bend_mouse_samples)}/3: mouse=({event.mouse_region_x}, {event.mouse_region_y})")
+            debug_print(f"  [PRE-BEND] Sample {len(self._pre_bend_mouse_samples)}: accumulated={self._pre_bend_accumulated_distance:.4f}m")
 
         # After collecting samples, apply pre-bend and activate IK
         if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) >= 2:
@@ -3497,15 +3537,21 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # CRITICAL: Require minimum movement before activating IK/Copy Rotation
             # This prevents snap when user barely moves the mouse
+            # Check BOTH direct distance AND accumulated distance (for slow, steady movements)
             MIN_MOVEMENT_THRESHOLD = 0.003  # 3mm minimum movement (balance between precision and snap prevention)
 
-            if mouse_delta.length < MIN_MOVEMENT_THRESHOLD:
+            # Check both direct distance and accumulated distance
+            direct_distance = mouse_delta.length
+            accumulated_distance = self._pre_bend_accumulated_distance
+
+            if direct_distance < MIN_MOVEMENT_THRESHOLD and accumulated_distance < MIN_MOVEMENT_THRESHOLD:
                 # Not enough movement yet - keep collecting samples
-                print(f"  [PRE-BEND] Waiting for movement (current: {mouse_delta.length:.4f}m < {MIN_MOVEMENT_THRESHOLD}m)")
+                print(f"  [PRE-BEND] Waiting for movement (direct: {direct_distance:.4f}m, accumulated: {accumulated_distance:.4f}m < {MIN_MOVEMENT_THRESHOLD}m)")
                 return  # Exit early, don't activate IK yet
 
+            # Use direct delta for direction (better represents intended direction than accumulated path)
             mouse_direction = mouse_delta.normalized()
-            print(f"  [PRE-BEND] Mouse direction: {mouse_direction} (movement: {mouse_delta.length:.4f}m)")
+            print(f"  [PRE-BEND] Movement threshold reached! Direction: {mouse_direction} (direct: {direct_distance:.4f}m, accumulated: {accumulated_distance:.4f}m)")
 
             # Find the middle joint to pre-bend (forearm, shin, or spine)
             middle_bone = None
@@ -3955,6 +4001,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._drag_initial_target_pos = None
         self._drag_initial_mouse_pos = None
         self._mouse_down_pos = None
+        self._accumulated_drag_distance = 0.0
+        self._last_detection_mouse_pos = None
 
         # Update header
         context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
@@ -4629,6 +4677,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._rotation_mouse_button = None
         self._right_click_used_for_drag = False
         self._mouse_down_pos = None
+        self._accumulated_drag_distance = 0.0
+        self._last_detection_mouse_pos = None
         # Clear twist bone state if it exists
         if hasattr(self, '_twist_bone_initial_quats'):
             del self._twist_bone_initial_quats
