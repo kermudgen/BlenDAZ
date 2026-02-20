@@ -51,6 +51,22 @@ Common lookups:
 - **daz_bone_select**: Press `Ctrl+Shift+D` in Pose mode, hover over bones, click-drag to rotate
 - **PoseBridge testing**: See [posebridge/TESTING_POSEBRIDGE.md](posebridge/TESTING_POSEBRIDGE.md) for full checklist
 
+## Quick Testing (For AI Assistants)
+
+**When the user wants to test daz_bone_select or posebridge:**
+
+1. **DON'T** create elaborate checklists or enter plan mode
+2. **DON'T** ask a bunch of questions about what to test
+3. **DO** just use [quick_test.py](../quick_test.py) - it handles everything:
+   - Checks prerequisites
+   - Enables posebridge
+   - Starts daz_bone_select operator
+   - Ready to test in seconds
+
+**User can then just hover and click-drag to test. That's it. Keep it simple.**
+
+If there's a specific bug or feature to test, focus on that directly without ceremony.
+
 ## Development Conventions
 
 ### Artist-First Design Principles
@@ -168,6 +184,21 @@ This project uses a five-file documentation system to help both humans and AI as
 4. **[TODO.md](TODO.md)** - Task tracking, roadmap, and project backlog
 5. **[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** - Hard-won knowledge about IK, DAZ rigs, and Blender integration
 
+### Development Patterns
+
+**Project-specific templates** (see [templates/](templates/) directory):
+- [Rollback plan](templates/rollback-plan-template.md) - Use before risky changes (refactors, upgrades)
+- [Bug status entry](templates/bug-status-template.md) - Document complex bugs in STATUS section
+
+**General patterns** (see [claude-craft](../../../claude-craft/)):
+- [Incremental Refactoring](../../../claude-craft/workflows/incremental-refactoring.md) - Large file refactoring workflow
+- [Documentation-First Debugging](../../../claude-craft/patterns/documentation-first-debugging.md) - Prevent re-investigation
+- [Constrained AI Prompting](../../../claude-craft/patterns/constrained-ai-prompting.md) - Predictable AI output
+- [Socratic Prompting](../../../claude-craft/patterns/socratic-prompting.md) - Deep reasoning through questions
+- [Quick Reference](../../../claude-craft/QUICK_REFERENCE.md) - Pattern decision guide
+
+---
+
 ### For AI Assistants
 
 When working on this project:
@@ -194,8 +225,9 @@ When working on this project:
    - A listed issue is confirmed fixed (change 🔴/🟡 to ✅, note what resolved it)
    - A new open issue is discovered (add entry with root cause, what's known, what to check)
    - New investigation narrows down a known issue (update "What to check" / "Don't re-investigate")
-10. **Prefer simple solutions** over complex ones
-11. **Ask questions** if requirements are unclear
+10. **Use development patterns** from templates/ and claude-craft when situations arise
+11. **Prefer simple solutions** over complex ones
+12. **Ask questions** if requirements are unclear
 
 ### SCRATCHPAD.md Archiving
 

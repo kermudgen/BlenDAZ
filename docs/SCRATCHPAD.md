@@ -14,7 +14,193 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 
 ---
 
-## Current Session: 2026-02-18
+## Current Session: 2026-02-19
+
+### Active Work: Analytical Leg IK + DAZ Rig Manager Architecture
+
+#### Leg IK Straightening Problem
+
+**The Issue**: When dragging a bent leg to straighten it, Blender's IK solver keeps the knee bent because it finds a "local minimum" solution. The solver optimizes for minimum change, so a bent leg stays bent even when the target is reachable with a straight leg.
+
+**Approaches Tried**:
+1. Pre-bend seeding (0.8 rad) - helps initially but solver re-bends
+2. Reset to straight then solve - IK immediately re-bends
+3. IK limit locking (ik_max_x) - solver still finds bent solutions
+4. Including pelvis in chain - didn't help
+5. **Analytical IK** - current approach, bypasses Blender's solver entirely
+
+**Analytical Leg IK Implementation**:
+- Uses law of cosines to calculate exact knee angle based on distance
+- Key insight: **Knee is a hinge joint** - only rotates on X axis
+- Thigh: uses direction calculation (ball joint, can rotate freely)
+- Shin: just sets X rotation to knee bend angle
+- No local minima, handles straightening correctly
+
+**Files Modified**:
+- `daz_bone_select.py`: Added `solve_two_bone_ik_analytical()`, `calculate_bone_rotation_from_direction()`, `update_analytical_leg_drag()`
+
+**Current Status**: ✅ **~99% WORKING!** Foot tracks mouse accurately (~0.02m error), knee bends/straightens correctly, smooth transitions, no snap/jump at drag start. Minor hitches remain but acceptable.
+
+#### Bugs Fixed This Session
+
+1. **Bone hierarchy mismatch** - Discovered `lShin` parent is `lThighTwist`, not `lThighBend`
+   - Fix: Calculate `upper_leg_length` as hip-to-shin.head (includes twist bone)
+   - Fix: Track ThighTwist bone for keyframing/restore
+
+2. **Thigh rotation not pointing knee correctly** - Was using thigh.tail direction
+   - Fix: Calculate rest direction from `thigh.bone.head_local` to `shin.bone.head_local`
+   - This accounts for the twist bone in the chain
+
+3. **Shin bend axis flipping** - Axis was recalculated every frame, causing erratic movement
+   - Fix: Lock the shin bend axis at drag START (`_analytical_leg_shin_bend_axis`)
+   - Hinge joints have a fixed rotation axis - don't recalculate!
+
+4. **Knee bending backwards** - Hardcoded `(1, 0, 0)` as bend axis
+   - Fix: Calculate actual axis from thigh/shin cross product at drag start
+   - Ensure axis points so positive rotation bends forward (via knee_axis dot product)
+
+5. **Undo not working** - Modal changes weren't registered with Blender's undo system
+   - Fix: Added `bpy.ops.ed.undo_push()` at drag start and end
+
+6. **Blender lockup on pose reset** - NaN values in rotation quaternions
+   - Fix: Added safety checks for zero-length vectors and NaN validation
+
+7. **Foot not following mouse** - Depth reference was fixed at initial foot position
+   - Fix: Use delta-based mouse projection with initial foot as depth reference
+
+8. **ThighTwist rotation ~160° off** - Was comparing rest shin direction to target
+   - Fix: Apply shin bend FIRST, then calculate twist based on actual foot position vs target
+   - Simplified to 3-option search: calculated angle, opposite, zero
+
+9. **Knee swinging sideways** - Knee offset direction recalculated each frame
+   - Fix: Lock `_analytical_leg_bend_plane_normal` at drag start
+   - Rotate thigh around this fixed axis to keep knee in original bend plane
+
+10. **Snap to extended when straightening** - Discontinuity between bent/extended cases
+    - Fix: Both cases now use same rotation logic (hip_angle=0 for extended)
+    - Smooth transition without sudden direction changes
+
+11. **Performance (Blender crash)** - 16+ scene updates per frame for twist search
+    - Fix: Reduced to 3 scene updates (calculated, opposite, zero)
+
+12. **Bend plane sign flipped** - Anatomical bend_plane_normal had wrong sign for left leg
+    - Left leg normal should point LEFT (-X), not +X
+    - Wrong sign caused 170° twist compensation
+    - Fix: Flipped sign convention (left=-X, right=+X)
+
+13. **Shin bend axis sign flip** - Calculating from pose caused (-1,0,0) vs (1,0,0)
+    - Fix: Hardcode to `(1, 0, 0)` - it's a hinge joint, always local X
+
+14. **Jump/skip at drag start** - Resetting to identity and recalculating didn't match original pose
+    - Fix: 3-pixel dead zone before IK kicks in
+
+15. **Snap to straight near rest** - Zero mouse delta → target at max_reach → knee_bend=0
+    - Fix: Same dead zone prevents recalculation until real mouse movement
+
+#### IK Solver Implementation Details
+
+```python
+# Bone detection
+thigh = lThighBend
+twist = lThighTwist
+shin = lShin
+foot = lFoot
+
+# Lengths (IMPORTANT: upper_leg includes twist!)
+upper_leg = distance(thigh.head, shin.head)  # ~0.31m
+lower_leg = distance(shin.head, shin.tail)   # ~0.28m
+
+# At drag start, lock these:
+_analytical_leg_knee_axis = perpendicular to hip-foot, toward knee
+_analytical_leg_shin_bend_axis = (1, 0, 0)  # HARDCODED - hinge joint, always local X
+_analytical_leg_bend_plane_normal = thigh × character_forward (anatomical, left=-X, right=+X)
+```
+
+#### Final Algorithm (per frame)
+
+1. **Dead zone check** - skip if mouse moved < 3 pixels (prevents jump/snap)
+2. **Reset** all leg bones to identity (clean slate)
+3. **Calculate geometry** using law of cosines:
+   - `knee_bend_angle` from hip-to-target distance
+   - `hip_angle` for thigh offset from target direction
+4. **ThighBend**: Rotate around locked `bend_plane_normal` by `hip_angle`
+5. **Shin**: Apply `knee_bend_angle` on `(1, 0, 0)` local X axis
+6. **ThighTwist**: Quick 3-option search for best foot-to-target alignment
+
+#### Key Lessons Learned
+
+- **Hinge joints have fixed axes** - Don't calculate from pose, hardcode (1,0,0)
+- **Bend plane sign matters** - Left leg = -X normal, right leg = +X normal
+- **Reset to identity each frame** - Prevents rotation accumulation errors
+- **Dead zone prevents startup artifacts** - Don't recalculate until real mouse movement
+- **Anatomical constraints > pose-based** - Use character orientation, not current pose
+
+#### Performance Metrics
+
+- Error: ~0.016-0.022m (1.6-2.2cm) - excellent for interactive posing
+- Twist angles: ~14° (anatomically reasonable)
+- Scene updates per frame: 5 (reset + thigh + shin bend + twist search x3)
+- Smooth drag, no chug or crashes
+- 3-pixel dead zone eliminates startup jump
+
+#### DAZ Rig Manager Architecture
+
+**Vision**: Instead of ad-hoc rig preparation scattered throughout the code, create a proper **BlenDAZ Rig Manager** that:
+
+1. **On import/first use** (fingerprinting):
+   - Detect DAZ character (Diffeomorphic fingerprint)
+   - Convert ALL bones to quaternion mode (eliminates Euler conversion issues)
+   - Store rig metadata (bone hierarchy, original rotation modes, constraints)
+   - Cache for fast subsequent access
+   - Identify Genesis version (8 vs 9)
+
+2. **During posing**:
+   - Use cached rig info
+   - All operations work in quaternion space
+   - Track pose changes
+
+3. **Export to DAZ** (future):
+   - Convert quaternions back to Euler (DAZ format)
+   - Generate DSF/DUF pose file
+   - Handle bone name mapping
+
+**New Module**: `daz_rig_manager.py`
+
+```python
+class DAZRigInfo:
+    armature_name: str
+    fingerprint: str  # Diffeomorphic's rig ID
+    genesis_version: int  # 8 or 9
+    original_rotation_modes: dict  # For export back to DAZ
+    bone_hierarchy: dict  # Parent/child relationships
+    ik_chain_definitions: dict  # Pre-calculated IK chains
+    bend_twist_pairs: dict  # lShldrBend → lShldrTwist mappings
+    is_prepared: bool
+```
+
+**Benefits**:
+- Single source of truth for rig info
+- Detect issues early (missing bones, wrong rig type)
+- Eliminate 25+ quaternion/euler mode checks throughout code
+- Foundation for DAZ export functionality
+- Better error handling and user feedback
+
+**Implementation Added**:
+- `prepare_rig_for_ik()` function in daz_bone_select.py
+- Called on operator start and drag start
+- Converts all bones to quaternion mode
+- Tracks prepared armatures to avoid redundant conversion
+
+#### Key Discoveries
+
+1. **Knee only bends on one axis** - Simplifies leg IK to just setting shin's X rotation
+2. **DAZ bones use Euler by default** - Source of quaternion/euler conversion issues
+3. **25+ places check rotation_mode** - Clear sign we need centralized rig preparation
+4. **Shin parent may not be ThighBend** - Need to verify bone hierarchy for proper IK
+
+---
+
+## Previous Session: 2026-02-18
 
 ### Active Work: Second Drag Bug Fix + Bend/Twist Architecture
 

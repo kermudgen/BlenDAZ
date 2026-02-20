@@ -1,12 +1,60 @@
 # BlenDAZ - TODO
 
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-02-19
 
 Track current development tasks, future features, and improvements needed.
 
 ---
 
 ## 🚧 Current Work
+
+### DAZ Rig Manager 🟢 In Progress
+
+**Description**: Centralized rig detection, preparation, and metadata storage. Foundation for all BlenDAZ operations.
+
+**Module**: `daz_rig_manager.py`
+
+#### Core Features (Implemented)
+- [x] `RigManager` singleton class
+- [x] `DAZRigInfo` dataclass for rig metadata
+- [x] Genesis 8/9 version detection
+- [x] Bone hierarchy caching
+- [x] Bend/twist pair detection
+- [x] Convert all bones to quaternion mode
+- [x] Store original rotation modes (for DAZ export)
+- [x] Diffeomorphic fingerprint detection
+
+#### Integration Tasks
+- [ ] Replace `prepare_rig_for_ik()` in daz_bone_select.py with RigManager
+- [ ] Use cached bend_twist_pairs instead of runtime detection
+- [ ] Add N-Panel UI showing rig status
+- [ ] Error handling for non-DAZ rigs
+
+#### Future: DAZ Export
+- [ ] Generate DSF/DUF pose files
+- [ ] Restore original rotation modes before export
+- [ ] Handle bone name mapping (Blender ↔ DAZ)
+
+---
+
+### Analytical Leg IK 🟡 In Progress
+
+**Description**: Bypass Blender's IK solver for legs to fix knee straightening issues.
+
+#### Key Insight
+- Knee is a hinge joint (only X axis rotation)
+- Law of cosines gives exact knee angle based on distance
+- No local minima, no solver fighting
+
+#### Current Status
+- [x] `solve_two_bone_ik_analytical()` function
+- [x] `calculate_bone_rotation_from_direction()` helper
+- [x] `update_analytical_leg_drag()` drag handler
+- [ ] Debug quaternion rotation application
+- [ ] Test with various leg poses
+- [ ] Consider arm IK with similar approach
+
+---
 
 ### Init Script & Standin Mesh 🟡 Ready to Implement
 

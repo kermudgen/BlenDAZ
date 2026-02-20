@@ -102,6 +102,27 @@ IK_RIG_TEMPLATES = {
             'axis': (1, 0, 0),
             'angle': 0.8             # 0.8 radians (~46°) - stronger hint for IK solver
         }
+    },
+
+    'head': {
+        'description': 'Head IK chain with diminishing torso influence',
+        'chain_length': 3,  # head → neck → chest (exclude lower spine/abdomen for stability)
+        'stiffness': {
+            'head': 0.0,        # End effector, no resistance (1)
+            'neckupper': 0.3,   # Upper neck - more mobile, bends more (closer to head)
+            'necklower': 0.6,   # Lower neck - more stable, bends less (closer to shoulders)
+            'neck': 0.5,        # Fallback for any other neck bones
+            'chest': 0.75,      # Strong resistance (2) - Fibonacci adjusted
+            'abdomen': 0.90,    # Very strong resistance (3) - Fibonacci adjusted
+            'pelvis': 0.98,     # Nearly locked (5) - Fibonacci adjusted
+            'spine': 0.90       # Alias for abdomen
+        },
+        'pole_target': {
+            'enabled': False
+        },
+        'constraints': {},
+        'prebend': None,
+        'target_offset': 0.25  # Position target tail 25cm above head - tracks tail (tip) for smooth behavior
     }
 }
 
@@ -127,6 +148,8 @@ def get_ik_template(bone_name):
         return IK_RIG_TEMPLATES.get('foot')
     elif 'shin' in bone_lower or 'calf' in bone_lower:
         return IK_RIG_TEMPLATES.get('shin')
+    elif 'head' in bone_lower:
+        return IK_RIG_TEMPLATES.get('head')
 
     # Add more bone types as needed
     return None

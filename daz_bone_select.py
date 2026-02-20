@@ -3,6 +3,17 @@ DAZ Bone Select & Pin & PowerPose
 Combines fast hover preview, bone selection, pin marking system, and PowerPose panel posing
 """
 
+# CRITICAL: Add module path BEFORE any local imports
+import sys
+import os
+
+# Always add the BlenDAZ directory to path (required for imports)
+BLENDAZ_DIR = r"D:\dev\BlenDAZ"
+if BLENDAZ_DIR not in sys.path:
+    sys.path.insert(0, BLENDAZ_DIR)
+    print(f"[DAZ] Added to sys.path: {BLENDAZ_DIR}")
+
+# Now safe to import Blender modules and local modules
 import bpy
 from bpy_extras import view3d_utils
 from mathutils import Vector, Euler, Quaternion, Matrix
@@ -10,19 +21,7 @@ from mathutils.bvhtree import BVHTree
 import gpu
 from gpu_extras.batch import batch_for_shader
 import blf
-import sys
-import os
 import math
-
-# Ensure script directory is in path for local imports
-# Try __file__ first (works when loaded as addon), fall back to hardcoded path
-try:
-    _script_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    _script_dir = r"D:\dev\blendaz"  # Fallback for text editor execution
-
-if _script_dir not in sys.path:
-    sys.path.insert(0, _script_dir)
 
 # Import shared utilities from daz_shared_utils
 import daz_shared_utils
@@ -84,6 +83,76 @@ def debug_print(msg, level=2):
     """Print debug message if verbosity level allows it."""
     if DEBUG_VERBOSITY >= level:
         print(msg)
+
+
+# ============================================================================
+# RIG PREPARATION - Convert DAZ rig to quaternion mode
+# ============================================================================
+# DAZ rigs use Euler rotations by default, but quaternions are better for IK:
+# - No gimbal lock
+# - Smoother interpolation
+# - Simpler math (no mode checks everywhere)
+
+_prepared_armatures = set()  # Track which armatures have been converted
+
+def prepare_rig_for_ik(armature, force=False):
+    """
+    Convert all bones in armature to quaternion rotation mode.
+
+    This should be called once when first interacting with a DAZ rig.
+    Preserves current visual rotation when converting from Euler.
+
+    Args:
+        armature: The armature object
+        force: If True, re-prepare even if already done
+
+    Returns:
+        Number of bones converted
+    """
+    if not armature or armature.type != 'ARMATURE':
+        return 0
+
+    # Check if already prepared
+    armature_id = id(armature.data)
+    if armature_id in _prepared_armatures and not force:
+        return 0
+
+    converted_count = 0
+    euler_bones = []
+
+    for pose_bone in armature.pose.bones:
+        if pose_bone.rotation_mode != 'QUATERNION':
+            euler_bones.append(pose_bone.name)
+
+            # Convert current rotation to quaternion BEFORE changing mode
+            if pose_bone.rotation_mode == 'AXIS_ANGLE':
+                # Axis-angle to quaternion
+                axis = Vector(pose_bone.rotation_axis_angle[1:4])
+                angle = pose_bone.rotation_axis_angle[0]
+                quat = Quaternion(axis, angle)
+            else:
+                # Euler to quaternion
+                quat = pose_bone.rotation_euler.to_quaternion()
+
+            # Change mode and set quaternion
+            pose_bone.rotation_mode = 'QUATERNION'
+            pose_bone.rotation_quaternion = quat
+            converted_count += 1
+
+    if converted_count > 0:
+        print(f"  [RIG PREP] Converted {converted_count} bones to quaternion mode")
+        if DEBUG_VERBOSITY >= 2:
+            print(f"    Bones: {', '.join(euler_bones[:10])}{'...' if len(euler_bones) > 10 else ''}")
+
+    _prepared_armatures.add(armature_id)
+    return converted_count
+
+
+def is_rig_prepared(armature):
+    """Check if armature has been prepared for IK."""
+    if not armature:
+        return False
+    return id(armature.data) in _prepared_armatures
 
 
 # ============================================================================
@@ -520,13 +589,16 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     # Convert world positions back to armature local space
     armature_inv = armature.matrix_world.inverted()
 
+    # Get target offset from template (larger for head bones to position above mesh)
+    offset_distance = ik_template.get('target_offset', 0.1) if ik_template else 0.1
+
     # In soft pin mode, position target at PINNED CHILD's TIP (tail) to prevent snap
     # Otherwise, position at clicked bone's TIP (tail) to prevent spine arching
     if soft_pin_mode and pinned_child_world_head is not None:
         # CRITICAL: Position target at TAIL of pinned child, not spanning the whole bone
         # This prevents the IK from pulling toward the hand's base instead of its tip
         target_edit.head = armature_inv @ pinned_child_world_tail  # At tip
-        target_offset = Vector((0, 0, 0.1))  # 10cm upward offset
+        target_offset = Vector((0, 0, offset_distance))
         target_edit.tail = armature_inv @ (pinned_child_world_tail + target_offset)
         print(f"  Positioned IK target at pinned child tip for zero-snap initialization")
     else:
@@ -536,8 +608,9 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
         target_edit.head = target_local  # At tip
         print(f"  DEBUG: Target local pos: {target_local}, from world: {clicked_bone_world_tail}")
         # Create a small bone extending upward (for visibility and manipulation)
-        target_offset = Vector((0, 0, 0.1))  # 10cm upward offset
+        target_offset = Vector((0, 0, offset_distance))
         target_edit.tail = armature_inv @ (clicked_bone_world_tail + target_offset)
+        print(f"  Target offset: {offset_distance}m ({'template' if ik_template and 'target_offset' in ik_template else 'default'})")
 
     # Copy roll from rest position (roll doesn't change with posing)
     clicked_edit = edit_bones[bone_name]
@@ -742,6 +815,20 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
                         limits_str.append(f"Z:[{_math.degrees(constraint.min_z):.0f}°,{_math.degrees(constraint.max_z):.0f}°]")
                     print(f"  [LIMIT_ROTATION→IK] {daz_name}: {', '.join(limits_str)}")
                     break  # Only use first LIMIT_ROTATION constraint
+
+        # SPECIAL CASE: Override knee IK limits to allow deeper bends
+        # DAZ shin limits often stop at ~90°, but knees should bend to 150°+
+        if 'shin' in daz_name.lower() or 'calf' in daz_name.lower():
+            if ik_bone.use_ik_limit_x:
+                import math as _math
+                original_max_deg = _math.degrees(ik_bone.ik_max_x)
+
+                # Expand max to allow deep bends (150° = 2.62 radians)
+                ik_bone.ik_max_x = max(ik_bone.ik_max_x, 2.62)
+
+                new_max_deg = _math.degrees(ik_bone.ik_max_x)
+                if new_max_deg > original_max_deg:
+                    print(f"  [KNEE OVERRIDE] {daz_name}: max X {original_max_deg:.0f}° → {new_max_deg:.0f}°")
 
         # Lock IK axes if DAZ bone has them locked
         ik_bone.lock_ik_x = daz_bone.lock_ik_x
@@ -1058,6 +1145,8 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
             copy_rot.influence = 0.7  # Upper abdomen - medium influence
         elif 'chestlower' in daz_name_lower or 'chest' in daz_name_lower:
             copy_rot.influence = 0.875  # Lower chest - high influence
+        elif 'neck' in daz_name_lower:
+            copy_rot.influence = 0.7  # Neck bones - start high to reduce snap on activation
         else:
             copy_rot.influence = 0.0  # Other bones - start disabled, activate on first mouse move
 
@@ -1191,15 +1280,18 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
 
     # POLISH: Add Damped Track for head bones to make Y axis (top of head) point at target
     # This makes the head orient naturally towards where you're dragging
+    # Lower influence = more stable "string pull" feel, less bobble-head wobble
+    HEAD_TRACK_INFLUENCE = 0.0  # DISABLED: Pure translation "string pull" - no automatic rotation
     tip_daz_bone = armature.pose.bones[daz_bone_names[-1]]
-    if 'head' in tip_daz_bone.name.lower():
+    if 'head' in tip_daz_bone.name.lower() and HEAD_TRACK_INFLUENCE > 0.0:
         track = tip_daz_bone.constraints.new('DAMPED_TRACK')
         track.name = "IK_HeadTrack_Temp"
         track.target = armature
         track.subtarget = target_name  # Point at .ik.target
+        track.head_tail = 1.0  # CRITICAL: Track the TAIL (tip) of target bone, not head (base)
         track.track_axis = 'TRACK_Y'  # Y axis (top of head) points at target
-        track.influence = 1.0
-        print(f"  Added head tracking constraint (Y axis → target)")
+        track.influence = HEAD_TRACK_INFLUENCE
+        print(f"  Added head tracking constraint (Y axis → target tail, influence={HEAD_TRACK_INFLUENCE})")
 
     # Force update
     bpy.context.view_layer.update()
@@ -1249,7 +1341,7 @@ def create_ik_chain(armature, bone_name, chain_length=None, ignore_pin_on_bone=N
     tip_world = armature.matrix_world @ tip_ik.head
     print(f"  ✓ IK chain ready | tip_pos={tip_world.x:.3f},{tip_world.y:.3f},{tip_world.z:.3f}")
 
-    return target_name, ik_control_names, daz_bone_names, shoulder_target_names, leg_prebend_applied, swing_twist_pairs
+    return target_name, ik_control_names, daz_bone_names, shoulder_target_names, leg_prebend_applied, swing_twist_pairs, is_leg_chain
 
 
 def copy_rotation_temp_to_real(armature, temp_bone_names, real_bone_names):
@@ -1350,7 +1442,6 @@ def dissolve_ik_chain(armature, target_bone_name, ik_control_names, daz_bone_nam
             # Find the matching pair
             for ik_name, bend_name, twist_name in swing_twist_pairs:
                 if bend_name == daz_name:
-                    from daz_shared_utils import decompose_swing_twist
                     ik_bone_eval = armature_eval.pose.bones.get(ik_name)
                     if not ik_bone_eval:
                         break
@@ -1906,7 +1997,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # If dragging IK, update IK target position
             if self._is_dragging:
-                if self._use_fabrik:
+                if self._use_analytical_leg_ik:
+                    self.update_analytical_leg_drag(context, event)
+                elif self._use_fabrik:
                     self.update_fabrik_drag(context, event)
                 else:
                     self.update_ik_drag(context, event)
@@ -2292,6 +2385,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._ik_control_bone_names = []
         self._ik_daz_bone_names = []
         self._shoulder_target_names = []  # Shoulder targets for collar Damped Track
+        self._is_leg_chain = False  # Legs get full range, arms get protection
         self._drag_plane_normal = None
         self._drag_plane_point = None
         self._drag_depth_reference = None  # Fixed depth for raycast consistency
@@ -2302,6 +2396,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._use_fabrik = False
         self._fabrik_chain = None
         self._fabrik_pinned_bone = None
+
+        # Analytical leg IK state (bypasses Blender's IK solver completely)
+        self._use_analytical_leg_ik = False
+        self._analytical_leg_bones = {}  # {'thigh': bone, 'shin': bone, 'foot': bone}
+        self._analytical_leg_hip_pos = None  # World position of hip (fixed during drag)
+        self._analytical_leg_lengths = {}  # {'thigh': length, 'shin': length}
+        self._analytical_leg_original_rotations = {}  # For undo/cancel
+        self._analytical_leg_side = None  # 'l' or 'r'
+        self._analytical_leg_knee_axis = None  # Knee bend direction from initial pose
+        self._analytical_leg_shin_bend_axis = None  # Locked shin rotation axis (prevents flipping)
+        self._analytical_leg_bend_plane_normal = None  # Normal to the plane knee bends in (locks knee direction)
 
         # Soft pin system state (DAZ-like yielding pins)
         self._soft_pin_active = False
@@ -2330,6 +2435,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Try to detect base body mesh from active armature
         if context.active_object and context.active_object.type == 'ARMATURE':
+            # CRITICAL: Convert all bones to quaternion mode for consistent IK behavior
+            # This eliminates quaternion/euler conversion issues throughout the code
+            prepare_rig_for_ik(context.active_object)
+
             self._base_body_mesh = find_base_body_mesh(context, context.active_object)
             if self._base_body_mesh:
                 print(f"  Using base mesh: {self._base_body_mesh.name}")
@@ -3002,6 +3111,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not self._drag_bone_name or not self._drag_armature:
             return
 
+        # Ensure rig is in quaternion mode (handles armature switching mid-session)
+        prepare_rig_for_ik(self._drag_armature)
+
         mouse_pos = (event.mouse_region_x, event.mouse_region_y)
         print(f"\n=== Starting IK Drag: {self._drag_bone_name} | Mouse: {mouse_pos} ===")
 
@@ -3179,6 +3291,205 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             else:
                 print("  ✗ Could not find pinned child, using normal IK")
 
+        # Check if this is a leg bone - use analytical IK instead of Blender's IK solver
+        # Analytical IK has no local minima and handles straightening correctly
+        bone_lower = self._drag_bone_name.lower()
+        is_leg_bone = 'foot' in bone_lower or 'shin' in bone_lower or 'calf' in bone_lower
+
+        if is_leg_bone and not self._soft_pin_active:
+            print("  → LEG BONE DETECTED: Using analytical IK (bypasses Blender's solver)")
+
+            # Determine side (left or right)
+            if bone_lower.startswith('l'):
+                self._analytical_leg_side = 'l'
+            elif bone_lower.startswith('r'):
+                self._analytical_leg_side = 'r'
+            else:
+                # Try to find side from bone name
+                self._analytical_leg_side = 'l' if 'left' in bone_lower else 'r'
+
+            side = self._analytical_leg_side
+
+            # Find leg bones (thigh, shin, foot)
+            # DAZ naming: lThigh, lShin, lFoot (or lThighBend, etc.)
+            pose_bones = self._drag_armature.pose.bones
+
+            # Find thigh bone
+            thigh_bone = None
+            for name_pattern in [f'{side}Thigh', f'{side}ThighBend']:
+                if name_pattern in pose_bones:
+                    thigh_bone = pose_bones[name_pattern]
+                    break
+
+            # Find shin bone
+            shin_bone = None
+            for name_pattern in [f'{side}Shin', f'{side}ShinBend', f'{side}Calf']:
+                if name_pattern in pose_bones:
+                    shin_bone = pose_bones[name_pattern]
+                    break
+
+            # Find foot bone
+            foot_bone = None
+            for name_pattern in [f'{side}Foot']:
+                if name_pattern in pose_bones:
+                    foot_bone = pose_bones[name_pattern]
+                    break
+
+            if thigh_bone and shin_bone and foot_bone:
+                print(f"  Found leg bones: thigh={thigh_bone.name}, shin={shin_bone.name}, foot={foot_bone.name}")
+
+                # Find twist bone (between thigh and shin)
+                thigh_twist = None
+                for name_pattern in [f'{side}ThighTwist']:
+                    if name_pattern in pose_bones:
+                        thigh_twist = pose_bones[name_pattern]
+                        break
+
+                # Store bone references (include twist if found)
+                self._analytical_leg_bones = {
+                    'thigh': thigh_bone,
+                    'thigh_twist': thigh_twist,  # May be None
+                    'shin': shin_bone,
+                    'foot': foot_bone
+                }
+
+                if thigh_twist:
+                    print(f"  Found twist bone: {thigh_twist.name}")
+                    print(f"  Hierarchy: {thigh_bone.name} → {thigh_twist.name} → {shin_bone.name}")
+
+                # Calculate bone lengths from rest pose
+                # IMPORTANT: thigh_length is hip to knee (includes twist bone!)
+                # This is the actual upper leg length for IK calculations
+                armature = self._drag_armature
+                hip_world = armature.matrix_world @ thigh_bone.head
+                knee_world = armature.matrix_world @ shin_bone.head  # shin.head IS the knee!
+                ankle_world = armature.matrix_world @ shin_bone.tail
+
+                # Upper leg = hip to knee (thigh + twist combined)
+                thigh_length = (knee_world - hip_world).length
+                # Lower leg = knee to ankle
+                shin_length = (ankle_world - knee_world).length
+
+                self._analytical_leg_lengths = {
+                    'thigh': thigh_length,
+                    'shin': shin_length
+                }
+                print(f"  Bone lengths: upper_leg={thigh_length:.3f}m, lower_leg={shin_length:.3f}m")
+
+                # Store hip position (fixed during drag)
+                self._analytical_leg_hip_pos = armature.matrix_world @ thigh_bone.head
+
+                # Store original rotations for cancel/undo (include twist if present)
+                self._analytical_leg_original_rotations = {
+                    'thigh': thigh_bone.rotation_quaternion.copy(),
+                    'shin': shin_bone.rotation_quaternion.copy(),
+                    'foot': foot_bone.rotation_quaternion.copy()
+                }
+                if thigh_twist:
+                    self._analytical_leg_original_rotations['thigh_twist'] = thigh_twist.rotation_quaternion.copy()
+
+                # Ensure bones use quaternion mode (include twist if present)
+                bones_to_convert = [thigh_bone, shin_bone, foot_bone]
+                if thigh_twist:
+                    bones_to_convert.append(thigh_twist)
+                for bone in bones_to_convert:
+                    bone.rotation_mode = 'QUATERNION'
+
+                # NOTE: We no longer reset thigh_twist to identity.
+                # Instead, we calculate the proper twist during drag to align the knee hinge.
+
+                # Calculate initial knee direction from current pose
+                # This preserves the knee bend direction throughout the drag
+                knee_world = armature.matrix_world @ shin_bone.head
+                hip_world = armature.matrix_world @ thigh_bone.head
+                foot_world = armature.matrix_world @ foot_bone.tail
+
+                # Knee direction = perpendicular to hip-foot line, toward current knee
+                hip_to_foot = (foot_world - hip_world).normalized()
+                hip_to_knee = (knee_world - hip_world)
+                # Project hip_to_knee onto plane perpendicular to hip_to_foot
+                knee_perp = hip_to_knee - (hip_to_knee.dot(hip_to_foot)) * hip_to_foot
+                if knee_perp.length > 0.01:
+                    self._analytical_leg_knee_axis = knee_perp.normalized()
+                    print(f"  Knee axis from pose: {self._analytical_leg_knee_axis}")
+                else:
+                    # Leg is nearly straight, use forward direction
+                    self._analytical_leg_knee_axis = Vector((0, -1, 0))
+                    print(f"  Knee axis (default forward): {self._analytical_leg_knee_axis}")
+
+                # Calculate and LOCK the bend plane normal
+                # For LEGS: Use anatomically correct bend plane based on character orientation
+                # The knee should ALWAYS bend forward, not sideways - regardless of current pose
+                #
+                # The bend plane normal is the axis around which the hip rotates to move the knee
+                # For legs, this should be roughly the character's LEFT-RIGHT axis (X in world space)
+                # adjusted for which leg (left vs right) to ensure knee bends forward
+
+                # Get the armature's orientation to find "character forward"
+                armature_forward = (armature.matrix_world.to_3x3() @ Vector((0, 1, 0))).normalized()  # Character's +Y
+                armature_right = (armature.matrix_world.to_3x3() @ Vector((1, 0, 0))).normalized()    # Character's +X
+
+                # The bend plane should contain the thigh direction and "forward"
+                # Its normal is perpendicular to both - roughly the left-right axis
+                thigh_vec = (knee_world - hip_world)
+                if thigh_vec.length > 0.001:
+                    thigh_vec = thigh_vec.normalized()
+                else:
+                    thigh_vec = Vector((0, 0, -1))
+
+                # Calculate bend normal as perpendicular to thigh and forward
+                bend_plane_normal = thigh_vec.cross(armature_forward)
+                if bend_plane_normal.length < 0.001:
+                    # Thigh is parallel to forward, use right axis
+                    bend_plane_normal = armature_right
+                else:
+                    bend_plane_normal = bend_plane_normal.normalized()
+
+                # Ensure consistent direction: for LEFT leg, normal should point roughly -X (LEFT)
+                # for RIGHT leg, normal should point roughly +X (RIGHT)
+                # This makes positive rotation around the normal push the knee FORWARD
+                if self._analytical_leg_side == 'l' and bend_plane_normal.dot(armature_right) > 0:
+                    bend_plane_normal = -bend_plane_normal
+                elif self._analytical_leg_side == 'r' and bend_plane_normal.dot(armature_right) < 0:
+                    bend_plane_normal = -bend_plane_normal
+
+                self._analytical_leg_bend_plane_normal = bend_plane_normal
+                print(f"  Bend plane normal: {self._analytical_leg_bend_plane_normal} (anatomical)")
+
+                # Shin bend axis: ALWAYS local X for a hinge joint
+                # The knee is a hinge - it bends on one fixed axis in the bone's local space
+                # For DAZ shin bones, positive X rotation = forward knee bend
+                # No need to calculate from pose (that caused sign flips!)
+                self._analytical_leg_shin_bend_axis = Vector((1, 0, 0))
+                print(f"  Shin bend axis: (1, 0, 0) (anatomical hinge)")
+
+                # Set up drag state
+                self._use_analytical_leg_ik = True
+                self._is_dragging = True
+
+                # Store initial mouse position and foot position for delta-based drag
+                self._drag_initial_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+                self._drag_initial_target_pos = armature.matrix_world @ foot_bone.tail
+
+                # Store view info for 3D projection
+                region = context.region
+                rv3d = context.space_data.region_3d
+                self._drag_plane_normal = rv3d.view_rotation @ Vector((0, 0, -1))
+                self._drag_depth_reference = self._drag_initial_target_pos.copy()
+
+                # Store undo state (internal)
+                self.store_undo_state(context)
+
+                # Push Blender undo step so Ctrl+Z works after the drag
+                bpy.ops.ed.undo_push(message="Before Leg IK Drag")
+
+                context.area.header_text_set(f"ANALYTICAL LEG IK: {self._drag_bone_name} | Release to apply")
+                print("  ✓ Analytical leg IK mode activated")
+                return  # Skip normal IK chain creation
+            else:
+                print(f"  ✗ Could not find all leg bones (thigh={thigh_bone}, shin={shin_bone}, foot={foot_bone})")
+                print("  → Falling back to normal IK")
+
         # Continue with normal IK path (now with soft pin support)
         # Create IK chain with temp bones (bypasses twist bones for clean IK)
         # Pass the bone to ignore pin checks on if dragging a pinned bone
@@ -3196,8 +3507,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             print("  ✗ Failed to create IK chain")
             return
 
-        # Unpack the 6 return values from create_ik_chain
-        target_bone_name, ik_control_names, daz_bone_names, shoulder_target_names, leg_prebend_applied, swing_twist_pairs = result
+        # Unpack the 7 return values from create_ik_chain
+        target_bone_name, ik_control_names, daz_bone_names, shoulder_target_names, leg_prebend_applied, swing_twist_pairs, is_leg_chain = result
 
         # Store bone names and pre-bend status
         self._ik_target_bone_name = target_bone_name
@@ -3206,6 +3517,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._shoulder_target_names = shoulder_target_names  # For collar Damped Track
         self._leg_prebend_applied = leg_prebend_applied  # Track if leg was in rest pose
         self._swing_twist_pairs = swing_twist_pairs  # Bend/twist bone pairs for manual decomposition
+        self._is_leg_chain = is_leg_chain  # Legs get full range, arms get protection
 
         # Store undo state NOW — before IK solving modifies any rotations
         # This captures the pre-drag bone positions so undo restores correctly
@@ -3373,7 +3685,6 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # DIRECT APPROACH: Set the bone's matrix to place its head at desired position
         # For a parentless bone, we can construct a translation matrix
-        from mathutils import Matrix
 
         # Create a translation matrix that places the bone's head at desired position
         rest_head = Vector(target_bone.bone.head_local)
@@ -3479,10 +3790,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not ik_constraint:
             return
 
-        # FAST PATH: If limb is already bent (second+ drag), skip pre-bend entirely.
+        # FAST PATH: If limb is already bent (second+ drag), activate IK immediately.
         # Pre-bend exists to seed the solver direction for STRAIGHT limbs.
-        # Already-bent limbs don't need it — the existing bend locks the solver direction.
-        # Without this, the movement threshold (3mm) can deadlock the drag.
+        # Already-bent limbs don't need seeding in the same direction,
+        # BUT may need reverse prebend if dragging to straighten.
         if not self._pre_bend_applied:
             import math as _math
             for _bn in self._ik_control_bone_names:
@@ -3493,20 +3804,20 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         _q = _mid.rotation_quaternion
                         _angle = 2 * _math.acos(min(abs(_q.w), 1.0))
                         if _angle > 0.087:  # > 5°
-                            print(f"  [PRE-BEND] {_bn} already bent ({_math.degrees(_angle):.1f}°) — skipping pre-bend")
+                            print(f"  [PRE-BEND] {_bn} already bent ({_math.degrees(_angle):.1f}°) — activating IK")
 
-                            self._pre_bend_applied = True
-                            # Activate IK + Copy Rotation immediately (no IK limit lock needed)
+                            # Don't mark pre-bend as applied yet - let the normal path handle reverse prebend
+                            # Just activate IK and Copy Rotation
                             ik_constraint.influence = 1.0
                             context.view_layer.update()
                             for daz_name in self._ik_daz_bone_names:
                                 daz_bone = self._drag_armature.pose.bones[daz_name]
                                 for constraint in daz_bone.constraints:
-                                    if constraint.name == "IK_CopyRot_Temp" and constraint.influence == 0.0:
+                                    if constraint.name == "IK_CopyRot_Temp":
                                         constraint.influence = 1.0
                             context.view_layer.update()
+                            # DON'T set self._pre_bend_applied = True - let normal path check direction
                             break
-                    break
 
         # Collect first 2-3 mouse positions to determine direction
         if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) < 10:  # Allow more samples for slow movements
@@ -3528,8 +3839,6 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # After collecting samples, apply pre-bend and activate IK
         if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) >= 2:
-            from mathutils import Quaternion
-
             # Calculate mouse movement direction
             mouse_start = self._pre_bend_mouse_samples[0]
             mouse_current = self._pre_bend_mouse_samples[-1]
@@ -3565,7 +3874,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if 'shin' in bone_name_lower or 'calf' in bone_name_lower:
                     middle_bone = self._drag_armature.pose.bones[bone_name]
                     bend_axis = Vector((1, 0, 0))  # X axis for knee
-                    bend_magnitude = 0.04  # ~2.3° for legs (Grok recommended 1.5-2.5°)
+                    bend_magnitude = 0.20  # ~11.5° for legs (stronger nudge to escape bent local minimum)
                     break
                 # Find forearm (arms)
                 elif 'forearm' in bone_name_lower:
@@ -3586,38 +3895,69 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     bend_magnitude = 0.03  # ~1.7° for torso
                     break
 
-            # Apply pre-bend if we found a joint
-            # SKIP if limb is already bent (preserves current pose for second/subsequent drags)
-            # Conservative threshold: any rotation > 5° (0.087 rad) means limb is already bent
-            # Source: Grok analysis - prevents IK solver fighting existing pose
+            # SMART PRE-BEND: Arms = protect bent pose, Legs = full range (can straighten)
+            # Source: Grok analysis - arms need protection, legs need freedom
+            import math
             skip_prebend_for_bent_limb = False
 
             if middle_bone:
-                # Check if joint is already rotated from rest pose using proper quaternion angle
+                # Check if joint is already rotated from rest pose
                 quat = middle_bone.rotation_quaternion
-                # Proper quaternion angle extraction: 2 * acos(|w|)
-                import math
-                quat_angle = 2 * math.acos(min(abs(quat.w), 1.0))  # Clamp to avoid acos domain errors
+                quat_angle = 2 * math.acos(min(abs(quat.w), 1.0))
 
-                # Conservative 5° threshold - if joint has ANY significant rotation, skip pre-bend
-                if quat_angle > 0.087:  # ~5 degrees in radians
+                # ARMS ONLY: Skip prebend if already bent (protects existing pose)
+                # LEGS: Never skip - they need full freedom to both bend AND straighten
+                is_arm = 'forearm' in middle_bone.name.lower()
+
+                if is_arm and quat_angle > 0.35:  # ~20° threshold for arms
                     skip_prebend_for_bent_limb = True
-                    print(f"  [PRE-BEND] Joint {middle_bone.name} has {math.degrees(quat_angle):.1f}° rotation - skipping pre-bend")
-
-            if skip_prebend_for_bent_limb:
-                # Limb already bent — solver is already locked into bent solution.
-                # Don't reinforce: adding rotation can push past 180° and flip the solver.
-                print(f"  [PRE-BEND] Limb already bent — skipping (solver locked in)")
+                    print(f"  [PRE-BEND] ARM SKIP — already bent {math.degrees(quat_angle):.1f}°")
+                elif not is_arm:
+                    # Leg - always allow full range
+                    print(f"  [PRE-BEND] LEG full-range (current bend: {math.degrees(quat_angle):.1f}°)")
 
             if middle_bone and mouse_delta.length > 0.001 and not skip_prebend_for_bent_limb:
                 # Determine direction (positive or negative rotation) based on joint type
                 bend_sign = 1.0
+                is_leg = 'shin' in middle_bone.name.lower() or 'calf' in middle_bone.name.lower()
 
-                # For LEGS (shin/knee): Check Y direction (forward/back)
+                # For LEGS (shin/knee): Use Y direction for bend/straighten
                 # In Blender: -Y is FORWARD (toward character's face), +Y is BACKWARD
                 # Dragging foot forward (-Y) = knee bends = positive rotation
-                if 'shin' in middle_bone.name.lower() or 'calf' in middle_bone.name.lower():
-                    if mouse_direction.y < 0:  # Moving forward (away from body, -Y in Blender)
+                if is_leg:
+                    # Check current bend angle
+                    quat = middle_bone.rotation_quaternion
+                    current_bend = 2 * math.acos(min(abs(quat.w), 1.0))
+                    is_straightening = mouse_direction.y > 0.2 or mouse_direction.z < -0.5
+
+                    if is_straightening and current_bend > 0.35:  # >20° and trying to straighten
+                        # RESET TO STRAIGHT: Give IK solver a clean starting point
+                        print(f"  [STRAIGHTEN] Resetting leg chain to near-straight for clean IK solve")
+
+                        # Reset ALL bones in chain toward identity (straight)
+                        identity = Quaternion((1, 0, 0, 0))
+                        for bone_name in self._ik_control_bone_names[:-1]:  # Exclude tip (foot)
+                            bone = self._drag_armature.pose.bones.get(bone_name)
+                            if bone:
+                                old_angle = 2 * math.acos(min(abs(bone.rotation_quaternion.w), 1.0))
+                                # Slerp 90% toward identity (nearly straight, small hint remaining)
+                                bone.rotation_quaternion = bone.rotation_quaternion.slerp(identity, 0.90)
+                                new_angle = 2 * math.acos(min(abs(bone.rotation_quaternion.w), 1.0))
+                                print(f"    {bone_name}: {math.degrees(old_angle):.1f}° → {math.degrees(new_angle):.1f}°")
+
+                        # CRITICAL: Temporarily LOCK shin IK to prevent re-bending
+                        # Set max bend angle to near-zero so IK solver CAN'T bend the knee
+                        if middle_bone.use_ik_limit_x:
+                            self._straighten_original_ik_max_x = middle_bone.ik_max_x
+                            middle_bone.ik_max_x = 0.1  # ~6° max - nearly locked straight
+                            print(f"  [STRAIGHTEN] Locked shin IK max to {math.degrees(0.1):.1f}° (was {math.degrees(self._straighten_original_ik_max_x):.1f}°)")
+                            self._straighten_lock_active = True
+
+                        # Strong straightening prebend
+                        bend_sign = -1.0
+                        bend_magnitude = 0.8  # ~46° - recommended by docs
+
+                    elif mouse_direction.y < 0:  # Moving forward (away from body, -Y in Blender)
                         bend_sign = 1.0  # Bend knee forward (natural direction)
                     else:  # Moving backward (toward body, +Y in Blender)
                         bend_sign = -1.0  # Knee extends/straightens
@@ -3670,13 +4010,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             target_pos = self._drag_armature.pose.bones[self._ik_target_bone_name].head
             print(f"  [IK ACTIVATED] mouse={mouse_2d} target={target_pos.x:.3f},{target_pos.y:.3f},{target_pos.z:.3f}")
 
-            # Activate Copy Rotation constraints
+            # Activate Copy Rotation constraints IMMEDIATELY
+            # The IK has already solved, so we need full influence for bones to follow
             for daz_name in self._ik_daz_bone_names:
                 daz_bone = self._drag_armature.pose.bones[daz_name]
                 for constraint in daz_bone.constraints:
-                    if constraint.name == "IK_CopyRot_Temp" and constraint.influence == 0.0:
+                    if constraint.name == "IK_CopyRot_Temp":
                         constraint.influence = 1.0
-            debug_print(f"  Copy Rotation constraints activated")
+            debug_print(f"  Copy Rotation constraints activated (full influence)")
         else:
             # IK not activated yet - don't activate Copy Rotation (prevents snap on first mouse move)
             if not hasattr(self, '_copy_rot_wait_logged'):
@@ -3695,7 +4036,6 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # We decompose this and set: bend bone = swing only, twist bone = twist only.
         # This respects the DAZ Bend/Twist bone architecture.
         if self._pre_bend_applied and hasattr(self, '_swing_twist_pairs') and self._swing_twist_pairs:
-            from daz_shared_utils import decompose_swing_twist
             import math as _math
             depsgraph = context.evaluated_depsgraph_get()
             armature_eval = self._drag_armature.evaluated_get(depsgraph)
@@ -3836,6 +4176,235 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             import traceback
             traceback.print_exc()
 
+    def update_analytical_leg_drag(self, context, event):
+        """Update analytical two-bone IK for leg during drag.
+
+        Bypasses Blender's IK solver completely - calculates exact rotations
+        using law of cosines. No local minima, handles straightening correctly.
+
+        Bone roles (DAZ Genesis 8/9):
+        - ThighBend: X/Z rotation at hip to POINT the knee in a direction
+        - ThighTwist: Y rotation (roll around thigh) to orient the bend plane
+        - Shin: X rotation (hinge joint) for knee bend angle
+        """
+        if not self._is_dragging or not self._use_analytical_leg_ik:
+            return
+
+        try:
+            # Get mouse position and convert to 3D
+            region = context.region
+            rv3d = context.space_data.region_3d
+
+            mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+
+            # Calculate mouse delta from initial position
+            if self._drag_initial_mouse_pos:
+                mouse_delta = (
+                    mouse_pos[0] - self._drag_initial_mouse_pos[0],
+                    mouse_pos[1] - self._drag_initial_mouse_pos[1]
+                )
+            else:
+                mouse_delta = (0, 0)
+
+            # Dead zone: don't update until mouse has moved enough
+            # This prevents the jump at drag start (our recalculated pose won't exactly
+            # match the original) and the snap-to-straight near rest pose
+            mouse_dist = math.sqrt(mouse_delta[0]**2 + mouse_delta[1]**2)
+            if mouse_dist < 3.0:  # 3 pixels dead zone
+                return
+
+            # Convert mouse DELTA to 3D target position
+            from bpy_extras.view3d_utils import region_2d_to_location_3d, location_3d_to_region_2d
+
+            initial_foot_pos = self._drag_initial_target_pos
+            initial_foot_screen = location_3d_to_region_2d(region, rv3d, initial_foot_pos)
+
+            if initial_foot_screen:
+                target_screen = (
+                    initial_foot_screen[0] + mouse_delta[0],
+                    initial_foot_screen[1] + mouse_delta[1]
+                )
+                target_pos = region_2d_to_location_3d(
+                    region, rv3d,
+                    target_screen,
+                    initial_foot_pos
+                )
+            else:
+                target_pos = initial_foot_pos
+
+            # Get stored values
+            hip_pos = self._analytical_leg_hip_pos
+            thigh_length = self._analytical_leg_lengths['thigh']
+            shin_length = self._analytical_leg_lengths['shin']
+            armature = self._drag_armature
+
+            # Get bone references
+            thigh_bone = self._analytical_leg_bones['thigh']
+            thigh_twist = self._analytical_leg_bones.get('thigh_twist')
+            shin_bone = self._analytical_leg_bones['shin']
+
+            # === STEP 1: Reset all leg bones to identity (rest pose) ===
+            # This ensures we calculate rotations from a clean slate each frame
+            thigh_bone.rotation_quaternion = Quaternion()
+            if thigh_twist:
+                thigh_twist.rotation_quaternion = Quaternion()
+            shin_bone.rotation_quaternion = Quaternion()
+            context.view_layer.update()
+
+            # === STEP 2: Calculate geometry ===
+            hip_to_target = target_pos - hip_pos
+            distance = hip_to_target.length
+            max_reach = thigh_length + shin_length
+            min_reach = abs(thigh_length - shin_length) * 0.1
+
+            # Debug counter
+            if not hasattr(self, '_debug_frame'):
+                self._debug_frame = 0
+            self._debug_frame += 1
+
+            # Get the locked bend plane normal (perpendicular to leg bend plane)
+            bend_normal = getattr(self, '_analytical_leg_bend_plane_normal', None)
+            if bend_normal is None:
+                bend_normal = Vector((1, 0, 0))  # Fallback
+
+            target_dir = hip_to_target.normalized()
+
+            # Handle edge cases - but ALWAYS use bend plane for smooth transitions
+            if distance <= min_reach:
+                # Too close - skip this frame
+                return
+            elif distance >= max_reach:
+                # Fully extended - no knee bend, hip_angle = 0
+                knee_bend_angle = 0.0
+                hip_angle = 0.0
+            else:
+                # Normal case: use law of cosines
+                # Knee interior angle (angle at the knee inside the triangle)
+                cos_knee = (thigh_length**2 + shin_length**2 - distance**2) / (2 * thigh_length * shin_length)
+                cos_knee = max(-1, min(1, cos_knee))
+                knee_interior = math.acos(cos_knee)
+                knee_bend_angle = math.pi - knee_interior  # Bend = 180° - interior
+
+                # Hip angle (angle at hip between thigh and hip-to-target line)
+                cos_hip = (thigh_length**2 + distance**2 - shin_length**2) / (2 * thigh_length * distance)
+                cos_hip = max(-1, min(1, cos_hip))
+                hip_angle = math.acos(cos_hip)
+
+            # Calculate thigh direction using SAME logic for both extended and bent
+            # KEY: Knee must stay in the LOCKED bend plane (captured at drag start)
+            # When hip_angle=0 (extended), rotation is identity -> thigh_dir = target_dir
+            # This ensures smooth transition without discontinuity
+            rotation = Quaternion(bend_normal, hip_angle)
+            thigh_dir = rotation @ target_dir
+
+            # === STEP 3: Calculate ThighBend rotation ===
+            # ThighBend rotates to point the thigh at the knee position
+            # We need to rotate from rest-pose thigh direction to target thigh direction
+
+            # Get rest pose direction from hip to knee
+            rest_hip = armature.matrix_world @ thigh_bone.bone.head_local
+            rest_knee = armature.matrix_world @ shin_bone.bone.head_local
+            rest_thigh_dir = (rest_knee - rest_hip)
+            if rest_thigh_dir.length < 0.001:
+                rest_thigh_dir = Vector((0, 0, -1))
+            else:
+                rest_thigh_dir = rest_thigh_dir.normalized()
+
+            # World-space rotation from rest to target
+            world_rot = rest_thigh_dir.rotation_difference(thigh_dir)
+
+            # Convert to bone's local space
+            if thigh_bone.parent:
+                parent_mat = armature.matrix_world @ thigh_bone.parent.bone.matrix_local
+                parent_rot = parent_mat.to_quaternion()
+                thigh_rotation = parent_rot.inverted() @ world_rot @ parent_rot
+            else:
+                arm_rot = armature.matrix_world.to_quaternion()
+                thigh_rotation = arm_rot.inverted() @ world_rot @ arm_rot
+
+            # Validate and apply
+            if any(math.isnan(v) for v in thigh_rotation):
+                thigh_rotation = Quaternion()
+            thigh_bone.rotation_quaternion = thigh_rotation
+            context.view_layer.update()
+
+            # === STEP 4: Apply Shin bend FIRST (before twist) ===
+            # We need to see where the foot lands with no twist, then calculate twist
+            # Shin bends on local X axis (hinge joint)
+
+            local_bend_axis = getattr(self, '_analytical_leg_shin_bend_axis', Vector((1, 0, 0)))
+            shin_rotation = Quaternion(local_bend_axis, knee_bend_angle)
+
+            if any(math.isnan(v) for v in shin_rotation):
+                shin_rotation = Quaternion()
+            shin_bone.rotation_quaternion = shin_rotation
+            context.view_layer.update()
+
+            # === STEP 5: Calculate ThighTwist ===
+            # Quick twist calculation - just try 3 options: calculated, opposite, zero
+            # No heavy iteration to avoid performance issues
+
+            if thigh_twist and knee_bend_angle > 0.01:  # Only twist if there's meaningful bend
+                # Get current foot position (no twist yet)
+                current_foot = armature.matrix_world @ shin_bone.tail
+                current_knee = armature.matrix_world @ shin_bone.head
+
+                # Calculate twist using projection method
+                foot_vec = current_foot - current_knee
+                target_vec = target_pos - current_knee
+
+                foot_proj = foot_vec - (foot_vec.dot(thigh_dir)) * thigh_dir
+                target_proj = target_vec - (target_vec.dot(thigh_dir)) * thigh_dir
+
+                twist_angle = 0.0
+                if foot_proj.length > 0.001 and target_proj.length > 0.001:
+                    foot_proj.normalize()
+                    target_proj.normalize()
+                    dot = max(-1, min(1, foot_proj.dot(target_proj)))
+                    twist_angle = math.acos(dot)
+                    cross = foot_proj.cross(target_proj)
+                    if cross.dot(thigh_dir) < 0:
+                        twist_angle = -twist_angle
+
+                # Quick check: try calculated twist, opposite, and zero - pick best
+                best_error = float('inf')
+                best_twist = 0.0
+
+                for test_twist in [twist_angle, -twist_angle, 0.0]:
+                    thigh_twist.rotation_quaternion = Quaternion((0, 1, 0), test_twist)
+                    context.view_layer.update()
+                    test_foot = armature.matrix_world @ shin_bone.tail
+                    test_error = (test_foot - target_pos).length
+
+                    if test_error < best_error:
+                        best_error = test_error
+                        best_twist = test_twist
+
+                # Apply best twist
+                thigh_twist.rotation_quaternion = Quaternion((0, 1, 0), best_twist)
+                context.view_layer.update()
+
+                if self._debug_frame % 20 == 1:
+                    print(f"  ThighTwist: {math.degrees(best_twist):.1f}° (calc: {math.degrees(twist_angle):.1f}°)")
+
+            # === DEBUG OUTPUT ===
+            if self._debug_frame % 20 == 1:
+                actual_foot = armature.matrix_world @ shin_bone.tail
+                foot_error = (actual_foot - target_pos).length
+                print(f"\n  === ANALYTICAL LEG FRAME {self._debug_frame} ===")
+                print(f"  Target:    ({target_pos.x:.3f}, {target_pos.y:.3f}, {target_pos.z:.3f})")
+                print(f"  Foot:      ({actual_foot.x:.3f}, {actual_foot.y:.3f}, {actual_foot.z:.3f})")
+                print(f"  Error:     {foot_error:.3f}m")
+                print(f"  Knee bend: {math.degrees(knee_bend_angle):.1f}°")
+                print(f"  Distance:  {distance:.3f}m (max: {max_reach:.3f}m)")
+
+            context.area.tag_redraw()
+
+        except Exception as e:
+            print(f"  [ANALYTICAL LEG] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+
     def end_ik_drag(self, context, cancel=False):
         """End IK drag (or FABRIK drag) and optionally bake pose to FK
 
@@ -3844,6 +4413,58 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         """
         if not self._is_dragging:
             return
+
+        # Handle ANALYTICAL LEG IK mode
+        if self._use_analytical_leg_ik:
+            if cancel:
+                print(f"\n=== Canceling Analytical Leg IK Drag ===")
+                # Restore original rotations
+                for bone_key, original_rot in self._analytical_leg_original_rotations.items():
+                    bone = self._analytical_leg_bones.get(bone_key)
+                    if bone:
+                        bone.rotation_quaternion = original_rot
+                context.view_layer.update()
+            else:
+                print(f"\n=== Ending Analytical Leg IK Drag ===")
+                # Keyframe the rotated bones
+                current_frame = context.scene.frame_current
+                for bone_key, bone in self._analytical_leg_bones.items():
+                    if bone:
+                        bone.keyframe_insert(
+                            data_path="rotation_quaternion",
+                            frame=current_frame,
+                            options={'INSERTKEY_VISUAL'}
+                        )
+                        print(f"  ✓ Keyframed: {bone.name}")
+
+                # Push undo step for the completed drag so Ctrl+Z works
+                bpy.ops.ed.undo_push(message="Leg IK Pose")
+
+            # Clean up analytical leg IK state
+            self._use_analytical_leg_ik = False
+            self._analytical_leg_bones = {}
+            self._analytical_leg_hip_pos = None
+            self._analytical_leg_lengths = {}
+            self._analytical_leg_original_rotations = {}
+            self._analytical_leg_side = None
+            if hasattr(self, '_analytical_leg_knee_axis'):
+                delattr(self, '_analytical_leg_knee_axis')
+            if hasattr(self, '_analytical_leg_shin_bend_axis'):
+                delattr(self, '_analytical_leg_shin_bend_axis')
+            if hasattr(self, '_analytical_leg_bend_plane_normal'):
+                delattr(self, '_analytical_leg_bend_plane_normal')
+            if hasattr(self, '_analytical_debug_counter'):
+                delattr(self, '_analytical_debug_counter')
+            if hasattr(self, '_debug_frame'):
+                delattr(self, '_debug_frame')
+
+            # Clear drag state
+            self._is_dragging = False
+            self._drag_bone_name = None
+
+            # Update header
+            context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
+            return  # Exit early for analytical leg IK mode
 
         # Handle FABRIK mode
         if self._use_fabrik:
@@ -3986,6 +4607,23 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._soft_pin_active = False
         self._soft_pin_child_name = None
         self._soft_pin_initial_pos = None
+
+        # Restore IK limits if we locked them during straightening
+        if getattr(self, '_straighten_lock_active', False):
+            try:
+                # Find the shin/middle bone and restore its original IK max
+                for bone_name in self._ik_control_bone_names:
+                    if 'shin' in bone_name.lower() or 'calf' in bone_name.lower():
+                        pose_bone = self._drag_armature.pose.bones.get(bone_name)
+                        if pose_bone and hasattr(self, '_straighten_original_ik_max_x'):
+                            pose_bone.ik_max_x = self._straighten_original_ik_max_x
+                            print(f"  ✓ Restored shin IK max to {math.degrees(self._straighten_original_ik_max_x):.1f}°")
+                        break
+            except Exception as e:
+                print(f"  ⚠️  Error restoring IK limits: {e}")
+            self._straighten_lock_active = False
+            if hasattr(self, '_straighten_original_ik_max_x'):
+                delattr(self, '_straighten_original_ik_max_x')
 
         # Clear drag state
         self._is_dragging = False
@@ -5349,6 +5987,125 @@ def unregister():
                 if kmi.idname in (VIEW3D_OT_daz_bone_select.bl_idname,
                                  POSE_OT_clear_ik_pose.bl_idname):
                     km.keymap_items.remove(kmi)
+
+
+# ============================================================================
+# ANALYTICAL TWO-BONE IK SOLVER - For legs (bypasses Blender's IK solver)
+# ============================================================================
+# Uses law of cosines for exact solution - no optimizer, no local minima
+
+def solve_two_bone_ik_analytical(hip_pos, target_pos, thigh_length, shin_length, knee_forward_axis=None):
+    """
+    Simple two-bone IK solver for leg.
+
+    Key insight: KNEE IS A HINGE - it only bends on one axis (local X).
+    So we just need to calculate the knee bend angle, not complex directions.
+
+    Returns:
+        (knee_angle, thigh_dir) tuple:
+        - knee_angle: How much the shin bends at the knee (radians, positive = forward bend)
+        - thigh_dir: Direction the thigh should point (world space Vector)
+        Or None if unreachable
+    """
+    # Default knee direction: forward (-Y)
+    if knee_forward_axis is None:
+        knee_forward_axis = Vector((0, -1, 0))
+
+    hip_to_target = target_pos - hip_pos
+    distance = hip_to_target.length
+    max_reach = thigh_length + shin_length
+    min_reach = abs(thigh_length - shin_length) * 0.2
+
+    if distance >= max_reach:
+        # Fully extended - no knee bend
+        direction = hip_to_target.normalized()
+        return (0.0, direction)  # knee_angle=0 means straight
+
+    if distance <= min_reach:
+        return None
+
+    # Law of cosines for the KNEE angle (angle inside the triangle at knee)
+    # This is the interior angle, not the bend amount
+    cos_knee_interior = (thigh_length**2 + shin_length**2 - distance**2) / (2 * thigh_length * shin_length)
+    cos_knee_interior = max(-1, min(1, cos_knee_interior))
+    knee_interior_angle = math.acos(cos_knee_interior)
+
+    # Knee BEND is 180° - interior angle (straight leg = 180° interior = 0° bend)
+    knee_bend = math.pi - knee_interior_angle
+
+    # Calculate thigh direction
+    # Thigh points toward the knee, which is offset from the hip-to-target line
+    # Use law of cosines for hip angle
+    cos_hip = (thigh_length**2 + distance**2 - shin_length**2) / (2 * thigh_length * distance)
+    cos_hip = max(-1, min(1, cos_hip))
+    hip_angle = math.acos(cos_hip)
+
+    # The bend axis should be PERPENDICULAR to both:
+    # 1. The hip-to-target direction
+    # 2. The knee-forward direction (where we want the knee to go)
+    # This ensures the thigh rotates in the plane that contains the knee
+    target_dir = hip_to_target.normalized()
+
+    # Project knee_forward_axis onto plane perpendicular to target_dir
+    # This gives us the "knee direction" relative to the hip-target line
+    knee_component = knee_forward_axis - (knee_forward_axis.dot(target_dir)) * target_dir
+    if knee_component.length > 0.001:
+        knee_component.normalize()
+        # Bend axis is perpendicular to both target_dir and knee direction
+        bend_axis = target_dir.cross(knee_component).normalized()
+    else:
+        # Fallback: use world up
+        up = Vector((0, 0, 1))
+        bend_axis = target_dir.cross(up)
+        if bend_axis.length < 0.001:
+            bend_axis = target_dir.cross(Vector((0, 1, 0)))
+        bend_axis.normalize()
+
+    # Rotate target_dir by hip_angle around bend_axis to get thigh direction
+    # This rotates the thigh TOWARD the knee_forward direction
+    rotation = Quaternion(bend_axis, hip_angle)
+    thigh_dir = rotation @ target_dir
+
+    print(f"  [HINGE IK] dist={distance:.3f}/{max_reach:.3f}, knee_bend={math.degrees(knee_bend):.1f}°")
+
+    return (knee_bend, thigh_dir)
+
+
+def calculate_bone_rotation_from_direction(bone, target_direction, armature):
+    """
+    Calculate the quaternion rotation needed to point a bone in the target direction.
+
+    Uses ABSOLUTE rotation: calculates from REST pose, not current pose.
+    This avoids accumulating errors from delta-based approaches.
+
+    Args:
+        bone: PoseBone to rotate
+        target_direction: World-space direction vector the bone should point
+        armature: Armature object (for matrix transforms)
+
+    Returns:
+        Quaternion rotation in bone's local space
+    """
+    # Get bone's REST direction in world space (no pose applied)
+    # bone.bone is the EditBone/Bone, matrix_local is rest pose
+    rest_matrix_world = armature.matrix_world @ bone.bone.matrix_local
+    rest_direction = (rest_matrix_world.to_3x3() @ Vector((0, 1, 0))).normalized()
+
+    # Calculate world-space rotation from REST to TARGET
+    world_rotation = rest_direction.rotation_difference(target_direction)
+
+    # Convert to local space (relative to parent's REST pose, not current pose)
+    if bone.parent:
+        # Parent's rest world rotation
+        parent_rest_world = armature.matrix_world @ bone.parent.bone.matrix_local
+        parent_rest_rot = parent_rest_world.to_quaternion()
+        # Transform to local: inv(parent_rest) * world * parent_rest
+        local_rotation = parent_rest_rot.inverted() @ world_rotation @ parent_rest_rot
+    else:
+        armature_rot = armature.matrix_world.to_quaternion()
+        local_rotation = armature_rot.inverted() @ world_rotation @ armature_rot
+
+    return local_rotation
 
 
 # ============================================================================
