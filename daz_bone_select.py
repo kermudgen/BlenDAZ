@@ -1946,6 +1946,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _right_click_used_for_drag = False  # Track if right-click started a drag (to suppress context menu)
     _rotation_bones = []  # List of bones for multi-bone group rotation
     _rotation_initial_quats = []  # List of initial quaternions for multi-bone rotation
+    _rotation_group_id = None  # Control point ID for group axis lookup
 
     # Undo stack for Ctrl+Z
     _undo_stack = []  # List of {frame, bones: [(name, rotation, mode)]} entries
@@ -3129,6 +3130,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                 # Store initial state for all bones in group
                 self._is_rotating = True
+                self._rotation_group_id = self._hover_control_point_id  # Store group ID for axis lookup
                 self._rotation_bones = []  # List of bones
                 self._rotation_initial_quats = []  # List of initial rotations
 
@@ -5160,32 +5162,97 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Get PoseBridge sensitivity setting
             sensitivity = getattr(context.scene.posebridge_settings, 'sensitivity', 0.01)
 
-            # For neck group, use 4-way control scheme
-            # LEFT MOUSE: Y-axis (horizontal) and X-axis (vertical) like head
-            # RIGHT MOUSE: Z-axis (horizontal) for tilt, X-axis (vertical) for fine forward/back
-            # Keep axis rotations separate for per-bone filtering
+            # Per-group 4-way control scheme using _rotation_group_id
+            # Each group maps LMB/RMB × horiz/vert to specific rotation axes
+            # Keep axis rotations separate for per-bone twist filtering
+            group_id = getattr(self, '_rotation_group_id', None)
+            horiz_axis = None  # Axis controlled by horizontal drag (delta_x)
+            vert_axis = None   # Axis controlled by vertical drag (delta_y)
+            horiz_invert = False
+            vert_invert = False
+
+            if group_id == 'neck_group':
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Y'  # Turn
+                    vert_axis = 'X'   # Nod
+                else:  # RIGHT
+                    horiz_axis = 'Z'  # Side tilt
+                    horiz_invert = True
+                    vert_axis = 'X'   # Fine forward/back
+
+            elif group_id == 'torso_group':
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = 'X'   # Bend forward/back
+                else:  # RIGHT
+                    horiz_axis = 'Z'  # Side lean
+                    horiz_invert = True
+                    vert_axis = None
+
+            elif group_id == 'shoulders_group':
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Z'  # Shrug/drop
+                    vert_axis = 'X'   # Forward/back
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Roll
+                    vert_axis = None
+
+            elif group_id in ('lArm_group', 'rArm_group'):
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'X'  # Swing forward/back
+                    vert_axis = 'Z'   # Raise/lower
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            elif group_id in ('lLeg_group', 'rLeg_group'):
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'X'  # Swing forward/back
+                    vert_axis = 'Z'   # Raise/lower
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            elif group_id == 'legs_group':
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'X'  # Swing forward/back
+                    vert_axis = 'Z'   # Raise/lower
+                else:  # RIGHT
+                    horiz_axis = 'Y'  # Twist
+                    vert_axis = None
+
+            else:
+                # Unknown group - fallback to neck_group behavior
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Y'
+                    vert_axis = 'X'
+                else:
+                    horiz_axis = 'Z'
+                    horiz_invert = True
+                    vert_axis = 'X'
+
+            # Build per-axis rotation quaternions from mouse deltas
             rot_x = None
             rot_y = None
             rot_z = None
 
-            if self._rotation_mouse_button == 'LEFT':
-                # Horizontal movement (delta_x) rotates around Y axis (turn)
-                angle_y = delta_x * sensitivity
-                rot_y = Quaternion(Vector((0, 1, 0)), angle_y)
+            axis_vectors = {'X': Vector((1, 0, 0)), 'Y': Vector((0, 1, 0)), 'Z': Vector((0, 0, 1))}
 
-                # Vertical movement (delta_y) rotates around X axis (nod)
-                angle_x = -delta_y * sensitivity
-                rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
-            else:  # RIGHT MOUSE
-                # Horizontal movement (delta_x) rotates around Z axis (tilt)
-                # Inverted direction per user testing
-                angle_z = -delta_x * sensitivity
-                rot_z = Quaternion(Vector((0, 0, 1)), angle_z)
+            # Horizontal drag (delta_x)
+            if horiz_axis:
+                h_angle = delta_x * sensitivity * (-1 if horiz_invert else 1)
+                h_quat = Quaternion(axis_vectors[horiz_axis], h_angle)
+                if horiz_axis == 'X': rot_x = h_quat
+                elif horiz_axis == 'Y': rot_y = h_quat
+                elif horiz_axis == 'Z': rot_z = h_quat
 
-                # Vertical movement (delta_y) rotates around X axis (fine forward/back)
-                # Inverted direction to match head/neck
-                angle_x = -delta_y * sensitivity
-                rot_x = Quaternion(Vector((1, 0, 0)), angle_x)
+            # Vertical drag (-delta_y, base inverted for screen coords)
+            if vert_axis:
+                v_angle = -delta_y * sensitivity * (-1 if vert_invert else 1)
+                v_quat = Quaternion(axis_vectors[vert_axis], v_angle)
+                if vert_axis == 'X': rot_x = v_quat
+                elif vert_axis == 'Y': rot_y = v_quat
+                elif vert_axis == 'Z': rot_z = v_quat
 
             # Apply rotation to each bone with axis filtering (Individual Origins)
             # Twist bones only receive Y-axis rotations, Bend bones receive all axes
@@ -5311,6 +5378,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._rotation_initial_quat = None
         self._rotation_bones = []
         self._rotation_initial_quats = []
+        self._rotation_group_id = None
         self._rotation_initial_mouse = None
         self._rotation_mouse_button = None
         self._right_click_used_for_drag = False

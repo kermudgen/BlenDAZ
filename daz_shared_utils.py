@@ -284,9 +284,9 @@ def get_genesis8_control_points():
             'reference_bone': 'neckUpper',
             'offset': (-0.075, 0, 0),
             'controls': {
-                'lmb_horiz': 'Z',  # Rotate all
-                'lmb_vert': 'X',   # Bend all
-                'rmb_horiz': 'Y',  # Side bend all
+                'lmb_horiz': 'Y',  # Turn all (matches tested behavior)
+                'lmb_vert': 'X',   # Nod all
+                'rmb_horiz': 'Z',  # Side tilt all (inverted)
                 'rmb_vert': None
             }
         },
