@@ -1,6 +1,6 @@
 # PoseBridge - TODO
 
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-02-20
 
 Track current development tasks, future features, and improvements needed.
 
@@ -8,23 +8,32 @@ Track current development tasks, future features, and improvements needed.
 
 ## Current Work
 
-### Group Node Hookup
-**Description**: Finish connecting all 8 group nodes to their per-group axis mappings so they respond correctly to mouse input.
+### Validate All Bone Rotation Mappings
+**Description**: Test every control point's 4-way rotation (LMB horiz/vert, RMB horiz/vert) to confirm axes match PowerPose research after the comprehensive audit.
 
 #### Immediate Tasks
-- [x] Store `_rotation_group_id` at drag start
-- [x] Replace hardcoded axes in `update_multi_bone_rotation()` with per-group if/elif
-- [x] Add inversion flags per group
-- [x] Sync neck_group controls dict in daz_shared_utils.py
-- [ ] Restart Blender and test all 8 group nodes
-- [ ] Verify twist bone filtering works correctly for arm/leg groups
-- [ ] Test bilateral groups (shoulders_group, legs_group) for correct behavior
-- [ ] Determine if rArm_group / rLeg_group need L/R mirroring inversion
+- [ ] Test head, neckUpper, neckLower
+- [ ] Test chestUpper, chestLower, abdomenUpper, abdomenLower, pelvis
+- [ ] Test lCollar/rCollar, lShldrBend/rShldrBend
+- [ ] Test lForearmBend/rForearmBend, lHand/rHand
+- [ ] Test lThighBend/rThighBend (critical - was broken at runtime before fix)
+- [ ] Test lShin/rShin, lFoot/rFoot, lToe/rToe
+- [ ] Test all 8 group nodes (neck, torso, lArm, rArm, lLeg, rLeg, shoulders, legs)
+- [ ] Verify bilateral mirroring on shoulders_group and legs_group
+- [ ] Verify twist bone filtering on arm/leg groups
+- [ ] Fix any axis mappings found to be incorrect
 
 ---
 
 ## Recently Completed (Feb 2026)
 
+- [x] **Dual-viewport interaction** - `_hover_from_posebridge` flag routes 3D mesh drags to IK and control panel drags to PoseBridge rotation
+- [x] **PowerPose axis mapping audit** - Fixed 20+ control point definitions to match PowerPose DSX research
+- [x] **Bilateral mirroring** - `mirror_axes` support for legs_group and shoulders_group
+- [x] **RMB context menu fix** - Multi-layered event suppression prevents Blender context menu during PoseBridge drags
+- [x] **Tooltip flash fix** - Removed premature clear that killed tooltip on next MOUSEMOVE
+- [x] **Human-readable group tooltips** - Groups show "Left Leg Group" instead of comma-separated bone names; bone names looked up from definitions at runtime
+- [x] **TECHNICAL_REFERENCE.md** - PowerPose DSX research data documented
 - [x] **Per-group axis routing** - update_multi_bone_rotation() now uses _rotation_group_id to pick axes per group
 - [x] **Project documentation setup** - CLAUDE.md, INDEX.md, TODO.md, SCRATCHPAD.md created
 - [x] **Toe nodes** - lToe, rToe control points at tail position
@@ -46,15 +55,7 @@ Track current development tasks, future features, and improvements needed.
 ### Phase 1 Completion
 - [ ] Step 10: Test cancellation (ESC key during rotation)
 - [ ] Full end-to-end workflow verification
-- [ ] Test all 25+ control points with 4-way controls
 - [ ] Verify constraint enforcement on all bone types
-
-### Group Node Refinement
-- [ ] Test and tune arm group axis feel
-- [ ] Test and tune leg group axis feel
-- [ ] Test shoulders_group bilateral behavior (both collars + both shoulders rotating together)
-- [ ] Test legs_group bilateral behavior
-- [ ] Consider adding inversion for right-side groups if testing reveals need
 
 ### Robustness
 - [x] Handle missing bones gracefully (control point skipped if bone not in rig)
