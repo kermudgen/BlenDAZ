@@ -147,10 +147,13 @@ class VIEW3D_PT_posebridge_settings(Panel):
 
         layout.separator()
 
-        # Sensitivity
-        layout.prop(settings, "sensitivity", text="Rotation Sensitivity")
+        # Sensitivity slider
+        layout.prop(settings, "sensitivity", text="Rotation Sensitivity", slider=True)
 
-        # Auto keyframe
+        layout.separator()
+
+        # Posing options
+        layout.prop(settings, "enforce_constraints", text="Enforce Constraints")
         layout.prop(settings, "auto_keyframe", text="Auto Keyframe")
 
 

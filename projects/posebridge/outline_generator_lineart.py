@@ -70,8 +70,8 @@ def capture_fixed_control_points(armature, outline_name="PB_Outline_LineArt"):
             pose_bone = armature.pose.bones[bone_name]
         else:
             # Single bone
-            bone_name = cp_def['bone_name']
-            if bone_name not in armature.pose.bones:
+            bone_name = cp_def.get('bone_name', '')
+            if not bone_name or bone_name not in armature.pose.bones:
                 continue
             pose_bone = armature.pose.bones[bone_name]
             bone_names = None  # Not a multi-bone group
@@ -110,8 +110,9 @@ def capture_fixed_control_points(armature, outline_name="PB_Outline_LineArt"):
         if 'shape' in cp_def:
             cp.control_type = 'multi'  # Mark as multi-bone control
         if bone_names:
-            # Store all bone names as comma-separated string (for multi-bone groups)
-            cp.label = ','.join(bone_names)  # Reuse label field to store bone list
+            # Keep the human-readable label (set above from cp_def)
+            # Bone names are looked up from definitions at runtime by control point ID
+            pass
 
         count += 1
 

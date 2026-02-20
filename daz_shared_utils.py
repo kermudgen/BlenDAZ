@@ -254,9 +254,16 @@ def get_genesis8_control_points():
     - rmb_horiz: Right mouse button + horizontal drag
     - rmb_vert: Right mouse button + vertical drag
 
-    Each mapping specifies rotation axis: 'X', 'Y', 'Z', or None
+    Each mapping is either None (disabled) or a tuple: (axis, inverted)
+    - axis: 'X', 'Y', or 'Z'
+    - inverted: bool, True to negate the mouse delta for this direction
 
-    For PoseBridge, this will be expanded with 2D position data.
+    Mirrors DAZ PowerPose DSX template format (lmb_horiz_prop, rmb_horiz_sign, etc.)
+
+    NOTE: For single-bone controls, inversions are handled by the if/elif chain in
+    daz_bone_select.py update_rotation() (which also handles twist routing, armature space,
+    right-side mirroring). The inversions here are for documentation only on single-bone controls.
+    For group controls, the dict IS the runtime source of truth (data-driven).
     """
     control_points = [
         # ===== HEAD & NECK =====
@@ -267,14 +274,14 @@ def get_genesis8_control_points():
             'group': 'head',
             'offset': (0, 0, 0.075),
             'controls': {
-                'lmb_horiz': 'Z',  # Turn head left/right
-                'lmb_vert': 'X',   # Tilt head up/down (nod)
-                'rmb_horiz': 'Y',  # Side tilt (ear to shoulder)
-                'rmb_vert': 'X'    # Fine forward/back
+                'lmb_horiz': ('Y', False),  # Turn head left/right
+                'lmb_vert': ('X', True),    # Nod up/down (inverted)
+                'rmb_horiz': ('Z', True),   # Side tilt (inverted)
+                'rmb_vert': ('X', True)     # Fine forward/back (inverted)
             }
         },
 
-        # Neck group (multi-bone control) - RESTORED
+        # Neck group (multi-bone control) - DATA-DRIVEN at runtime
         {
             'id': 'neck_group',
             'bone_names': ['head', 'neckUpper', 'neckLower'],
@@ -284,10 +291,10 @@ def get_genesis8_control_points():
             'reference_bone': 'neckUpper',
             'offset': (-0.075, 0, 0),
             'controls': {
-                'lmb_horiz': 'Y',  # Turn all (matches tested behavior)
-                'lmb_vert': 'X',   # Nod all
-                'rmb_horiz': 'Z',  # Side tilt all (inverted)
-                'rmb_vert': None
+                'lmb_horiz': ('Y', False),   # Turn all
+                'lmb_vert': ('X', False),    # Nod all
+                'rmb_horiz': ('Z', True),    # Side tilt all (inverted)
+                'rmb_vert': ('X', False)     # Fine forward/back
             }
         },
 
@@ -297,10 +304,10 @@ def get_genesis8_control_points():
             'label': 'Neck Upper',
             'group': 'head',
             'controls': {
-                'lmb_horiz': 'Z',  # Rotate neck
-                'lmb_vert': 'X',   # Bend neck forward/back
-                'rmb_horiz': 'Y',  # Side bend
-                'rmb_vert': None   # Not used
+                'lmb_horiz': ('Y', False),  # Rotate neck
+                'lmb_vert': ('X', True),    # Bend neck forward/back (inverted)
+                'rmb_horiz': ('Z', True),   # Side bend (inverted)
+                'rmb_vert': ('X', True)     # Fine forward/back (inverted)
             }
         },
         {
@@ -309,10 +316,10 @@ def get_genesis8_control_points():
             'label': 'Neck Lower',
             'group': 'head',
             'controls': {
-                'lmb_horiz': 'Z',
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
-                'rmb_vert': None
+                'lmb_horiz': ('Y', False),  # Rotate neck
+                'lmb_vert': ('X', True),    # Bend forward/back (inverted)
+                'rmb_horiz': ('Z', True),   # Side bend (inverted)
+                'rmb_vert': ('X', True)     # Fine forward/back (inverted)
             }
         },
 
@@ -323,10 +330,10 @@ def get_genesis8_control_points():
             'label': 'Upper Chest',
             'group': 'torso',
             'controls': {
-                'lmb_horiz': 'Z',  # Twist torso
-                'lmb_vert': 'X',   # Bend forward/back
-                'rmb_horiz': 'Y',  # Side bend/lean
-                'rmb_vert': 'Y'    # Twist (alternative)
+                'lmb_horiz': ('Y', False),  # Twist torso
+                'lmb_vert': ('X', False),   # Bend forward/back
+                'rmb_horiz': ('Z', True),   # Side lean (inverted)
+                'rmb_vert': ('Y', False)    # Twist (alternative)
             }
         },
         {
@@ -335,10 +342,10 @@ def get_genesis8_control_points():
             'label': 'Lower Chest',
             'group': 'torso',
             'controls': {
-                'lmb_horiz': 'Z',
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
-                'rmb_vert': 'Y'
+                'lmb_horiz': ('Y', False),  # Twist
+                'lmb_vert': ('X', False),   # Bend forward/back
+                'rmb_horiz': ('Z', True),   # Side lean (inverted)
+                'rmb_vert': ('Y', False)    # Twist (alternative)
             }
         },
         {
@@ -347,10 +354,10 @@ def get_genesis8_control_points():
             'label': 'Upper Abdomen',
             'group': 'torso',
             'controls': {
-                'lmb_horiz': 'Z',  # Rotate abdomen
-                'lmb_vert': 'X',   # Bend forward/back
-                'rmb_horiz': 'Y',  # Side bend
-                'rmb_vert': 'Y'    # Fine twist
+                'lmb_horiz': ('Y', False),  # Twist abdomen
+                'lmb_vert': ('X', False),   # Bend forward/back
+                'rmb_horiz': ('Z', True),   # Side lean (inverted)
+                'rmb_vert': ('Y', False)    # Fine twist
             }
         },
         {
@@ -359,10 +366,10 @@ def get_genesis8_control_points():
             'label': 'Lower Abdomen',
             'group': 'torso',
             'controls': {
-                'lmb_horiz': 'Z',
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
-                'rmb_vert': 'Y'
+                'lmb_horiz': ('Y', False),  # Twist
+                'lmb_vert': ('X', False),   # Bend forward/back
+                'rmb_horiz': ('Z', True),   # Side lean (inverted)
+                'rmb_vert': ('Y', False)    # Fine twist
             }
         },
         {
@@ -372,10 +379,10 @@ def get_genesis8_control_points():
             'group': 'torso',
             'position': 'tail',
             'controls': {
-                'lmb_horiz': 'Z',  # Rotate hips
-                'lmb_vert': 'X',   # Pelvic tilt forward/back
-                'rmb_horiz': 'Y',  # Hip drop left/right
-                'rmb_vert': None
+                'lmb_horiz': ('Y', False),  # Twist hips
+                'lmb_vert': ('X', False),   # Pelvic tilt forward/back
+                'rmb_horiz': ('Z', True),   # Side lean (inverted)
+                'rmb_vert': ('Y', False)    # Alt twist
             }
         },
 
@@ -387,10 +394,10 @@ def get_genesis8_control_points():
             'group': 'arms',
             'position': 'mid',
             'controls': {
-                'lmb_horiz': 'Z',  # Shrug/drop shoulder
-                'lmb_vert': 'X',   # Shoulder forward/back
-                'rmb_horiz': 'Y',  # Shoulder roll
-                'rmb_vert': None
+                'lmb_horiz': ('Z', False),  # Shrug/drop shoulder
+                'lmb_vert': ('X', False),   # Shoulder forward/back
+                'rmb_horiz': None,           # Removed per user testing
+                'rmb_vert': ('Y', False)     # Twist/roll
             }
         },
         {
@@ -400,10 +407,10 @@ def get_genesis8_control_points():
             'group': 'arms',
             'position': 'mid',
             'controls': {
-                'lmb_horiz': 'X',  # Arm swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower arm
-                'rmb_horiz': None,  # No horizontal control
-                'rmb_vert': 'Y'    # Arm twist (targets lShldrTwist bone)
+                'lmb_horiz': ('X', True),   # Arm swing forward/back (inverted)
+                'lmb_vert': ('Z', False),   # Raise/lower arm
+                'rmb_horiz': None,           # No horizontal control
+                'rmb_vert': ('Y', True)      # Arm twist (inverted, targets lShldrTwist)
             }
         },
         {
@@ -412,9 +419,9 @@ def get_genesis8_control_points():
             'label': 'Left Forearm',
             'group': 'arms',
             'controls': {
-                'lmb_horiz': None,  # Limited
-                'lmb_vert': 'X',    # Bend elbow (main function)
-                'rmb_horiz': 'Y',   # Forearm twist
+                'lmb_horiz': ('X', True),    # Bend elbow (inverted)
+                'lmb_vert': ('Y', True),     # Twist (inverted, targets lForearmTwist)
+                'rmb_horiz': ('Y', False),   # Forearm twist
                 'rmb_vert': None
             }
         },
@@ -424,10 +431,10 @@ def get_genesis8_control_points():
             'label': 'Left Hand',
             'group': 'arms',
             'controls': {
-                'lmb_horiz': 'Z',  # Hand bend side-to-side
-                'lmb_vert': 'X',   # Hand bend up/down
-                'rmb_horiz': 'Y',  # Hand twist
-                'rmb_vert': None
+                'lmb_horiz': ('Y', True),   # Twist (inverted)
+                'lmb_vert': ('Z', False),   # Bend up/down
+                'rmb_horiz': ('X', True),   # Side-to-side (inverted)
+                'rmb_vert': ('Z', False)    # Bend up/down
             }
         },
 
@@ -439,10 +446,10 @@ def get_genesis8_control_points():
             'group': 'arms',
             'position': 'mid',
             'controls': {
-                'lmb_horiz': 'Z',
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
-                'rmb_vert': None
+                'lmb_horiz': ('Z', False),  # Shrug/drop shoulder
+                'lmb_vert': ('X', False),   # Shoulder forward/back
+                'rmb_horiz': None,           # Removed per user testing
+                'rmb_vert': ('Y', False)     # Twist/roll
             }
         },
         {
@@ -452,10 +459,10 @@ def get_genesis8_control_points():
             'group': 'arms',
             'position': 'mid',
             'controls': {
-                'lmb_horiz': 'X',
-                'lmb_vert': 'Z',
-                'rmb_horiz': None,  # No horizontal control
-                'rmb_vert': 'Y'    # Arm twist (targets rShldrTwist bone)
+                'lmb_horiz': ('X', True),   # Arm swing forward/back (inverted)
+                'lmb_vert': ('Z', False),   # Raise/lower arm
+                'rmb_horiz': None,           # No horizontal control
+                'rmb_vert': ('Y', True)      # Arm twist (inverted, targets rShldrTwist)
             }
         },
         {
@@ -464,9 +471,9 @@ def get_genesis8_control_points():
             'label': 'Right Forearm',
             'group': 'arms',
             'controls': {
-                'lmb_horiz': None,
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
+                'lmb_horiz': ('X', True),    # Bend elbow (inverted)
+                'lmb_vert': ('Y', True),     # Twist (inverted, targets rForearmTwist)
+                'rmb_horiz': ('Y', False),   # Forearm twist
                 'rmb_vert': None
             }
         },
@@ -476,10 +483,10 @@ def get_genesis8_control_points():
             'label': 'Right Hand',
             'group': 'arms',
             'controls': {
-                'lmb_horiz': 'Z',
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
-                'rmb_vert': None
+                'lmb_horiz': ('Y', True),   # Twist (inverted)
+                'lmb_vert': ('Z', False),   # Bend up/down
+                'rmb_horiz': ('X', True),   # Side-to-side (inverted)
+                'rmb_vert': ('Z', False)    # Bend up/down
             }
         },
 
@@ -491,10 +498,10 @@ def get_genesis8_control_points():
             'group': 'legs',
             'position': 'tail',
             'controls': {
-                'lmb_horiz': 'X',  # Leg swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower leg
-                'rmb_horiz': 'Y',  # Thigh twist inward/outward
-                'rmb_vert': 'Y'    # Side movement (abduction/adduction)
+                'lmb_horiz': ('Y', True),   # Twist (inverted, targets ThighTwist via filtering)
+                'lmb_vert': ('X', True),    # Forward/back swing (inverted)
+                'rmb_horiz': ('Z', True),   # Spread (inverted) -- matches PowerPose zrot neg
+                'rmb_vert': ('X', True)     # Forward/back (inverted)
             }
         },
         {
@@ -503,9 +510,9 @@ def get_genesis8_control_points():
             'label': 'Left Shin',
             'group': 'legs',
             'controls': {
-                'lmb_horiz': None,  # Limited
-                'lmb_vert': 'X',    # Bend knee (main function)
-                'rmb_horiz': 'Y',   # Shin twist
+                'lmb_horiz': None,           # Limited
+                'lmb_vert': ('X', False),    # Bend knee (main function)
+                'rmb_horiz': ('Y', False),   # Shin twist
                 'rmb_vert': None
             }
         },
@@ -515,9 +522,9 @@ def get_genesis8_control_points():
             'label': 'Left Foot',
             'group': 'legs',
             'controls': {
-                'lmb_horiz': 'Z',  # Foot tilt side-to-side
-                'lmb_vert': 'X',   # Foot point/flex
-                'rmb_horiz': 'Y',  # Foot twist
+                'lmb_horiz': ('Z', False),  # Foot tilt side-to-side
+                'lmb_vert': ('X', False),   # Foot point/flex
+                'rmb_horiz': ('Y', False),  # Foot twist
                 'rmb_vert': None
             }
         },
@@ -530,10 +537,10 @@ def get_genesis8_control_points():
             'group': 'legs',
             'position': 'tail',
             'controls': {
-                'lmb_horiz': 'X',
-                'lmb_vert': 'Z',
-                'rmb_horiz': 'Y',
-                'rmb_vert': 'Y'
+                'lmb_horiz': ('Y', True),   # Twist (inverted, targets ThighTwist via filtering)
+                'lmb_vert': ('X', True),    # Forward/back swing (inverted)
+                'rmb_horiz': ('Z', True),   # Spread (inverted)
+                'rmb_vert': ('X', True)     # Forward/back (inverted)
             }
         },
         {
@@ -543,8 +550,8 @@ def get_genesis8_control_points():
             'group': 'legs',
             'controls': {
                 'lmb_horiz': None,
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
+                'lmb_vert': ('X', False),
+                'rmb_horiz': ('Y', False),
                 'rmb_vert': None
             }
         },
@@ -554,14 +561,16 @@ def get_genesis8_control_points():
             'label': 'Right Foot',
             'group': 'legs',
             'controls': {
-                'lmb_horiz': 'Z',
-                'lmb_vert': 'X',
-                'rmb_horiz': 'Y',
+                'lmb_horiz': ('Z', False),
+                'lmb_vert': ('X', False),
+                'rmb_horiz': ('Y', False),
                 'rmb_vert': None
             }
         },
 
         # ===== GROUP NODES (Diamond-shaped hierarchical controls) =====
+        # Group controls are DATA-DRIVEN at runtime - these dicts are the source of truth.
+        # Inversions here are used directly by update_multi_bone_rotation().
         {
             'id': 'lArm_group',
             'bone_names': ['lShldrBend', 'lShldrTwist', 'lForearmBend', 'lForearmTwist'],
@@ -571,9 +580,9 @@ def get_genesis8_control_points():
             'reference_bone': 'lShldrTwist',
             'offset': (0.075, 0, 0),
             'controls': {
-                'lmb_horiz': 'X',  # Swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower
-                'rmb_horiz': 'Y',  # Twist
+                'lmb_horiz': ('X', False),  # Swing forward/back
+                'lmb_vert': ('Z', False),   # Raise/lower
+                'rmb_horiz': ('Y', False),  # Twist
                 'rmb_vert': None
             }
         },
@@ -586,9 +595,9 @@ def get_genesis8_control_points():
             'reference_bone': 'rShldrTwist',
             'offset': (-0.075, 0, 0),
             'controls': {
-                'lmb_horiz': 'X',  # Swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower
-                'rmb_horiz': 'Y',  # Twist
+                'lmb_horiz': ('X', False),  # Swing forward/back
+                'lmb_vert': ('Z', False),   # Raise/lower
+                'rmb_horiz': ('Y', False),  # Twist
                 'rmb_vert': None
             }
         },
@@ -601,10 +610,11 @@ def get_genesis8_control_points():
             'reference_bone': 'chestUpper',
             'offset': (0, 0, 0.075),
             'controls': {
-                'lmb_horiz': 'Z',  # Shrug/drop
-                'lmb_vert': 'X',   # Forward/back
-                'rmb_horiz': 'Y',  # Roll
-                'rmb_vert': None
+                'lmb_horiz': ('Z', False),  # Shrug/drop
+                'lmb_vert': ('X', False),   # Forward/back
+                'rmb_horiz': ('Y', False),  # Roll
+                'rmb_vert': None,
+                'mirror_axes': ['Z']  # Bilateral: invert Z for right-side bones
             }
         },
         {
@@ -616,9 +626,9 @@ def get_genesis8_control_points():
             'reference_bone': 'abdomenUpper',
             'offset': (-0.1, 0, 0),
             'controls': {
-                'lmb_horiz': 'Y',  # Twist
-                'lmb_vert': 'X',   # Bend forward/back
-                'rmb_horiz': 'Z',  # Side lean
+                'lmb_horiz': ('Y', False),  # Twist
+                'lmb_vert': ('X', False),   # Bend forward/back
+                'rmb_horiz': ('Z', True),   # Side lean (inverted)
                 'rmb_vert': None
             }
         },
@@ -631,10 +641,10 @@ def get_genesis8_control_points():
             'reference_bone': 'lThighTwist',
             'offset': (0.075, 0, 0),
             'controls': {
-                'lmb_horiz': 'X',  # Swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower
-                'rmb_horiz': 'Y',  # Twist
-                'rmb_vert': None
+                'lmb_horiz': ('Y', False),  # Twist (targets twist bones via filtering)
+                'lmb_vert': ('X', False),   # Forward/back swing
+                'rmb_horiz': ('Z', True),   # Spread (inverted)
+                'rmb_vert': ('X', False)    # Forward/back
             }
         },
         {
@@ -646,10 +656,10 @@ def get_genesis8_control_points():
             'reference_bone': 'rThighTwist',
             'offset': (-0.075, 0, 0),
             'controls': {
-                'lmb_horiz': 'X',  # Swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower
-                'rmb_horiz': 'Y',  # Twist
-                'rmb_vert': None
+                'lmb_horiz': ('Y', False),  # Twist (targets twist bones via filtering)
+                'lmb_vert': ('X', False),   # Forward/back swing
+                'rmb_horiz': ('Z', True),   # Spread (inverted)
+                'rmb_vert': ('X', False)    # Forward/back
             }
         },
         {
@@ -661,10 +671,11 @@ def get_genesis8_control_points():
             'reference_bone': 'pelvis',
             'offset': (0, 0, -0.275),
             'controls': {
-                'lmb_horiz': 'X',  # Swing forward/back
-                'lmb_vert': 'Z',   # Raise/lower
-                'rmb_horiz': 'Y',  # Twist
-                'rmb_vert': None
+                'lmb_horiz': ('Y', False),  # Twist (targets twist bones via filtering)
+                'lmb_vert': ('X', False),   # Forward/back swing
+                'rmb_horiz': ('Z', True),   # Spread (inverted)
+                'rmb_vert': ('X', False),   # Forward/back
+                'mirror_axes': ['Z']  # Bilateral: invert Z for right-side bones (spread)
             }
         },
 
@@ -676,9 +687,9 @@ def get_genesis8_control_points():
             'group': 'legs',
             'position': 'tail',
             'controls': {
-                'lmb_horiz': 'Z',  # Side tilt
-                'lmb_vert': 'X',   # Curl/extend toes
-                'rmb_horiz': 'Y',  # Twist
+                'lmb_horiz': ('Z', False),  # Side tilt
+                'lmb_vert': ('X', False),   # Curl/extend toes
+                'rmb_horiz': ('Y', False),  # Twist
                 'rmb_vert': None
             }
         },
@@ -689,9 +700,9 @@ def get_genesis8_control_points():
             'group': 'legs',
             'position': 'tail',
             'controls': {
-                'lmb_horiz': 'Z',  # Side tilt
-                'lmb_vert': 'X',   # Curl/extend toes
-                'rmb_horiz': 'Y',  # Twist
+                'lmb_horiz': ('Z', False),  # Side tilt
+                'lmb_vert': ('X', False),   # Curl/extend toes
+                'rmb_horiz': ('Y', False),  # Twist
                 'rmb_vert': None
             }
         },
@@ -704,9 +715,9 @@ def get_genesis8_control_points():
             'group': 'torso',
             'position': 'mid',
             'controls': {
-                'lmb_horiz': 'Z',  # Rotate hips
-                'lmb_vert': 'X',   # Tilt forward/back
-                'rmb_horiz': 'Y',  # Side tilt
+                'lmb_horiz': ('Z', False),  # Rotate hips
+                'lmb_vert': ('X', False),   # Tilt forward/back
+                'rmb_horiz': ('Y', False),  # Side tilt
                 'rmb_vert': None
             }
         },
@@ -732,10 +743,32 @@ def get_genesis8_control_points():
     return control_points
 
 
+def get_group_controls(group_id):
+    """
+    Look up the controls dict for a group node by its ID.
+    Called once at drag start and cached for the duration of the drag.
+
+    Args:
+        group_id: Control point ID (e.g., 'neck_group', 'lLeg_group')
+
+    Returns:
+        dict with lmb_horiz, lmb_vert, rmb_horiz, rmb_vert entries.
+        Each entry is None or (axis, inverted) tuple.
+        Returns empty dict if group_id not found.
+    """
+    for cp in get_genesis8_control_points():
+        if cp['id'] == group_id:
+            return cp.get('controls', {})
+    return {}
+
+
 def get_rotation_axis_from_control(bone_name, mouse_button, is_horizontal):
     """
     Fast lookup for rotation axis based on bone, button, and direction.
-    Uses simple dictionary instead of iterating through control points.
+    Used for single-bone controls only. Returns just the axis letter (no inversion).
+    Single-bone inversions are handled by the if/elif chain in daz_bone_select.py.
+
+    For group controls, use get_group_controls() instead.
 
     Args:
         bone_name: Name of the bone

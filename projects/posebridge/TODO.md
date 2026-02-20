@@ -57,7 +57,7 @@ Track current development tasks, future features, and improvements needed.
 - [ ] Consider adding inversion for right-side groups if testing reveals need
 
 ### Robustness
-- [ ] Handle missing bones gracefully (control point skipped if bone not in rig)
+- [x] Handle missing bones gracefully (control point skipped if bone not in rig)
 - [ ] Handle armature rename mid-session
 - [ ] Verify behavior with different Genesis 8 figures (not just Fey)
 
@@ -77,7 +77,7 @@ Track current development tasks, future features, and improvements needed.
 - [ ] View switcher: Body <-> Head
 
 ### UI Controls (Control Panel Viewport or BlenDAZ N-Panel)
-- [ ] Mouse sensitivity slider (adjust rotation speed during posing)
+- [x] Mouse sensitivity slider (adjust rotation speed during posing)
 - [ ] Mute pin toggle (on/off) -- only affects rotations made in PoseBridge control panel; pins are still respected when rotating on the 3D mesh or via Blender gizmo until "Enable Pins" is turned off in BlenDAZ main controls
 - [ ] Per-bone 3-axis sliders when bone is selected (X/Y/Z rotation like DAZ Studio's posing sliders)
 
@@ -86,7 +86,7 @@ Track current development tasks, future features, and improvements needed.
 - [ ] Auto-keyframe on drag release
 - [ ] Pose presets (save/load named poses)
 - [ ] Symmetry mode (pose left side, mirror to right)
-- [ ] UI toggle to enable/disable constraint enforcement
+- [x] UI toggle to enable/disable constraint enforcement
 
 ### Visual Improvements
 - [ ] Control point size scaling with viewport zoom
@@ -115,7 +115,7 @@ Track current development tasks, future features, and improvements needed.
 ### Code Organization
 - [ ] Consolidate control point definitions to single source (currently in both daz_shared_utils.py and daz_bone_select.py axis chains)
 - [ ] Consider extracting PoseBridge rotation logic from daz_bone_select.py into interaction.py
-- [ ] core.py `initialize_control_points_for_character()` doesn't handle `bone_names` / `control_type='multi'` properly
+- [x] core.py `initialize_control_points_for_character()` doesn't handle `bone_names` / `control_type='multi'` properly
 
 ### Testing
 - [ ] No automated tests (all testing is manual in Blender)

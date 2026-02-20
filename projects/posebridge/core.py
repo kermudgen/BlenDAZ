@@ -158,6 +158,12 @@ class PoseBridgeSettings(PropertyGroup):
         default=True
     )
 
+    enforce_constraints: BoolProperty(
+        name="Enforce Constraints",
+        description="Enforce LIMIT_ROTATION constraints during posing (reads back constrained result from depsgraph after each rotation)",
+        default=True
+    )
+
     active_armature_name: StringProperty(
         name="Active Armature",
         description="Name of the currently active armature for PoseBridge",
@@ -237,18 +243,30 @@ def initialize_control_points_for_character(armature, panel_view='body'):
     initialized_points = []
 
     for cp_def in control_point_defs:
-        # For Phase 1, we'll use simple hardcoded 2D positions
-        # In later phases, we'll calculate these from actual bone positions
+        # Determine if this is a multi-bone group or single-bone control
+        is_multi = 'bone_names' in cp_def
 
-        # Create control point data
+        if is_multi:
+            bone_name = cp_def.get('reference_bone', cp_def['bone_names'][0])
+            label = cp_def.get('label', cp_def['id'])  # Human-readable name for tooltips
+            control_type = 'multi'
+        else:
+            bone_name = cp_def.get('bone_name', '')
+            label = cp_def.get('label', bone_name)
+            control_type = 'single'
+
+        # Skip if required bone doesn't exist in armature
+        if bone_name and bone_name not in armature.pose.bones:
+            continue
+
         cp_data = {
             'id': cp_def['id'],
-            'bone_name': cp_def['bone_name'],
-            'label': cp_def['label'],
-            'group': cp_def['group'],
-            'control_type': 'single',
+            'bone_name': bone_name,
+            'label': label,
+            'group': cp_def.get('group', ''),
+            'control_type': control_type,
             'panel_view': 'body',
-            'position_2d': (0.5, 0.5),  # Placeholder - will calculate in drawing phase
+            'position_2d': (0.5, 0.5),  # Placeholder - calculated in drawing phase
             'is_hovered': False,
             'is_selected': False
         }

@@ -231,6 +231,7 @@ Quick reference guide for what's in each file and where to find specific functio
 
 ## Documentation
 - [CLAUDE.md](CLAUDE.md) - Project context and guidelines
+- [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) - PowerPose research, rotation architecture, DAZ bone system, troubleshooting
 - [SCRATCHPAD.md](SCRATCHPAD.md) - Development journal
 - [TODO.md](TODO.md) - Task tracking and roadmap
 - [PROJECT_SETUP_GUIDE.md](PROJECT_SETUP_GUIDE.md) - How this doc system works

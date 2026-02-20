@@ -1915,6 +1915,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _base_body_mesh = None  # The main figure mesh (detected automatically)
     _hover_control_point_id = None  # For multi-bone controls
     _hover_bone_names = None  # List of bone names for multi-bone controls
+    _hover_from_posebridge = False  # True when hover came from PoseBridge control point (not 3D raycast)
 
     # Click detection to ignore gizmo drags
     _mouse_down_pos = None
@@ -1947,6 +1948,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _rotation_bones = []  # List of bones for multi-bone group rotation
     _rotation_initial_quats = []  # List of initial quaternions for multi-bone rotation
     _rotation_group_id = None  # Control point ID for group axis lookup
+    _rotation_group_controls = None  # Cached controls dict for data-driven group rotation
 
     # Undo stack for Ctrl+Z
     _undo_stack = []  # List of {frame, bones: [(name, rotation, mode)]} entries
@@ -1968,7 +1970,23 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._tooltip_mouse_pos = None
                 context.area.tag_redraw()
 
+        # Consume ALL RMB events during active RMB interaction to prevent context menu
+        # Blender generates CLICK events AFTER RELEASE, so we keep the flag set until
+        # the next MOUSEMOVE to ensure late CLICK events are also consumed
+        if event.type == 'RIGHTMOUSE' and (self._right_click_used_for_drag or
+                (self._is_rotating and self._rotation_mouse_button == 'RIGHT')):
+            if event.value == 'RELEASE':
+                # Handle release: end rotation if active
+                if self._is_rotating and self._rotation_mouse_button == 'RIGHT':
+                    self.end_rotation(context, cancel=False)
+                # DON'T clear _right_click_used_for_drag here -- cleared on next MOUSEMOVE
+                # so that post-release CLICK events are still consumed
+            return {'RUNNING_MODAL'}
+
         if event.type == 'MOUSEMOVE':
+            # Clear RMB suppression flag after mouse movement (safe: any CLICK already consumed)
+            if self._right_click_used_for_drag and not self._is_rotating:
+                self._right_click_used_for_drag = False
             # Debug: Check state (verbose - only at level 2)
             if self._is_dragging:
                 debug_print(f"  [MODAL] MOUSEMOVE while dragging")
@@ -2111,9 +2129,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 return {'PASS_THROUGH'}
 
             # POSEBRIDGE MODE: Skip raycast check - 2D control point hit detection is sufficient
-            posebridge_mode = hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active
-
-            if not posebridge_mode:
+            if not self._hover_from_posebridge:
                 # Do a fresh raycast to verify we hit mesh (not clicking through to background)
                 region = context.region
 
@@ -2163,8 +2179,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Hovering over a bone - prepare for potential drag
             if self._hover_bone_name and self._hover_armature:
                 # POSEBRIDGE MODE: Check if this is the special "base" node
-                posebridge_mode = hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active
-                if posebridge_mode and hasattr(self, '_hover_control_point_id'):
+                if self._hover_from_posebridge and hasattr(self, '_hover_control_point_id'):
                     # Check if this is the base node
                     if self._hover_control_point_id == 'base':
                         # Special handling: Switch to object mode and select armature
@@ -2230,9 +2245,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            # POSEBRIDGE MODE: Check if hovering over any bone - if so, start RMB rotation
-            posebridge_mode = hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active
-            if posebridge_mode and self._hover_bone_name and self._hover_armature:
+            # POSEBRIDGE MODE: Check if hovering over a control point - if so, start RMB rotation
+            if self._hover_from_posebridge and self._hover_bone_name and self._hover_armature:
                 if not self._is_rotating:
                     # Start rotation for any bone with right-click
                     print(f"  Right-click on {self._hover_bone_name}: Starting RMB rotation")
@@ -2269,6 +2283,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._mouse_down_pos = None
                 self._accumulated_drag_distance = 0.0
                 self._last_detection_mouse_pos = None
+
+            # PoseBridge active: consume RMB to prevent context menu
+            # (mouse may have drifted off control point between drags)
+            if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+                return {'RUNNING_MODAL'}
 
             return {'PASS_THROUGH'}
 
@@ -2507,7 +2526,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Check this BEFORE bounds checking, since PoseBridge handles multi-viewport detection
         if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
             self.check_posebridge_hover(context, event)
-            return
+            if self._hover_bone_name:
+                return  # Found a PoseBridge control point, done
+            # No control point found - fall through to normal 3D raycast
+            # This allows direct bone interaction in the 3D mesh viewport
 
         # Skip hover check if mouse is over UI regions (header, toolbar, etc.)
         # This prevents interference with UI elements like transform orientation dropdown
@@ -2652,6 +2674,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._hover_mesh = final_mesh
                 self._hover_bone_name = bone_name
                 self._hover_armature = armature
+                self._hover_from_posebridge = False
 
                 # Update header (only if changed to reduce flicker)
                 if bone_name != self._last_bone:
@@ -2796,12 +2819,20 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._hover_mesh = mesh_obj
             self._hover_bone_name = closest_bone
             self._hover_armature = armature
+            self._hover_from_posebridge = True
 
             # Store control point info for multi-bone handling and special nodes
             if closest_cp.control_type == 'multi':
-                # For multi-bone controls, store the ID and bone list
+                # For multi-bone controls, store the ID and look up bone list from definitions
                 self._hover_control_point_id = closest_cp_id
-                self._hover_bone_names = closest_cp.label.split(',')  # Bone list stored in label
+                # Look up bone names from control point definitions (label is now human-readable)
+                cp_defs = get_genesis8_control_points()
+                bone_names_list = None
+                for cp_def in cp_defs:
+                    if cp_def['id'] == closest_cp_id and 'bone_names' in cp_def:
+                        bone_names_list = cp_def['bone_names']
+                        break
+                self._hover_bone_names = bone_names_list
             else:
                 # For single-bone controls, also store ID (for special nodes like "base")
                 self._hover_control_point_id = closest_cp_id
@@ -2838,16 +2869,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 context.area.tag_redraw()  # Trigger immediate highlight update
 
             # Set tooltip text for GPU drawing (appears after 1 second hover)
+            # Tooltip persists while hovering same control point.
+            # Cleared by: clear_hover() when mouse leaves, or mouse press handler on click/drag.
             if show_tooltip:
-                # Get human-readable name from control point label
                 tooltip_text = closest_cp.label
                 self._tooltip_text = tooltip_text
                 self._tooltip_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
-                context.area.tag_redraw()
-            elif not show_tooltip and self._tooltip_text:
-                # Clear tooltip if we're not showing it anymore
-                self._tooltip_text = None
-                self._tooltip_mouse_pos = None
                 context.area.tag_redraw()
         else:
             # No control point under mouse
@@ -2862,6 +2889,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._hover_mesh = None
             self._hover_bone_name = None
             self._hover_armature = None
+            self._hover_from_posebridge = False
 
             # Reset tooltip timer and clear tooltip
             self._hover_start_time = None
@@ -3118,8 +3146,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         mouse_pos = (event.mouse_region_x, event.mouse_region_y)
         print(f"\n=== Starting IK Drag: {self._drag_bone_name} | Mouse: {mouse_pos} ===")
 
-        # POSEBRIDGE MODE: Use rotation mode for all bones instead of IK
-        if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+        # POSEBRIDGE MODE: Use rotation mode for control point drags (not 3D mesh drags)
+        if self._hover_from_posebridge:
             print("  → PoseBridge mode: Starting rotation mode")
 
             # Check if this is a multi-bone group control
@@ -3134,12 +3162,26 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._rotation_bones = []  # List of bones
                 self._rotation_initial_quats = []  # List of initial rotations
 
+                # Cache group controls dict for data-driven rotation (looked up once, used per-frame)
+                from daz_shared_utils import get_group_controls
+                self._rotation_group_controls = get_group_controls(self._rotation_group_id)
+                print(f"  → Group controls: {self._rotation_group_controls}")
+
                 for bone_name in self._hover_bone_names:
                     if bone_name in self._drag_armature.pose.bones:
                         bone = self._drag_armature.pose.bones[bone_name]
                         bone.rotation_mode = 'QUATERNION'
                         self._rotation_bones.append(bone)
                         self._rotation_initial_quats.append(bone.rotation_quaternion.copy())
+
+                # Bail out if no valid bones were found in armature
+                if not self._rotation_bones:
+                    print(f"  ✗ No valid bones found for group: {self._hover_bone_names}")
+                    self._is_rotating = False
+                    self._rotation_group_id = None
+                    self._rotation_group_controls = None
+                    self._drag_bone_name = None
+                    return
 
                 self._rotation_bone = None  # Not used for multi-bone
                 self._rotation_initial_mouse = (event.mouse_x, event.mouse_y)
@@ -3152,7 +3194,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 print(f"  Initialized {len(self._rotation_bones)} bones for group rotation")
                 return
             else:
-                # Single bone rotation
+                # Single bone rotation - verify bone exists in armature
+                if self._drag_bone_name not in self._drag_armature.pose.bones:
+                    print(f"  ✗ Bone not found in armature: {self._drag_bone_name}")
+                    self._drag_bone_name = None
+                    return
+
                 context.area.header_text_set(f"PoseBridge: {self._drag_bone_name} - Drag to rotate | ESC to cancel")
 
                 # Get the bone
@@ -5091,8 +5138,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 euler = self._rotation_bone.rotation_quaternion.to_euler('XYZ')
                 print(f"  Final Euler (deg): X={math.degrees(euler.x):.1f}, Y={math.degrees(euler.y):.1f}, Z={math.degrees(euler.z):.1f}")
 
-            # Update view layer to evaluate constraints
-            context.view_layer.update()
+            # Update view layer to evaluate constraints (if enabled)
+            if getattr(context.scene.posebridge_settings, 'enforce_constraints', True):
+                context.view_layer.update()
         else:
             # Original pectoral bone rotation logic
             # Apply rotation based on mouse movement (sensitivity: 0.01 radians/pixel)
@@ -5162,74 +5210,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Get PoseBridge sensitivity setting
             sensitivity = getattr(context.scene.posebridge_settings, 'sensitivity', 0.01)
 
-            # Per-group 4-way control scheme using _rotation_group_id
-            # Each group maps LMB/RMB × horiz/vert to specific rotation axes
-            # Keep axis rotations separate for per-bone twist filtering
-            group_id = getattr(self, '_rotation_group_id', None)
-            horiz_axis = None  # Axis controlled by horizontal drag (delta_x)
-            vert_axis = None   # Axis controlled by vertical drag (delta_y)
-            horiz_invert = False
-            vert_invert = False
+            # DATA-DRIVEN group axis mapping from controls dict (cached at drag start)
+            # Each entry is None or (axis, inverted) — single source of truth in daz_shared_utils.py
+            controls = getattr(self, '_rotation_group_controls', None) or {}
 
-            if group_id == 'neck_group':
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'Y'  # Turn
-                    vert_axis = 'X'   # Nod
-                else:  # RIGHT
-                    horiz_axis = 'Z'  # Side tilt
-                    horiz_invert = True
-                    vert_axis = 'X'   # Fine forward/back
-
-            elif group_id == 'torso_group':
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'Y'  # Twist
-                    vert_axis = 'X'   # Bend forward/back
-                else:  # RIGHT
-                    horiz_axis = 'Z'  # Side lean
-                    horiz_invert = True
-                    vert_axis = None
-
-            elif group_id == 'shoulders_group':
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'Z'  # Shrug/drop
-                    vert_axis = 'X'   # Forward/back
-                else:  # RIGHT
-                    horiz_axis = 'Y'  # Roll
-                    vert_axis = None
-
-            elif group_id in ('lArm_group', 'rArm_group'):
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'X'  # Swing forward/back
-                    vert_axis = 'Z'   # Raise/lower
-                else:  # RIGHT
-                    horiz_axis = 'Y'  # Twist
-                    vert_axis = None
-
-            elif group_id in ('lLeg_group', 'rLeg_group'):
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'X'  # Swing forward/back
-                    vert_axis = 'Z'   # Raise/lower
-                else:  # RIGHT
-                    horiz_axis = 'Y'  # Twist
-                    vert_axis = None
-
-            elif group_id == 'legs_group':
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'X'  # Swing forward/back
-                    vert_axis = 'Z'   # Raise/lower
-                else:  # RIGHT
-                    horiz_axis = 'Y'  # Twist
-                    vert_axis = None
-
+            if self._rotation_mouse_button == 'LEFT':
+                horiz_entry = controls.get('lmb_horiz')
+                vert_entry = controls.get('lmb_vert')
             else:
-                # Unknown group - fallback to neck_group behavior
-                if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'Y'
-                    vert_axis = 'X'
-                else:
-                    horiz_axis = 'Z'
-                    horiz_invert = True
-                    vert_axis = 'X'
+                horiz_entry = controls.get('rmb_horiz')
+                vert_entry = controls.get('rmb_vert')
+
+            horiz_axis, horiz_invert = horiz_entry if horiz_entry else (None, False)
+            vert_axis, vert_invert = vert_entry if vert_entry else (None, False)
 
             # Build per-axis rotation quaternions from mouse deltas
             rot_x = None
@@ -5254,6 +5247,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 elif vert_axis == 'Y': rot_y = v_quat
                 elif vert_axis == 'Z': rot_z = v_quat
 
+            # Bilateral mirroring: check which axes need L/R inversion
+            mirror_axes = controls.get('mirror_axes', [])
+
             # Apply rotation to each bone with axis filtering (Individual Origins)
             # Twist bones only receive Y-axis rotations, Bend bones receive all axes
             for i, bone in enumerate(self._rotation_bones):
@@ -5262,26 +5258,51 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Check if this is a twist bone (should only rotate on Y-axis)
                 is_twist_bone = 'twist' in bone.name.lower()
 
+                # Bilateral mirroring: detect right-side bones (rThighBend, rShin, rCollar, etc.)
+                is_right_side = bone.name.startswith('r') and len(bone.name) > 1 and bone.name[1].isupper()
+                mirror_this_bone = is_right_side and len(mirror_axes) > 0
+
+                # Per-bone rotation quaternions (mirrored if needed)
+                bone_rot_x = rot_x.inverted() if (rot_x and mirror_this_bone and 'X' in mirror_axes) else rot_x
+                bone_rot_y = rot_y.inverted() if (rot_y and mirror_this_bone and 'Y' in mirror_axes) else rot_y
+                bone_rot_z = rot_z.inverted() if (rot_z and mirror_this_bone and 'Z' in mirror_axes) else rot_z
+
                 # Build combined rotation based on bone type
                 combined_rot = Quaternion()  # Identity quaternion
 
                 # Y-axis rotation (twist) - apply to ALL bones
-                if rot_y:
-                    combined_rot = rot_y @ combined_rot
+                if bone_rot_y:
+                    combined_rot = bone_rot_y @ combined_rot
 
                 # X and Z-axis rotations (bending) - only apply to non-twist bones
                 if not is_twist_bone:
-                    if rot_x:
-                        combined_rot = rot_x @ combined_rot
-                    if rot_z:
-                        combined_rot = rot_z @ combined_rot
+                    if bone_rot_x:
+                        combined_rot = bone_rot_x @ combined_rot
+                    if bone_rot_z:
+                        combined_rot = bone_rot_z @ combined_rot
 
                 bone.rotation_quaternion = combined_rot @ initial_quat
 
+                # Y-LOCK for ThighBend bones in group rotation
+                # ThighBend should NEVER have Y rotation — only X (forward/back) and Z (spread).
+                # Quaternion composition of X and Z can introduce tiny Y components,
+                # so we actively strip Y after each frame (same pattern as single-bone rotation).
+                bone_lower = bone.name.lower()
+                if 'thigh' in bone_lower and 'bend' in bone_lower:
+                    current_quat = bone.rotation_quaternion.copy()
+                    swing_quat, twist_quat = decompose_swing_twist(current_quat, 'Y')
+                    bone.rotation_quaternion = swing_quat
+
+                    # Debug: show if we removed any Y rotation
+                    twist_angle = 2.0 * math.acos(min(1.0, abs(twist_quat.w)))
+                    if twist_angle > 0.01:  # Only log if > 0.5 degrees
+                        print(f"  [Y-LOCK GROUP] Removed {math.degrees(twist_angle):.1f} deg Y from {bone.name}")
+
             print(f"  Multi-bone rotation: delta_x={delta_x:.2f}, delta_y={delta_y:.2f}, {len(self._rotation_bones)} bones")
 
-            # Update view layer
-            context.view_layer.update()
+            # Update view layer to evaluate constraints (if enabled)
+            if getattr(context.scene.posebridge_settings, 'enforce_constraints', True):
+                context.view_layer.update()
 
         # Update viewport
         context.area.tag_redraw()
@@ -5292,8 +5313,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not self._is_rotating:
             return
 
-        # Bake the constrained rotation before cleanup
-        if self._rotation_constraint and self._rotation_bone and not cancel:
+        # Bake the constrained rotation before cleanup (respects enforce_constraints setting)
+        enforce = getattr(context.scene, 'posebridge_settings', None)
+        enforce = getattr(enforce, 'enforce_constraints', True) if enforce else True
+        if self._rotation_constraint and self._rotation_bone and not cancel and enforce:
             # Update to ensure constraint is evaluated
             context.view_layer.update()
 
@@ -5379,9 +5402,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._rotation_bones = []
         self._rotation_initial_quats = []
         self._rotation_group_id = None
+        self._rotation_group_controls = None
         self._rotation_initial_mouse = None
         self._rotation_mouse_button = None
-        self._right_click_used_for_drag = False
+        # NOTE: Do NOT clear _right_click_used_for_drag here -- it must persist
+        # until the next MOUSEMOVE so that post-release CLICK events are consumed
         self._mouse_down_pos = None
         self._accumulated_drag_distance = 0.0
         self._last_detection_mouse_pos = None

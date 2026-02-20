@@ -130,8 +130,9 @@ exec(open(r"D:\dev\BlenDAZ\projects\posebridge\recapture_with_reload.py").read()
 When working on this project:
 1. Check [INDEX.md](INDEX.md) to find files before searching
 2. Check [TODO.md](TODO.md) for current priorities and planned work
-3. Follow the principles in this document
-4. Update [SCRATCHPAD.md](SCRATCHPAD.md) as you work
-5. Update [TODO.md](TODO.md) when completing tasks or discovering new ones
-6. Prefer simple solutions over complex ones
-7. Ask questions if requirements are unclear
+3. Check [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) for rotation architecture, PowerPose research, and DAZ bone system details
+4. Follow the principles in this document
+5. Update [SCRATCHPAD.md](SCRATCHPAD.md) as you work
+6. Update [TODO.md](TODO.md) when completing tasks or discovering new ones
+7. Prefer simple solutions over complex ones
+8. Ask questions if requirements are unclear
