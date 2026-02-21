@@ -6768,6 +6768,9 @@ class VIEW3D_PT_daz_powerpose_main(bpy.types.Panel):
                 box.label(text=group_name.upper(), icon='DOT')
 
                 for cp in groups[group_name]:
+                    # Skip multi-bone group controls (no single bone_name to show)
+                    if 'bone_name' not in cp:
+                        continue
                     # Check if bone exists
                     if cp['bone_name'] not in armature.pose.bones:
                         continue
