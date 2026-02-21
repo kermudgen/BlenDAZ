@@ -275,7 +275,166 @@ Integration in `daz_bone_select.py`:
 
 **Files Created:** `dsf_face_groups.py` (~300 lines)
 **Files Modified:** `daz_bone_select.py` (~15 lines: import, class attr, invoke init, METHOD 0)
-**Status:** Code complete, needs Blender testing
+**Status:** ~~Code complete, needs Blender testing~~ TESTED & WORKING
+
+---
+
+### DSF Face Groups — Testing & Fixes (2026-02-21 continued)
+
+Tested face groups on: G8 Female (Fey), G8.1 Male (Finn), and Finn with merged geografts.
+
+#### Fix 1: Operator Invoke from Text Editor (start_posebridge.py)
+
+**Problem:** `start_posebridge.py` runs from Blender's Text Editor. The operator's `invoke()` checks `context.area.type != 'VIEW_3D'` and returns `{'CANCELLED'}` — face group init at lines 2462-2472 never executed. Console showed `"Warning: Must be in 3D View"`.
+
+**Fix:** Used `bpy.context.temp_override()` to invoke the operator in a 3D View context:
+```python
+invoked = False
+for window in bpy.context.window_manager.windows:
+    for area in window.screen.areas:
+        if area.type == 'VIEW_3D':
+            with bpy.context.temp_override(window=window, area=area):
+                bpy.ops.view3d.daz_bone_select('INVOKE_DEFAULT')
+            invoked = True
+            break
+    if invoked:
+        break
+```
+
+**Files Modified:** `projects/posebridge/start_posebridge.py` (lines ~137-155)
+
+#### Fix 2: invoke() Armature Fallback (daz_bone_select.py)
+
+**Problem:** `invoke()` only checked `context.active_object` for the armature. Even with the Text Editor context fixed, active object might not be the armature.
+
+**Fix:** Added fallback to PoseBridge settings:
+```python
+armature = None
+if context.active_object and context.active_object.type == 'ARMATURE':
+    armature = context.active_object
+elif hasattr(context.scene, 'posebridge_settings'):
+    settings = context.scene.posebridge_settings
+    if settings.is_active and settings.active_armature_name:
+        arm_obj = bpy.data.objects.get(settings.active_armature_name)
+        if arm_obj and arm_obj.type == 'ARMATURE':
+            armature = arm_obj
+```
+
+**Files Modified:** `daz_bone_select.py` (invoke(), ~line 2461)
+
+#### Fix 3: Null Region Guards (daz_bone_select.py)
+
+**Problem:** After operator started successfully, crash with `AttributeError: 'NoneType' object has no attribute 'width'` — `context.region` was None when modal received events from non-3D-View areas.
+
+**Fix:** Added null guards at two locations in `check_hover()`:
+- Line ~2575: `if not region or mouse_x < region.x ...`
+- Line ~2604: `if not region or mouse_x < region.x ...`
+
+**Files Modified:** `daz_bone_select.py` (check_hover(), 2 locations)
+
+#### Fix 4: Highlight Rendering with Face Groups (daz_bone_select.py)
+
+**Problem:** Face groups were correctly detecting bones (METHOD 0 working in console), but the hover **highlight overlay** in `draw_highlight_callback()` was still built from vertex weights — zones still looked jagged.
+
+**Fix:** Added face group path to highlight rendering before the vertex weight fallback:
+```python
+tri_indices = []
+used_face_groups = False
+if self._face_group_mgr and self._face_group_mgr.valid and mesh_obj == self._base_body_mesh:
+    face_map = self._face_group_mgr.face_group_map
+    bones_set = set(bones_to_highlight)
+    for poly_idx, poly in enumerate(mesh.polygons):
+        if poly_idx < len(face_map) and face_map[poly_idx] in bones_set:
+            for i in range(1, len(poly.vertices) - 1):
+                tri_indices.append((poly.vertices[0], poly.vertices[i], poly.vertices[i + 1]))
+    used_face_groups = True
+if not used_face_groups:
+    # ... existing vertex weight method (fallback) ...
+```
+
+**Files Modified:** `daz_bone_select.py` (draw_highlight_callback(), ~line 5792)
+**Result:** Clean, hard-edged zone highlights matching DSF face group boundaries
+
+#### Fix 5: Toe Zone Separation (bone_utils.py + daz_bone_select.py)
+
+**Problem:** After face group highlight fix, toes weren't highlighting on hover. `get_ik_target_bone()` in bone_utils.py remapped `lToe` → `lFoot`, so toes were swallowed by the foot zone.
+
+**Fix (2 files):**
+1. `bone_utils.py` — Changed toe bone mapping: `lToe`/`rToe` map to themselves instead of `lFoot`/`rFoot`
+2. `daz_bone_select.py` — Foot highlight excludes toes (toes now have their own zone):
+   ```python
+   elif 'foot' in bone_lower:
+       for child_bone in armature.data.bones[bone_name].children:
+           child_lower = child_bone.name.lower()
+           if any(term in child_lower for term in ['metatarsal', 'tarsal']) and 'toe' not in child_lower:
+               bones_to_highlight.append(child_bone.name)
+   ```
+
+**Files Modified:** `bone_utils.py` (get_ik_target_bone), `daz_bone_select.py` (draw_highlight_callback)
+
+#### Fix 6: Auto-Detect DAZ Armature (3 scripts)
+
+**Problem:** `start_posebridge.py` had `ARMATURE_NAME = "Fey"` hardcoded. Failed when testing male character "Finn".
+
+**Fix:** Added `find_daz_armature()` to all three startup scripts. Detection uses DAZ bone markers (`{lPectoral, rPectoral, lCollar, rCollar}` intersection), checking active selection first, then scanning all scene armatures.
+
+**Files Modified:**
+- `projects/posebridge/start_posebridge.py`
+- `projects/posebridge/recapture_control_points.py`
+- `projects/posebridge/recapture_with_reload.py`
+
+#### Fix 7: Polygon-Count-Based DSF Gender Resolution (dsf_face_groups.py)
+
+**Problem:** Testing male character "Finn" — `_detect_gender()` defaulted to female because "Finn" doesn't contain gender keywords. Loaded Genesis8Female.dsf, polygon count mismatch (16,368 vs mesh's 16,196).
+
+**Fix:** Changed `resolve_dsf_path()` to try both genders and pick the one whose polygon count matches the Blender mesh:
+```python
+if blender_poly_count > 0 and len(candidates) > 1:
+    for candidate in candidates:
+        dsf_data = parse_dsf_face_groups(candidate)
+        if dsf_data and dsf_data['polygon_count'] == blender_poly_count:
+            return candidate
+```
+- G8 Female: 16,368 polygons → Genesis8Female.dsf
+- G8 Male: 16,196 polygons → Genesis8Male.dsf
+
+**Files Modified:** `dsf_face_groups.py` (resolve_dsf_path)
+
+#### Fix 8: Stale Face Group Cache (dsf_face_groups.py)
+
+**Problem:** After testing clean Finn, merged geografts onto Finn. Face group zones were "super messed up" — stale cache from clean Finn was used for grafted Finn. Cache key was just `mesh_obj.data.name`, which matched both.
+
+**Fix:** Added polygon count to cache key:
+```python
+@classmethod
+def get_or_create(cls, mesh_obj, armature):
+    key = (mesh_obj.data.name, len(mesh_obj.data.polygons))
+    if key not in cls._cache:
+        cls._cache[key] = cls(mesh_obj, armature)
+    return cls._cache[key]
+```
+- Clean Finn: `("Finn Mesh", 16196)` → face groups work
+- Grafted Finn: `("Finn Mesh", 19500+)` → count mismatch → vertex weight fallback
+
+**Files Modified:** `dsf_face_groups.py` (FaceGroupManager.get_or_create, invalidate)
+
+### Test Results Summary
+
+| Character | DSF File | Polygons Mapped | Status |
+|-----------|----------|-----------------|--------|
+| G8 Female (Fey) | Genesis8Female.dsf | 15,404/16,368 | Clean zones working |
+| G8.1 Male (Finn) | Genesis8Male.dsf | 15,232/16,196 | Clean zones working |
+| Finn + Geografts | N/A (count mismatch) | Fallback to vertex weights | Graceful degradation |
+
+### Commits
+
+1. `254ba4d` — Add DSF face groups for clean mesh zone detection and highlighting
+2. `eb5cd92` — Auto-detect DAZ armature and fix DSF gender resolution
+3. `239fa9b` — Fix stale face group cache when mesh is modified
+
+### Discussion: Geograft Handling
+
+For merged geografts, the mesh polygon count changes, invalidating face group mapping. Current approach: graceful fallback to vertex weights. Future option: use the PB outline copy mesh (clean copy of base mesh already created for the control panel mannequin) for face group lookups on grafted meshes — would need BVH find_nearest from hit location to the standin mesh. Deferred for now; "setup before merge" workflow is fine.
 
 ---
 

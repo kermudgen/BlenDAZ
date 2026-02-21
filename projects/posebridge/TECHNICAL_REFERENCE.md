@@ -310,6 +310,17 @@ The system locates DSF files through:
 2. **Genesis version inference** from bone markers (`lPectoral`/`rPectoral` = G8) + gender detection
 3. **Content directories** from `~/Documents/DAZ Importer/import_daz_settings.json` and `D:/Daz 3D/import-daz-paths.json`
 
+#### Gender Resolution by Polygon Count
+
+Name-based gender detection is unreliable (e.g., "Finn" doesn't contain "male"). Instead, `resolve_dsf_path()` tries both male and female DSF files and picks the one whose polygon count matches the Blender mesh:
+
+| Gender | DSF Polygon Count | Blender Mesh Match |
+|--------|------------------|--------------------|
+| G8/8.1 Female | 16,368 | Exact match required |
+| G8/8.1 Male | 16,196 | Exact match required |
+
+If only one candidate exists, it's used directly. If both exist, polygon count is the tiebreaker.
+
 ### Lookup Architecture
 
 ```
@@ -324,6 +335,25 @@ RUNTIME (every hover):
   Fallback: face groups unavailable → existing vertex weight method
 ```
 
+### Caching
+
+`FaceGroupManager` uses a class-level cache keyed by `(mesh_data_name, polygon_count)`. The polygon count in the key prevents stale cache hits when the same mesh is modified (e.g., after merging geografts):
+
+```python
+key = (mesh_obj.data.name, len(mesh_obj.data.polygons))
+```
+
+Without the polygon count, a clean mesh and a grafted mesh with the same `data.name` would share a cache entry, producing wrong zone mappings.
+
+### Highlight Rendering
+
+The hover highlight overlay in `draw_highlight_callback()` has two rendering paths:
+
+1. **Face group path** (clean zones): Iterates base mesh polygons, checks `face_group_map[poly_idx] in bones_set`, triangulates matching polygons
+2. **Vertex weight path** (fallback): Original method aggregating vertex weights per polygon
+
+The face group path produces clean, hard-edged zone boundaries. The vertex weight fallback produces the older jagged boundaries but works on any mesh.
+
 ### Edge Cases
 
 | Scenario | Detection | Behavior |
@@ -332,6 +362,7 @@ RUNTIME (every hover):
 | Geograft merged | polygon count mismatch | vertex weight fallback |
 | Missing DSF file | file not found | vertex weight fallback |
 | User edited mesh | polygon count mismatch | vertex weight fallback |
+| Stale cache | polygon count changed | new cache entry created |
 
 ### Key File
 
@@ -481,6 +512,28 @@ Control points are defined in **two places** (must stay in sync):
 - `daz_bone_select.py` changes: Use reload script or restart
 - Use `exec(open(r"D:\dev\BlenDAZ\reload_daz_bone_select.py").read())` for hot reload
 
+### Problem: Operator invoke fails from Text Editor ("Must be in 3D View")
+
+**Status**: FIXED (2026-02-21). `start_posebridge.py` runs from Blender's Text Editor, but `invoke()` checks `context.area.type == 'VIEW_3D'`. Fixed by using `bpy.context.temp_override()` to invoke the operator in a 3D View area. Also added armature selection before invoke and fallback armature lookup from `posebridge_settings` in `invoke()`.
+
+### Problem: Face groups not initializing (no [FaceGroups] console output)
+
+**Status**: FIXED (2026-02-21). Two causes:
+1. Text Editor context → `invoke()` returned CANCELLED before reaching face group init. Fixed with `temp_override`.
+2. Active object not an armature → face group init skipped. Fixed with fallback to `posebridge_settings.active_armature_name`.
+
+### Problem: Null region crash in check_hover()
+
+**Status**: FIXED (2026-02-21). Modal operator receives events from non-3D-View areas where `context.region` is None. Added null guards: `if not region or mouse_x < region.x ...` at both hover check locations.
+
+### Problem: Wrong DSF gender detected for character
+
+**Status**: FIXED (2026-02-21). Name-based gender detection unreliable. `resolve_dsf_path()` now tries both male/female DSF files and picks the one whose polygon count matches the Blender mesh.
+
+### Problem: Stale face group cache after mesh modification
+
+**Status**: FIXED (2026-02-21). Cache key was just `mesh_data_name`. After merging geografts, same name but different mesh. Fixed by including polygon count in cache key: `(mesh_data_name, polygon_count)`.
+
 ### Problem: Control point missing for a bone
 
 **Symptoms**: Expected control point not visible on panel.
@@ -522,6 +575,8 @@ Control points are defined in **two places** (must stay in sync):
 | `FaceGroupManager.lookup_bone()` | dsf_face_groups.py | O(1)/O(log N) polygon→bone lookup |
 | `parse_dsf_face_groups()` | dsf_face_groups.py | DSF JSON parser for polygon groups |
 | `resolve_dsf_path()` | dsf_face_groups.py | Find DSF file from DazUrl or genesis version |
+| `get_ik_target_bone()` | bone_utils.py | Remaps bone names for IK (toe→lToe/rToe, metatarsal→foot) |
+| `find_daz_armature()` | start_posebridge.py | Auto-detect Genesis armature by DAZ bone markers |
 
 ### Class Variables for Rotation State
 
@@ -546,6 +601,10 @@ _twist_bone_initial_quats = {}       # Initial quaternions for twist bone routin
 - Added `dsf_face_groups.py` to code reference (parser, face group manager, DSF path resolution)
 - Updated group axis mappings table (leg groups now Y/X per PowerPose, bilateral mirroring noted)
 - Marked leg group and bilateral mirroring troubleshooting entries as FIXED
+- Documented gender resolution by polygon count matching (male vs female DSF)
+- Documented face group cache key with polygon count for stale cache prevention
+- Documented highlight rendering dual path (face groups vs vertex weights)
+- Added troubleshooting entries: Text Editor invoke, null region, wrong gender, stale cache
 
 ### 2026-02-20
 - Documented dual-viewport interaction (`_hover_from_posebridge` flag)
