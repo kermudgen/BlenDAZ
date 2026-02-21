@@ -743,6 +743,33 @@ def get_genesis8_control_points():
     return control_points
 
 
+def get_finger_group_bones(group_id):
+    """
+    Derive bone names for a finger group or fist control from its ID.
+
+    Handles hand multi-bone controls that aren't in get_genesis8_control_points().
+
+    Args:
+        group_id: Control point ID (e.g., 'lThumb_group', 'rHand_fist')
+
+    Returns:
+        List of bone names, or None if not a recognized finger group ID.
+    """
+    finger_names = ['Thumb', 'Index', 'Mid', 'Ring', 'Pinky']
+    for prefix in ('l', 'r'):
+        # Finger group: e.g., 'lThumb_group' -> ['lThumb1', 'lThumb2', 'lThumb3']
+        for finger in finger_names:
+            if group_id == f'{prefix}{finger}_group':
+                return [f'{prefix}{finger}{j}' for j in (1, 2, 3)]
+        # Fist: e.g., 'lHand_fist' -> all 15 finger bones for that hand
+        if group_id == f'{prefix}Hand_fist':
+            bones = []
+            for finger in finger_names:
+                bones.extend([f'{prefix}{finger}{j}' for j in (1, 2, 3)])
+            return bones
+    return None
+
+
 def get_group_controls(group_id):
     """
     Look up the controls dict for a group node by its ID.
@@ -759,6 +786,14 @@ def get_group_controls(group_id):
     for cp in get_genesis8_control_points():
         if cp['id'] == group_id:
             return cp.get('controls', {})
+    # Hand finger groups and fist controls (not in get_genesis8_control_points)
+    if get_finger_group_bones(group_id) is not None:
+        return {
+            'lmb_horiz': ('Z', False),  # Spread fingers sideways
+            'lmb_vert':  ('X', False),  # Curl / uncurl
+            'rmb_horiz': None,
+            'rmb_vert':  None,
+        }
     return {}
 
 

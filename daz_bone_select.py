@@ -2795,7 +2795,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         from mathutils import Vector
 
+        active_panel = settings.active_panel
         for cp in fixed_control_points:
+            # Only test control points that belong to the active panel
+            cp_panel = cp.panel_view if cp.panel_view else 'body'
+            if cp_panel != active_panel:
+                continue
+
             bone_name = cp.bone_name
 
             # Get fixed 3D position (from T-pose, with Z offset already applied)
@@ -2844,13 +2850,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if closest_cp.control_type == 'multi':
                 # For multi-bone controls, store the ID and look up bone list from definitions
                 self._hover_control_point_id = closest_cp_id
-                # Look up bone names from control point definitions (label is now human-readable)
+                # Look up bone names from body control point definitions
                 cp_defs = get_genesis8_control_points()
                 bone_names_list = None
                 for cp_def in cp_defs:
                     if cp_def['id'] == closest_cp_id and 'bone_names' in cp_def:
                         bone_names_list = cp_def['bone_names']
                         break
+                # Fallback: check hand finger groups / fist controls
+                if bone_names_list is None:
+                    from daz_shared_utils import get_finger_group_bones
+                    bone_names_list = get_finger_group_bones(closest_cp_id)
                 self._hover_bone_names = bone_names_list
             else:
                 # For single-bone controls, also store ID (for special nodes like "base")
@@ -4941,6 +4951,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 else:  # RIGHT
                     horiz_axis = 'Y'  # Twist
                     vert_axis = None
+
+            # FINGER (Thumb, Index, Mid, Ring, Pinky)
+            elif any(part in bone_lower for part in ['thumb', 'index', 'mid', 'ring', 'pinky']):
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_axis = 'Z'  # Spread
+                    vert_axis = 'X'   # Curl
+                else:  # RIGHT
+                    horiz_axis = None
+                    vert_axis = 'X'   # Curl only
 
             # FOOT
             elif 'foot' in bone_lower:
