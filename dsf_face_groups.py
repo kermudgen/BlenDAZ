@@ -404,7 +404,9 @@ class FaceGroupManager:
     @classmethod
     def get_or_create(cls, mesh_obj, armature):
         """Get cached instance or create new one."""
-        key = mesh_obj.data.name
+        # Include polygon count in key so cache invalidates when mesh is modified
+        # (e.g., after merging geografts)
+        key = (mesh_obj.data.name, len(mesh_obj.data.polygons))
         if key not in cls._cache:
             cls._cache[key] = cls(mesh_obj, armature)
         return cls._cache[key]
@@ -413,7 +415,10 @@ class FaceGroupManager:
     def invalidate(cls, mesh_obj=None):
         """Clear cache. Call when mesh changes or scene reloads."""
         if mesh_obj:
-            cls._cache.pop(mesh_obj.data.name, None)
+            # Clear all entries for this mesh (any polygon count)
+            keys_to_remove = [k for k in cls._cache if k[0] == mesh_obj.data.name]
+            for k in keys_to_remove:
+                del cls._cache[k]
         else:
             cls._cache.clear()
 
