@@ -404,6 +404,51 @@ Diamond-shaped controls that rotate multiple bones simultaneously. Defined with 
 
 Leg groups use PowerPose "twist/forward" pattern (Y/X on LMB). Bilateral groups (legs_group, shoulders_group) have `mirror_axes: ['Z']` for automatic L/R inversion.
 
+### Finger Group Axis Mappings
+
+| Group | LMB Horiz | LMB Vert | RMB Horiz | RMB Vert |
+|-------|-----------|----------|-----------|----------|
+| lIndex_group, rIndex_group | Z (spread) | X (curl) | - | - |
+| lMid_group, rMid_group | Z (spread) | X (curl) | - | - |
+| lRing_group, rRing_group | Z (spread) | X (curl) | - | - |
+| lPinky_group, rPinky_group | Z (spread) | X (curl) | - | - |
+| lThumb_group, rThumb_group | Z (spread) | X (curl) | - | - |
+| lHand_fist, rHand_fist | Z (spread) | X (curl) | - | - |
+
+**Spread rules** (all finger groups):
+- LMB horiz = spread (Z rotation on base joint only — bone name ends in '1')
+- Joints 2 and 3 never receive Z rotation (spread only meaningful at metacarpophalangeal joint)
+- Ring and Pinky spread in the **opposite** Z direction from Thumb/Index/Mid (fan-spread)
+- Per-finger spread weight scales the Z angle to match anatomical range:
+
+```python
+FINGER_SPREAD_WEIGHTS = {
+    'thumb': 0.5,   # Spreads in a different plane; moderate weight feels natural
+    'index': 0.8,   # Spreads toward radial side
+    'mid':   0.1,   # Anatomical reference finger — barely moves
+    'ring':  0.7,   # Spreads toward ulnar side
+    'pinky': 1.0,   # Outermost ulnar finger — full spread
+}
+```
+
+Weight is applied via quaternion slerp from identity: `Quaternion().slerp(rot_z, weight)`.
+
+**Curl rules** (all finger groups):
+- LMB vert = curl (X rotation on all joints of each finger)
+- Per-finger curl weight scales the X angle — thumb curls much slower than the other fingers:
+
+```python
+FINGER_CURL_WEIGHTS = {
+    'thumb': 0.25,  # Observed ~0.25-0.3x rate vs other fingers in DAZ PowerPose; curling faster overshoots under the fist
+    'index': 1.0,
+    'mid':   1.0,
+    'ring':  1.0,
+    'pinky': 0.9,   # Slightly softer at the ulnar edge
+}
+```
+
+Note: Genesis 8 PowerPose templates are encrypted (.dxe), so exact DAZ values are not readable. The thumb weight (0.25) is empirically matched by observing actual PowerPose fist curl behavior.
+
 ### Control Point Positioning
 
 Control points are captured from the T-pose armature bone positions, projected to 2D panel coordinates via the PoseBridge camera. Each definition includes:
@@ -596,7 +641,14 @@ _twist_bone_initial_quats = {}       # Initial quaternions for twist bone routin
 
 ## Change Log
 
-### 2026-02-21
+### 2026-02-21 (hand panel)
+- Added Finger Group Axis Mappings section with spread rules, fan-spread direction, and per-finger weights
+- Documented base-joint-only spread (Z rotation only on bone1, never joints 2/3)
+- Documented fan-spread: ring/pinky invert Z direction vs thumb/index/mid
+- Documented per-finger spread weights (mid=0.1 reference, pinky=1.0 max) with slerp scaling
+- Documented LMB-only spread per DAZ method (rmb_horiz=None for finger groups)
+
+### 2026-02-21 (DSF / face groups)
 - Added DSF Face Groups section documenting mesh zone detection via DSF polygon_groups
 - Added `dsf_face_groups.py` to code reference (parser, face group manager, DSF path resolution)
 - Updated group axis mappings table (leg groups now Y/X per PowerPose, bilateral mirroring noted)

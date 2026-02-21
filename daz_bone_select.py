@@ -4921,7 +4921,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     horiz_invert = True  # Invert twist direction
                 else:  # RIGHT
                     horiz_axis = 'X'  # Side-to-side
-                    horiz_invert = True  # Invert side-to-side direction
+                    horiz_invert = False
                     vert_axis = 'Z'   # Up/down
 
             # THIGH
@@ -4954,8 +4954,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # FINGER (Thumb, Index, Mid, Ring, Pinky)
             elif any(part in bone_lower for part in ['thumb', 'index', 'mid', 'ring', 'pinky']):
+                is_base_joint = self._rotation_bone.name[-1] == '1'
                 if self._rotation_mouse_button == 'LEFT':
-                    horiz_axis = 'Z'  # Spread
+                    horiz_axis = 'Z' if is_base_joint else None  # Spread only on base joint
                     vert_axis = 'X'   # Curl
                 else:  # RIGHT
                     horiz_axis = None
@@ -5304,6 +5305,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Check if this is a twist bone (should only rotate on Y-axis)
                 is_twist_bone = 'twist' in bone.name.lower()
 
+                # Finger bones: Z (spread) only applies to the base joint (bone1)
+                bone_lower = bone.name.lower()
+                is_finger_bone = any(p in bone_lower for p in ['thumb', 'index', 'mid', 'ring', 'pinky'])
+                is_base_joint = bone.name[-1] == '1'
+
                 # Bilateral mirroring: detect right-side bones (rThighBend, rShin, rCollar, etc.)
                 is_right_side = bone.name.startswith('r') and len(bone.name) > 1 and bone.name[1].isupper()
                 mirror_this_bone = is_right_side and len(mirror_axes) > 0
@@ -5323,9 +5329,26 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # X and Z-axis rotations (bending) - only apply to non-twist bones
                 if not is_twist_bone:
                     if bone_rot_x:
-                        combined_rot = bone_rot_x @ combined_rot
+                        if is_finger_bone:
+                            # Per-finger curl weight: thumb curls differently / overshoots
+                            _curl_weights = {'thumb': 0.25, 'index': 1.0, 'mid': 1.0, 'ring': 1.0, 'pinky': 0.9}
+                            curl_weight = next((w for k, w in _curl_weights.items() if k in bone_lower), 1.0)
+                            effective_rot_x = Quaternion().slerp(bone_rot_x, curl_weight)
+                        else:
+                            effective_rot_x = bone_rot_x
+                        combined_rot = effective_rot_x @ combined_rot
                     if bone_rot_z:
-                        combined_rot = bone_rot_z @ combined_rot
+                        # Finger bones: spread (Z) only on base joint
+                        if not is_finger_bone or is_base_joint:
+                            # Ring and Pinky spread in opposite direction for natural fan spread
+                            is_ulnar_finger = is_finger_bone and any(p in bone_lower for p in ['ring', 'pinky'])
+                            effective_rot_z = bone_rot_z.inverted() if is_ulnar_finger else bone_rot_z
+                            # Per-finger spread weight: middle barely moves, pinky/index spread most
+                            if is_finger_bone:
+                                _spread_weights = {'thumb': 0.5, 'index': 0.8, 'mid': 0.1, 'ring': 0.7, 'pinky': 1.0}
+                                spread_weight = next((w for k, w in _spread_weights.items() if k in bone_lower), 1.0)
+                                effective_rot_z = Quaternion().slerp(effective_rot_z, spread_weight)
+                            combined_rot = effective_rot_z @ combined_rot
 
                 bone.rotation_quaternion = combined_rot @ initial_quat
 
@@ -5654,25 +5677,31 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         print(f"  Stored undo state: frame {frame}, {len(bones_data)} bones")
 
     def store_rotation_undo_state(self, context):
-        """Store current bone rotation before keyframing (for pectoral bone rotations)"""
-        if not self._rotation_bone or not self._drag_armature:
+        """Store current bone rotation before keyframing"""
+        if not self._drag_armature:
             return
 
         frame = context.scene.frame_current
-        bone = self._rotation_bone
-        bone_name = bone.name
 
-        # Store the initial rotation (before the drag)
-        bones_data = [(bone_name, self._rotation_initial_quat.copy(), 'QUATERNION')]
+        if self._rotation_bones:
+            # Multi-bone group
+            bones_data = [
+                (bone.name, self._rotation_initial_quats[i].copy(), 'QUATERNION')
+                for i, bone in enumerate(self._rotation_bones)
+            ]
+        elif self._rotation_bone:
+            # Single bone
+            bones_data = [(self._rotation_bone.name, self._rotation_initial_quat.copy(), 'QUATERNION')]
+        else:
+            return
 
-        # Store undo entry
         undo_entry = {
             'frame': frame,
             'bones': bones_data,
             'armature': self._drag_armature
         }
         self._undo_stack.append(undo_entry)
-        print(f"  Stored rotation undo state: frame {frame}, bone {bone_name}")
+        print(f"  Stored rotation undo state: frame {frame}, {len(bones_data)} bones")
 
     def undo_last_drag(self, context):
         """Undo the last IK drag by restoring previous bone rotations"""

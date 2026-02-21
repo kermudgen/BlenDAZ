@@ -23,35 +23,60 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         default='body'
     )
 
+    # Camera names for each panel view
+    CAMERAS = {
+        'body':  'PB_Outline_LineArt_Camera',
+        'hands': 'PB_Camera_Hands',
+        'face':  'PB_Camera_Face',
+    }
+
+    # Objects shown in each panel view
+    BODY_OBJECTS  = {'PB_Outline', '_LineArt_Copy'}   # substring match
+    HANDS_OBJECTS = {'PB_Hand_Left', 'PB_Hand_Right'} # exact match
+
+    # Saved camera state per view: {view_name: (offset, zoom)}
+    _saved_state = {}
+
     def execute(self, context):
         settings = context.scene.posebridge_settings
+        previous_panel = settings.active_panel
         settings.active_panel = self.view
 
-        # Switch camera based on view
-        if self.view == 'body':
-            camera_name = "PB_Camera"
-        elif self.view == 'hands':
-            camera_name = "PB_Camera_Hands"
-        elif self.view == 'face':
-            camera_name = "PB_Camera_Face"
-        else:
-            camera_name = None
+        # Switch camera in the viewport where the N-panel was clicked
+        space = context.space_data
+        if space and space.type == 'VIEW_3D':
+            r3d = space.region_3d
 
-        if camera_name and camera_name in bpy.data.objects:
-            # Set active camera for all 3D viewports
-            for area in context.screen.areas:
-                if area.type == 'VIEW_3D':
-                    for space in area.spaces:
-                        if space.type == 'VIEW_3D':
-                            space.camera = bpy.data.objects[camera_name]
-                            # If in camera view, update
-                            if space.region_3d.view_perspective == 'CAMERA':
-                                space.region_3d.view_camera_offset = (0, 0)
+            # Save state of the view we're leaving
+            self._saved_state[previous_panel] = (
+                tuple(r3d.view_camera_offset),
+                r3d.view_camera_zoom,
+            )
 
-        # Force viewport redraw
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                area.tag_redraw()
+            camera_name = self.CAMERAS.get(self.view)
+            camera = bpy.data.objects.get(camera_name) if camera_name else None
+            if camera:
+                space.camera = camera
+                r3d.view_perspective = 'CAMERA'
+
+                # Restore saved state for the view we're entering
+                if self.view in self._saved_state:
+                    saved_offset, saved_zoom = self._saved_state[self.view]
+                    r3d.view_camera_offset = saved_offset
+                    r3d.view_camera_zoom = saved_zoom
+
+        # Toggle object visibility
+        show_body  = (self.view == 'body')
+        show_hands = (self.view == 'hands')
+
+        for obj in context.scene.objects:
+            name = obj.name
+            if any(s in name for s in self.BODY_OBJECTS):
+                obj.hide_viewport = not show_body
+            elif name in self.HANDS_OBJECTS:
+                obj.hide_viewport = not show_hands
+
+        context.area.tag_redraw()
 
         return {'FINISHED'}
 

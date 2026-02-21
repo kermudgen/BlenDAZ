@@ -152,16 +152,17 @@ def extract_hand_geometry(source_mesh_name, hand_side='left'):
     geometry_center = (min_co + max_co) / 2
     print(f"  Geometry center: {geometry_center}")
 
-    # Set origin to geometry center (important for proper positioning)
-    bpy.ops.object.select_all(action='DESELECT')
-    hand_obj.select_set(True)
-    bpy.context.view_layer.objects.active = hand_obj
-    bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+    # Set origin to geometry center (shift vertices, set object location)
+    # Done manually to avoid bpy.ops context requirement
+    for v in new_mesh.vertices:
+        v.co -= geometry_center
+    new_mesh.update()
+    hand_obj.location = geometry_center.copy()
 
-    # Shade smooth for nicer appearance
-    bpy.ops.object.shade_smooth()
-
-    hand_obj.select_set(False)
+    # Shade smooth for nicer appearance (no ops needed)
+    for poly in new_mesh.polygons:
+        poly.use_smooth = True
+    new_mesh.update()
 
     print(f"  Origin set to geometry center, shading smooth")
 
@@ -318,13 +319,16 @@ def get_transformed_bone_positions(armature_name, hand_obj, geometry_center, han
             else:
                 bone_positions[group_key] = transform_point(bone_head_world)
 
-    # Add fist control position at mid-point of Hand bone
+    # Add Hand bone controls (individual wrist + fist group)
     hand_bone_name = f"{prefix}Hand"
     if hand_bone_name in armature.pose.bones:
         hand_bone = armature.pose.bones[hand_bone_name]
         hand_head = armature.matrix_world @ hand_bone.head
         hand_tail = armature.matrix_world @ hand_bone.tail
         hand_mid = (hand_head + hand_tail) / 2
+        # Individual wrist control at head of Hand bone
+        bone_positions[f"{prefix}Hand"] = transform_point(hand_head)
+        # Fist group control at mid-point of Hand bone
         bone_positions[f"{prefix}Hand_fist"] = transform_point(hand_mid)
 
     print(f"  Transformed {len(bone_positions)} positions for {hand_side} hand")
@@ -417,6 +421,26 @@ def generate_hand_control_points(bone_positions, hand_side='left'):
     prefix = 'l' if hand_side == 'left' else 'r'
     side_label = 'Left' if hand_side == 'left' else 'Right'
     control_points = []
+
+    # Wrist / Hand bone control (circle) — at head of Hand bone
+    hand_key = f"{prefix}Hand"
+    if hand_key in bone_positions:
+        pos = bone_positions[hand_key]
+        control_points.append({
+            'id': hand_key,
+            'bone_name': hand_key,
+            'label': f'{side_label} Hand',
+            'group': f'hand_{hand_side}',
+            'panel_view': 'hands',
+            'control_type': 'single',
+            'position_3d_fixed': (pos.x, pos.y, pos.z),
+            'controls': {
+                'lmb_horiz': ('Z', False),   # Radial/ulnar deviation
+                'lmb_vert':  ('X', False),   # Wrist flex/extend
+                'rmb_horiz': ('Z', False),   # Radial/ulnar deviation
+                'rmb_vert':  ('Y', False),   # Wrist twist
+            }
+        })
 
     # Individual finger joint controls (circles)
     finger_names = ['Thumb', 'Index', 'Mid', 'Ring', 'Pinky']

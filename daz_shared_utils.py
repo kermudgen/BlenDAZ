@@ -789,7 +789,7 @@ def get_group_controls(group_id):
     # Hand finger groups and fist controls (not in get_genesis8_control_points)
     if get_finger_group_bones(group_id) is not None:
         return {
-            'lmb_horiz': ('Z', False),  # Spread fingers sideways
+            'lmb_horiz': ('Z', True),   # Spread fingers sideways
             'lmb_vert':  ('X', False),  # Curl / uncurl
             'rmb_horiz': None,
             'rmb_vert':  None,

@@ -116,6 +116,7 @@ Track current development tasks, future features, and improvements needed.
 ### Code Organization
 - [ ] Consolidate control point definitions to single source (currently in both daz_shared_utils.py and daz_bone_select.py axis chains)
 - [ ] Consider extracting PoseBridge rotation logic from daz_bone_select.py into interaction.py
+- [ ] Make single-bone rotation data-driven: `update_rotation()` should read the `controls` dict from the hovered CP (like multi-bone already does), falling back to hardcoded bone-type mapping if absent. Currently the `controls` dict on single-bone CPs is dead code.
 - [x] core.py `initialize_control_points_for_character()` doesn't handle `bone_names` / `control_type='multi'` properly
 
 ### Testing
