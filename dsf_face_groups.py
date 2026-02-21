@@ -236,7 +236,8 @@ def resolve_dsf_path(armature, mesh_obj):
 
     Strategy:
     1. Check DazUrl custom property on armature or mesh (set by Diffeomorphic)
-    2. Infer from genesis version + gender detection using known paths
+    2. Infer from genesis version — try both genders, pick the one whose
+       polygon count matches the Blender mesh.
 
     Returns:
         Absolute filesystem path to .dsf file, or None.
@@ -262,37 +263,42 @@ def resolve_dsf_path(armature, mesh_obj):
             if os.path.isfile(full_path):
                 return full_path
 
-    # Strategy 2: Infer from genesis version and gender
+    # Strategy 2: Infer from genesis version
     # Detect genesis version from bone markers
-    genesis_key = None
+    is_genesis8 = False
     if armature and armature.type == 'ARMATURE':
         bone_names = {b.name for b in armature.pose.bones}
-
-        # Genesis 8 markers (camelCase bones)
         g8_markers = {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'}
         if g8_markers.intersection(bone_names):
-            # Detect 8 vs 8.1 - G8.1 has specific bones not in G8
-            # For now, try G8 first (same geometry as G8.1)
-            # Detect gender from mesh name or bone structure
-            gender = _detect_gender(armature, mesh_obj)
-            genesis_key = ('genesis8', gender)
+            is_genesis8 = True
 
-    if genesis_key and genesis_key in KNOWN_DSF_PATHS:
-        rel_path = KNOWN_DSF_PATHS[genesis_key]
-        for content_dir in content_dirs:
-            full_path = os.path.join(content_dir, rel_path)
-            if os.path.isfile(full_path):
-                return full_path
+    if is_genesis8:
+        # Try both genders — pick the one whose polygon count matches the mesh
+        blender_poly_count = len(mesh_obj.data.polygons) if mesh_obj else 0
+        gender_order = _detect_gender(armature, mesh_obj)
+        genders = [gender_order, 'male' if gender_order == 'female' else 'female']
 
-        # Also try the other gender if first didn't work
-        alt_gender = 'male' if genesis_key[1] == 'female' else 'female'
-        alt_key = (genesis_key[0], alt_gender)
-        if alt_key in KNOWN_DSF_PATHS:
-            rel_path = KNOWN_DSF_PATHS[alt_key]
-            for content_dir in content_dirs:
-                full_path = os.path.join(content_dir, rel_path)
-                if os.path.isfile(full_path):
-                    return full_path
+        candidates = []
+        for gender in genders:
+            key = ('genesis8', gender)
+            if key in KNOWN_DSF_PATHS:
+                rel_path = KNOWN_DSF_PATHS[key]
+                for content_dir in content_dirs:
+                    full_path = os.path.join(content_dir, rel_path)
+                    if os.path.isfile(full_path):
+                        candidates.append(full_path)
+                        break
+
+        # If we have mesh data, prefer the DSF whose polygon count matches
+        if blender_poly_count > 0 and len(candidates) > 1:
+            for candidate in candidates:
+                dsf_data = parse_dsf_face_groups(candidate)
+                if dsf_data and dsf_data['polygon_count'] == blender_poly_count:
+                    return candidate
+
+        # Otherwise return first found
+        if candidates:
+            return candidates[0]
 
     return None
 

@@ -13,8 +13,34 @@ import bpy
 # Configuration
 # ============================================================================
 
-# Change this to match your armature's name
-ARMATURE_NAME = "Fey"
+# Auto-detect armature, or set manually to override (e.g., ARMATURE_NAME = "Fey")
+ARMATURE_NAME = None
+
+# ============================================================================
+# Auto-detect DAZ armature
+# ============================================================================
+
+def find_daz_armature():
+    """Find a DAZ Genesis armature in the scene.
+    Priority: 1) active selection, 2) search scene for DAZ bone markers."""
+    # Check active object first
+    obj = bpy.context.active_object
+    if obj and obj.type == 'ARMATURE':
+        bone_names = {b.name for b in obj.data.bones}
+        if {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'} & bone_names:
+            return obj.name
+
+    # Search all armatures for DAZ markers
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'ARMATURE':
+            bone_names = {b.name for b in obj.data.bones}
+            if {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'} & bone_names:
+                return obj.name
+
+    return None
+
+if not ARMATURE_NAME:
+    ARMATURE_NAME = find_daz_armature()
 
 # ============================================================================
 # Setup
@@ -23,6 +49,12 @@ ARMATURE_NAME = "Fey"
 print("\n" + "="*70)
 print("Starting PoseBridge...")
 print("="*70)
+
+if not ARMATURE_NAME:
+    print("✗ ERROR: No DAZ armature found in scene!")
+    print("  Either select an armature or set ARMATURE_NAME manually")
+    print("="*70)
+    raise RuntimeError("No DAZ armature found")
 
 # Add BlenDAZ and projects to path
 blendaz_path = r"D:\dev\BlenDAZ"

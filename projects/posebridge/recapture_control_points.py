@@ -14,19 +14,36 @@ if projects_path not in sys.path:
 
 from posebridge.outline_generator_lineart import capture_fixed_control_points
 
-# Configuration
-ARMATURE_NAME = "Fey"  # Change this to match your armature's name
+# Auto-detect armature, or set manually to override
+ARMATURE_NAME = None
 OUTLINE_NAME = "PB_Outline_LineArt"
+
+def find_daz_armature():
+    """Find a DAZ Genesis armature in the scene."""
+    obj = bpy.context.active_object
+    if obj and obj.type == 'ARMATURE':
+        bone_names = {b.name for b in obj.data.bones}
+        if {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'} & bone_names:
+            return obj.name
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'ARMATURE':
+            bone_names = {b.name for b in obj.data.bones}
+            if {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'} & bone_names:
+                return obj.name
+    return None
+
+if not ARMATURE_NAME:
+    ARMATURE_NAME = find_daz_armature()
 
 print("\n" + "="*70)
 print("Recapturing Fixed Control Point Positions...")
 print("="*70)
 
 # Get armature
-armature = bpy.data.objects.get(ARMATURE_NAME)
+armature = bpy.data.objects.get(ARMATURE_NAME) if ARMATURE_NAME else None
 if not armature or armature.type != 'ARMATURE':
-    print(f"✗ ERROR: Armature '{ARMATURE_NAME}' not found!")
-    print("  Make sure ARMATURE_NAME matches your armature's name")
+    print(f"✗ ERROR: No DAZ armature found!")
+    print("  Select an armature or set ARMATURE_NAME manually")
 else:
     # Recapture positions (will use current outline Z position)
     count = capture_fixed_control_points(armature, OUTLINE_NAME)
