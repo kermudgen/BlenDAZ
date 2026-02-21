@@ -2,7 +2,7 @@
 
 Hard-won knowledge about PowerPose-style rotation controls, DAZ bone architecture, and the PoseBridge control panel system. This document captures what works, what doesn't, and why.
 
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-02-21
 
 ---
 
@@ -11,10 +11,11 @@ Hard-won knowledge about PowerPose-style rotation controls, DAZ bone architectur
 1. [DAZ Studio PowerPose Architecture](#daz-studio-powerpose-architecture)
 2. [PoseBridge Rotation System](#posebridge-rotation-system)
 3. [DAZ Genesis 8 Bone Architecture](#daz-genesis-8-bone-architecture)
-4. [Control Point System](#control-point-system)
-5. [Research Findings](#research-findings)
-6. [Troubleshooting Guide](#troubleshooting-guide)
-7. [Code Reference](#code-reference)
+4. [DSF Face Groups (Mesh Zone Detection)](#dsf-face-groups-mesh-zone-detection)
+5. [Control Point System](#control-point-system)
+6. [Research Findings](#research-findings)
+7. [Troubleshooting Guide](#troubleshooting-guide)
+8. [Code Reference](#code-reference)
 
 ---
 
@@ -256,6 +257,88 @@ else:
 
 ---
 
+## DSF Face Groups (Mesh Zone Detection)
+
+### Overview
+
+DAZ's DSF geometry files define **polygon_groups** — clean, hard-edged assignments where every polygon belongs to exactly one named body region. This replaces the fuzzy vertex-weight-based bone detection with crisp zone boundaries.
+
+### DSF File Format
+
+Genesis 8 DSF files are plain JSON (some may be gzipped). The geometry lives in `geometry_library[0]`:
+
+```json
+{
+    "polygon_groups": { "count": 61, "values": ["lPectoral", "rPectoral", "Head", ...] },
+    "polygon_material_groups": { "count": 16, "values": ["Torso", "Face", "Arms", "Legs", ...] },
+    "polylist": { "count": 16368, "values": [[group_idx, material_idx, v0, v1, v2, v3], ...] },
+    "vertices": { "count": 16556, "values": [[x, y, z], ...] }
+}
+```
+
+Each polylist entry: `[polygon_group_index, material_group_index, vert0, vert1, vert2, (optional vert3)]`
+
+### Genesis 8 Geometry Stats
+
+| Variant | Vertices | Polygons | Face Groups | Same Geometry As |
+|---------|----------|----------|-------------|-----------------|
+| G8 Female | 16,556 | 16,368 | 61 | G8.1 Female |
+| G8.1 Female | 16,556 | 16,368 | 61 | G8 Female |
+| G8 Male | 16,384 | 16,196 | 61 | G8.1 Male |
+| G8.1 Male | 16,384 | 16,196 | 61 | G8 Male |
+
+### Face Group → Bone Name Mapping
+
+DSF group names differ from DAZ bone names imported by Diffeomorphic:
+
+| DSF Group | Bone Name | DSF Group | Bone Name |
+|-----------|-----------|-----------|-----------|
+| Head | head | Hip | pelvis |
+| NeckUpper | neckUpper | lShoulder | lShldrBend |
+| Neck | neckLower | rShoulder | rShldrBend |
+| ChestUpper | chestUpper | lForearm | lForearmBend |
+| Chest | chestLower | rForearm | rForearmBend |
+| AbdomenUpper | abdomenUpper | lThigh | lThighBend |
+| Abdomen | abdomenLower | rThigh | rThighBend |
+
+Full mapping (61 groups) in `dsf_face_groups.py:DSF_GROUP_TO_BONE`.
+
+### DSF File Resolution
+
+The system locates DSF files through:
+1. **DazUrl property** on armature/mesh (set by Diffeomorphic): e.g., `/data/DAZ%203D/Genesis%208/Female/Genesis8Female.dsf#Genesis8Female`
+2. **Genesis version inference** from bone markers (`lPectoral`/`rPectoral` = G8) + gender detection
+3. **Content directories** from `~/Documents/DAZ Importer/import_daz_settings.json` and `D:/Daz 3D/import-daz-paths.json`
+
+### Lookup Architecture
+
+```
+INIT (once per armature activation):
+  resolve_dsf_path() → parse JSON → validate polygon count matches Blender mesh
+  → build face_group_map[polygon_index] = bone_name
+  → build BVH tree from base mesh
+
+RUNTIME (every hover):
+  Fast path: face_index < base mesh polygon count → face_group_map[face_index]
+  Slow path: SubSurf active → BVH find_nearest(hit_location) → base polygon index
+  Fallback: face groups unavailable → existing vertex weight method
+```
+
+### Edge Cases
+
+| Scenario | Detection | Behavior |
+|----------|-----------|----------|
+| SubSurf modifier | face_index > base polygon count | BVH find_nearest on base mesh |
+| Geograft merged | polygon count mismatch | vertex weight fallback |
+| Missing DSF file | file not found | vertex weight fallback |
+| User edited mesh | polygon count mismatch | vertex weight fallback |
+
+### Key File
+
+`dsf_face_groups.py` — DSF parser, path resolution, `DSF_GROUP_TO_BONE` mapping, `FaceGroupManager` class
+
+---
+
 ## Control Point System
 
 ### Single-Bone Controls (Circles)
@@ -285,10 +368,10 @@ Diamond-shaped controls that rotate multiple bones simultaneously. Defined with 
 | torso_group | Y (twist) | X (bend) | Z (lean, inv) | - |
 | shoulders_group | Z (shrug) | X (forward) | Y (roll) | - |
 | lArm/rArm_group | X (swing) | Z (raise) | Y (twist) | - |
-| lLeg/rLeg_group | X (swing) | Z (raise) | Y (twist) | - |
-| legs_group | X (swing) | Z (raise) | Y (twist) | - |
+| lLeg/rLeg_group | Y (twist) | X (forward) | Z (spread, inv) | X (forward) |
+| legs_group | Y (twist) | X (forward) | Z (spread, inv) | X (forward) |
 
-**Known Issue**: Leg group RMB horiz is currently Y (twist) but should probably be Z (spread) to match single-bone thigh behavior. See [Troubleshooting](#problem-leg-group-nodes-dont-match-single-bone-thigh-behavior).
+Leg groups use PowerPose "twist/forward" pattern (Y/X on LMB). Bilateral groups (legs_group, shoulders_group) have `mirror_axes: ['Z']` for automatic L/R inversion.
 
 ### Control Point Positioning
 
@@ -381,23 +464,11 @@ Control points are defined in **two places** (must stay in sync):
 
 ### Problem: Leg group nodes don't match single-bone thigh behavior
 
-**Symptoms**: Single-bone thigh RMB horizontal does spread (Z), but leg group RMB horizontal does twist (Y).
-
-**Cause**: Leg group axis mappings in `update_multi_bone_rotation()` were copied from arm group pattern. Arms use RMB horiz=Y (twist) which makes sense, but legs should use RMB horiz=Z (spread).
-
-**Status**: Known issue, fix planned. Requires:
-1. Change leg group RMB horiz from Y to Z in `update_multi_bone_rotation()`
-2. Add RMB vert=X (same as LMB vert) for leg groups
-3. Add Y-lock (swing-twist decomposition) for ThighBend bones within `update_multi_bone_rotation()`
-4. Update `daz_shared_utils.py` control dicts to match
+**Status**: FIXED (2026-02-20). Leg groups now use Y/X on LMB (twist/forward) and Z/X on RMB (spread/forward), matching PowerPose pattern. Controls dicts updated in `daz_shared_utils.py`, data-driven routing in `update_multi_bone_rotation()`.
 
 ### Problem: Bilateral groups (shoulders, legs) don't mirror correctly
 
-**Symptoms**: Both shoulders shrug the same direction, or both legs spread in the same direction.
-
-**Cause**: `update_multi_bone_rotation()` applies the same rotation to all bones without L/R mirroring. For bilateral groups, right-side bones may need inverted Z-axis rotation.
-
-**Status**: Known issue, needs testing after group node hookup is complete.
+**Status**: FIXED (2026-02-20). Added `mirror_axes: ['Z']` to legs_group and shoulders_group controls dicts. `update_multi_bone_rotation()` detects right-side bones (`name.startswith('r')` + uppercase) and inverts rotation on mirrored axes.
 
 ### Problem: Module caching prevents code changes from taking effect
 
@@ -428,6 +499,7 @@ Control points are defined in **two places** (must stay in sync):
 |------|---------|
 | `daz_bone_select.py` | Main modal operator - single-bone and multi-bone rotation (~6800 lines) |
 | `daz_shared_utils.py` | Control point definitions, swing-twist decomposition, rotation utilities |
+| `dsf_face_groups.py` | DSF parser, face group mapping, FaceGroupManager for clean zone detection |
 | `core.py` | PropertyGroup definitions (PoseBridgeSettings, PoseBridgeControlPoint) |
 | `panel_ui.py` | N-panel UI (settings, panel view selector) |
 | `outline_generator_lineart.py` | Grease Pencil outline generation and control point capture |
@@ -446,6 +518,10 @@ Control points are defined in **two places** (must stay in sync):
 | `get_rotation_axis_from_control()` | daz_shared_utils.py:735 | Fast per-bone axis lookup |
 | `enforce_rotation_limits()` | daz_shared_utils.py:53 | Anatomical limit clamping |
 | `initialize_control_points_for_character()` | core.py:221 | Control point initialization from armature |
+| `FaceGroupManager.get_or_create()` | dsf_face_groups.py | Cached face group manager factory |
+| `FaceGroupManager.lookup_bone()` | dsf_face_groups.py | O(1)/O(log N) polygon→bone lookup |
+| `parse_dsf_face_groups()` | dsf_face_groups.py | DSF JSON parser for polygon groups |
+| `resolve_dsf_path()` | dsf_face_groups.py | Find DSF file from DazUrl or genesis version |
 
 ### Class Variables for Rotation State
 
@@ -464,6 +540,18 @@ _twist_bone_initial_quats = {}       # Initial quaternions for twist bone routin
 ---
 
 ## Change Log
+
+### 2026-02-21
+- Added DSF Face Groups section documenting mesh zone detection via DSF polygon_groups
+- Added `dsf_face_groups.py` to code reference (parser, face group manager, DSF path resolution)
+- Updated group axis mappings table (leg groups now Y/X per PowerPose, bilateral mirroring noted)
+- Marked leg group and bilateral mirroring troubleshooting entries as FIXED
+
+### 2026-02-20
+- Documented dual-viewport interaction (`_hover_from_posebridge` flag)
+- Documented PowerPose axis mapping audit (20+ control point fixes)
+- Documented bilateral mirroring (`mirror_axes`) for legs_group and shoulders_group
+- Documented RMB context menu suppression (multi-layered approach)
 
 ### 2026-02-19
 - Created TECHNICAL_REFERENCE.md with PowerPose research findings

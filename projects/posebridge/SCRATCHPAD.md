@@ -204,6 +204,79 @@ Flag is set True in `check_posebridge_hover()` when hit, False in normal 3D rayc
 **Files Modified:** `daz_shared_utils.py` (20+ control point definitions)
 **Status:** Needs full Blender restart + testing
 
+### RMB Context Menu Suppression
+
+**Problem:** Right-click context menu kept popping up during PoseBridge RMB drags. Three rounds of fixes needed:
+
+1. **Round 1:** Added early catch for RIGHTMOUSE events when `_right_click_used_for_drag` set — but Blender generates CLICK events AFTER RELEASE.
+2. **Round 2:** `end_rotation()` was clearing `_right_click_used_for_drag = False` before the synthetic CLICK event arrived. Fixed by deferring flag clearing to the next MOUSEMOVE handler.
+3. **Round 3:** After first drag, mouse drifts off 20px control point hit radius, `_hover_from_posebridge` clears, next RMB PRESS falls through to `PASS_THROUGH`. Fixed by consuming ALL RMB PRESS events when PoseBridge is active (context menu has no use in PoseBridge workflow).
+
+**Files Modified:** `daz_bone_select.py` (~lines 1973, 1987, 2290)
+**Status:** Working correctly
+
+### Tooltip Flash Fix
+
+**Problem:** Tooltip showed for one frame then disappeared. The `elif not show_tooltip and self._tooltip_text:` block cleared the tooltip text on the very next MOUSEMOVE after showing it (because `show_tooltip` is only True for one frame, then `_tooltip_shown` prevents it from being True again).
+
+**Fix:** Removed the premature clear `elif`. Tooltip is now cleared by `clear_hover()` when mouse leaves or by mouse press handler on click/drag.
+
+**Files Modified:** `daz_bone_select.py` (~line 2864)
+**Status:** Working correctly
+
+### Human-Readable Group Tooltips
+
+**Problem:** Group node tooltips showed comma-separated bone names ("lThighBend,lThighTwist,lShin") instead of friendly names ("Left Leg Group").
+
+**Fix (3 files):**
+1. `core.py` line 251: Changed to use `cp_def.get('label', cp_def['id'])` for human-readable label
+2. `outline_generator_lineart.py` line 112-114: Removed the override that stored comma-separated bone names in label field
+3. `daz_bone_select.py` line 2828: Changed `check_posebridge_hover()` to look up bone names from `get_genesis8_control_points()` definitions by ID instead of parsing `label.split(',')`
+
+**Status:** Working correctly (requires PoseBridge re-init to regenerate stored control points)
+
+---
+
+## Session: 2026-02-21
+
+### DSF Face Groups for Clean Mesh Zone Detection
+
+**Problem:** BlenDAZ determines which bone was clicked by aggregating vertex weights from the hit polygon. This produces fuzzy, blended boundaries between body regions. DAZ's DSF geometry files contain `polygon_groups` (face groups) — clean, hard-edged per-polygon assignments to body regions.
+
+**Research findings:**
+- Genesis8Female.dsf: Plain JSON, 3.5MB, 16,556 vertices, 16,368 polygons, **61 face groups**
+- DSF polylist format: `[group_idx, material_idx, vert0, vert1, vert2, (vert3)]`
+- G8F and G8.1F share identical geometry (same counts, same 61 group names)
+- DSF group names differ from bone names (e.g., `lShoulder` → `lShldrBend`, `Hip` → `pelvis`)
+- DSF file located at: `D:\Daz 3D\Applications\Data\DAZ 3D\My DAZ 3D Library\data\DAZ 3D\Genesis 8\Female\Genesis8Female.dsf`
+
+**Implementation: New module `dsf_face_groups.py`**
+
+Components:
+- `parse_dsf_face_groups(dsf_path)` — JSON parser for DSF geometry
+- `get_daz_content_dirs()` — reads Diffeomorphic settings for content library paths
+- `resolve_dsf_path(armature, mesh_obj)` — finds DSF via DazUrl property or genesis version inference
+- `DSF_GROUP_TO_BONE` — mapping table for all 61 face groups to bone names
+- `FaceGroupManager` class — cached manager with O(1)/O(log N) lookup
+
+Integration in `daz_bone_select.py`:
+- Import + reload at top of file
+- `_face_group_mgr` class attribute
+- Initialized in `invoke()` after `find_base_body_mesh()`
+- METHOD 0 in `get_bone_from_hit()` before existing vertex weight methods
+
+**Edge case handling:**
+- SubSurf modifier: BVH `find_nearest` on base mesh when face_index is from evaluated mesh
+- Geograft merged: Polygon count mismatch detected → `valid = False` → vertex weight fallback
+- Missing DSF file: Silent fallback to vertex weights
+- Genesis 8 vs 8.1: Same geometry, works identically
+
+**Performance:** ~1 second init (JSON parse + BVH build), <0.1ms per hover lookup
+
+**Files Created:** `dsf_face_groups.py` (~300 lines)
+**Files Modified:** `daz_bone_select.py` (~15 lines: import, class attr, invoke init, METHOD 0)
+**Status:** Code complete, needs Blender testing
+
 ---
 
 ## Quick Reference

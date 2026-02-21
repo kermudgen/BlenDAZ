@@ -94,9 +94,30 @@ print("IMPORTANT: Click in the LEFT viewport (camera view) first!")
 print("Then the modal operator will start automatically...")
 print("="*70 + "\n")
 
-# Invoke the modal operator automatically
-bpy.ops.view3d.daz_bone_select('INVOKE_DEFAULT')
-print("✓ Modal operator started - control points should be visible!")
-print("  - Move mouse over control points → they turn yellow")
-print("  - Click and drag to rotate bones")
-print("  - Press ESC to exit")
+# Select the armature so invoke() can detect it and initialize face groups
+armature_obj = bpy.data.objects.get(ARMATURE_NAME)
+if armature_obj and armature_obj.type == 'ARMATURE':
+    bpy.context.view_layer.objects.active = armature_obj
+    armature_obj.select_set(True)
+    print(f"✓ Selected armature: {ARMATURE_NAME}")
+
+# Invoke the modal operator in a 3D View context
+# (script runs from Text Editor, so we need temp_override to find a 3D viewport)
+invoked = False
+for window in bpy.context.window_manager.windows:
+    for area in window.screen.areas:
+        if area.type == 'VIEW_3D':
+            with bpy.context.temp_override(window=window, area=area):
+                bpy.ops.view3d.daz_bone_select('INVOKE_DEFAULT')
+            invoked = True
+            break
+    if invoked:
+        break
+
+if invoked:
+    print("✓ Modal operator started - control points should be visible!")
+    print("  - Move mouse over control points → they turn yellow")
+    print("  - Click and drag to rotate bones")
+    print("  - Press ESC to exit")
+else:
+    print("✗ ERROR: No 3D View found - open a 3D viewport first")

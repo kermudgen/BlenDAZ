@@ -164,6 +164,15 @@ Quick reference guide for what's in each file and where to find specific functio
 - `end_rotation()` -- finalizes rotation, optional keyframing
 **When to modify**: When changing rotation behavior, adding control points, or fixing interaction bugs
 
+### [../dsf_face_groups.py](../dsf_face_groups.py)
+**Purpose**: DSF parser and face group manager for clean mesh zone detection.
+- `parse_dsf_face_groups()` -- parse DSF JSON for polygon_groups
+- `resolve_dsf_path()` -- find DSF file via DazUrl property or genesis version
+- `get_daz_content_dirs()` -- read Diffeomorphic content directory settings
+- `DSF_GROUP_TO_BONE` -- mapping table (61 entries: DSF group name → bone name)
+- `FaceGroupManager` -- cached per-mesh manager with O(1)/O(log N) polygon→bone lookup
+**When to modify**: When supporting new Genesis versions or adding material zone features
+
 ### [../daz_rig_manager.py](../daz_rig_manager.py)
 **Purpose**: Rig detection, preparation, metadata caching. Converts to quaternion mode.
 
@@ -196,6 +205,10 @@ Quick reference guide for what's in each file and where to find specific functio
 
 ### "Where is hover/click detection?"
 -> `daz_bone_select.py` `check_posebridge_hover()` (line ~2720)
+
+### "Where is mesh zone detection (bone from click)?"
+-> `daz_bone_select.py` `get_bone_from_hit()` -- METHOD 0: DSF face groups, METHOD 1: vertex weights, METHOD 2: nearest vertex
+-> `dsf_face_groups.py` `FaceGroupManager` -- parses DSF, maps polygon→bone
 
 ### "How do I add a new control point?"
 1. Add definition in `daz_shared_utils.py` `get_genesis8_control_points()`

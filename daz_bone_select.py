@@ -49,12 +49,16 @@ from bone_utils import (
     get_smart_chain_length
 )
 
+# Import DSF face groups for clean zone detection
+import dsf_face_groups
+
 # Force reload of imported modules when script is reloaded (Alt+R in Blender)
 # Without this, Python caches old versions of imported modules
 import importlib
 importlib.reload(daz_shared_utils)
 importlib.reload(ik_templates)
 importlib.reload(bone_utils)
+importlib.reload(dsf_face_groups)
 
 # Re-import after reload to get fresh versions
 from daz_shared_utils import get_bend_axis, get_twist_axis, apply_rotation_from_delta, decompose_swing_twist
@@ -1913,6 +1917,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _hover_bone_name = None
     _hover_armature = None
     _base_body_mesh = None  # The main figure mesh (detected automatically)
+    _face_group_mgr = None  # DSF face group manager for clean zone detection
     _hover_control_point_id = None  # For multi-bone controls
     _hover_bone_names = None  # List of bone names for multi-bone controls
     _hover_from_posebridge = False  # True when hover came from PoseBridge control point (not 3D raycast)
@@ -2453,15 +2458,29 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._temp_unpinned_bone = None
         self._temp_unpinned_data = None  # Store pin data to restore
 
-        # Try to detect base body mesh from active armature
+        # Try to detect base body mesh from armature
+        armature = None
         if context.active_object and context.active_object.type == 'ARMATURE':
+            armature = context.active_object
+        elif hasattr(context.scene, 'posebridge_settings'):
+            # Fallback: look up armature from PoseBridge settings
+            settings = context.scene.posebridge_settings
+            if settings.is_active and settings.active_armature_name:
+                arm_obj = bpy.data.objects.get(settings.active_armature_name)
+                if arm_obj and arm_obj.type == 'ARMATURE':
+                    armature = arm_obj
+
+        if armature:
             # CRITICAL: Convert all bones to quaternion mode for consistent IK behavior
             # This eliminates quaternion/euler conversion issues throughout the code
-            prepare_rig_for_ik(context.active_object)
+            prepare_rig_for_ik(armature)
 
-            self._base_body_mesh = find_base_body_mesh(context, context.active_object)
+            self._base_body_mesh = find_base_body_mesh(context, armature)
             if self._base_body_mesh:
                 print(f"  Using base mesh: {self._base_body_mesh.name}")
+                # Initialize DSF face groups for clean zone detection
+                self._face_group_mgr = dsf_face_groups.FaceGroupManager.get_or_create(
+                    self._base_body_mesh, armature)
 
         # Start modal
         context.window_manager.modal_handler_add(self)
@@ -2552,8 +2571,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if context.active_bone and context.mode == 'POSE':
             region = context.region
 
-            # Safety check: ensure we're in a 3D viewport
-            if not context.space_data or context.space_data.type != 'VIEW_3D':
+            # Safety check: ensure we're in a 3D viewport with a valid region
+            if not region or not context.space_data or context.space_data.type != 'VIEW_3D':
                 return
 
             rv3d = context.space_data.region_3d
@@ -2582,8 +2601,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Get viewport and mouse coords
         region = context.region
 
-        # Safety check: ensure we're in a 3D viewport
-        if not context.space_data or context.space_data.type != 'VIEW_3D':
+        # Safety check: ensure we're in a 3D viewport with a valid region
+        if not region or not context.space_data or context.space_data.type != 'VIEW_3D':
             return
 
         rv3d = context.space_data.region_3d
@@ -2918,6 +2937,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return None
 
         mesh = mesh_obj.data
+
+        # METHOD 0: DSF Face Group lookup (clean, hard-edged zone boundaries)
+        if self._face_group_mgr and self._face_group_mgr.valid:
+            matrix_inv = mesh_obj.matrix_world.inverted()
+            hit_local = matrix_inv @ hit_location
+            bone_name = self._face_group_mgr.lookup_bone(face_index, hit_local)
+            if bone_name and bone_name in armature.data.bones:
+                return (mesh_obj.name, bone_name, armature)
 
         # METHOD 1: Use hit polygon vertices (most accurate)
         if face_index is not None and face_index < len(mesh.polygons):
@@ -5742,11 +5769,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         bones_to_highlight.append(sibling.name)
             bones_to_highlight = list(set(bones_to_highlight))  # Remove duplicates
 
-        # FOOT: Include metatarsals only (NOT toes - they're separate)
+        # FOOT: Include metatarsals only (NOT toes - they have their own zone)
         elif 'foot' in bone_lower:
             for child_bone in armature.data.bones[bone_name].children:
                 child_lower = child_bone.name.lower()
-                # Include metatarsals, tarsals (NOT toes)
                 if any(term in child_lower for term in ['metatarsal', 'tarsal']) and 'toe' not in child_lower:
                     bones_to_highlight.append(child_bone.name)
 
@@ -5764,45 +5790,58 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Check cache - only compute weighted verts/polygons once per bone combination
         if cache_key not in self._highlight_cache or self._last_highlighted_bone != bone_name:
             mesh = mesh_obj.data
-            weighted_verts = set()
 
-            # Collect vertices from ALL bones in the group
-            for bone_to_check in bones_to_highlight:
-                if bone_to_check not in mesh_obj.vertex_groups:
-                    continue
+            # Try DSF face groups first (clean, hard-edged zones)
+            tri_indices = []
+            used_face_groups = False
+            if self._face_group_mgr and self._face_group_mgr.valid and mesh_obj == self._base_body_mesh:
+                face_map = self._face_group_mgr.face_group_map
+                bones_set = set(bones_to_highlight)
+                for poly_idx, poly in enumerate(mesh.polygons):
+                    if poly_idx < len(face_map) and face_map[poly_idx] in bones_set:
+                        for i in range(1, len(poly.vertices) - 1):
+                            tri_indices.append((poly.vertices[0], poly.vertices[i], poly.vertices[i + 1]))
+                used_face_groups = True
 
-                vgroup = mesh_obj.vertex_groups[bone_to_check]
+            # Fallback: vertex weight method (fuzzy boundaries)
+            if not used_face_groups:
+                weighted_verts = set()
 
-                # Collect vertices where THIS bone has the HIGHEST weight
-                for vert in mesh.vertices:
-                    if not vert.groups:
+                # Collect vertices from ALL bones in the group
+                for bone_to_check in bones_to_highlight:
+                    if bone_to_check not in mesh_obj.vertex_groups:
                         continue
 
-                    # Find the group with maximum weight for this vertex
-                    max_weight = 0.0
-                    max_group_idx = None
-                    for group in vert.groups:
-                        if group.weight > max_weight:
-                            max_weight = group.weight
-                            max_group_idx = group.group
+                    vgroup = mesh_obj.vertex_groups[bone_to_check]
 
-                    # Include vertex if THIS bone has the max weight
-                    if max_group_idx == vgroup.index and max_weight > 0.01:
-                        weighted_verts.add(vert.index)
+                    # Collect vertices where THIS bone has the HIGHEST weight
+                    for vert in mesh.vertices:
+                        if not vert.groups:
+                            continue
 
-            if not weighted_verts:
-                self._highlight_cache[cache_key] = []
-                self._last_highlighted_bone = bone_name
-                return
+                        # Find the group with maximum weight for this vertex
+                        max_weight = 0.0
+                        max_group_idx = None
+                        for group in vert.groups:
+                            if group.weight > max_weight:
+                                max_weight = group.weight
+                                max_group_idx = group.group
 
-            # Collect triangle indices (vertex indices, not positions)
-            tri_indices = []
-            for poly in mesh.polygons:
-                # If at least one vertex of the polygon is weighted, include the whole polygon
-                if any(v in weighted_verts for v in poly.vertices):
-                    # Triangulate polygon (simple fan triangulation from first vertex)
-                    for i in range(1, len(poly.vertices) - 1):
-                        tri_indices.append((poly.vertices[0], poly.vertices[i], poly.vertices[i + 1]))
+                        # Include vertex if THIS bone has the max weight
+                        if max_group_idx == vgroup.index and max_weight > 0.01:
+                            weighted_verts.add(vert.index)
+
+                if not weighted_verts:
+                    self._highlight_cache[cache_key] = []
+                    self._last_highlighted_bone = bone_name
+                    return
+
+                # Collect triangle indices (vertex indices, not positions)
+                for poly in mesh.polygons:
+                    # If at least one vertex of the polygon is weighted, include the whole polygon
+                    if any(v in weighted_verts for v in poly.vertices):
+                        for i in range(1, len(poly.vertices) - 1):
+                            tri_indices.append((poly.vertices[0], poly.vertices[i], poly.vertices[i + 1]))
 
             # Cache the triangle indices (not positions)
             self._highlight_cache[cache_key] = tri_indices

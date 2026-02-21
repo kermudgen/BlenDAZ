@@ -149,12 +149,25 @@ def get_ik_target_bone(armature, bone_name, silent=False):
         print(f"  Face bone - no head found, IK disabled: {bone_name}")
         return None
 
-    # Toe/metatarsal bones → map to foot
-    if 'toe' in bone_lower or 'metatarsal' in bone_lower:
+    # Metatarsal bones → map to foot
+    if 'metatarsal' in bone_lower:
         if 'l' in bone_lower[:2] or 'left' in bone_lower:
             target = 'lFoot'
         elif 'r' in bone_lower[:2] or 'right' in bone_lower:
             target = 'rFoot'
+        else:
+            target = bone_name
+
+        if target != bone_name and not silent:
+            print(f"  Mapping {bone_name} → {target} for IK")
+        return target
+
+    # Toe bones → map to main toe bone (lToe/rToe)
+    if 'toe' in bone_lower:
+        if 'l' in bone_lower[:2] or 'left' in bone_lower:
+            target = 'lToe'
+        elif 'r' in bone_lower[:2] or 'right' in bone_lower:
+            target = 'rToe'
         else:
             target = bone_name
 
