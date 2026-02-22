@@ -14,41 +14,47 @@ PoseBridge is a Blender addon that provides a 2D control panel for posing DAZ Ge
 
 Common lookups:
 - Control point definitions -> `daz_shared_utils.py` (`get_genesis8_control_points()`)
+- FACS expression presets / sliders -> `daz_shared_utils.py` (`FACE_EXPRESSION_PRESETS`, etc.)
 - Single-bone rotation logic -> `daz_bone_select.py` (`update_rotation()`)
 - Multi-bone group rotation -> `daz_bone_select.py` (`update_multi_bone_rotation()`)
+- Face morph drag -> `daz_bone_select.py` (`start_morph_drag()`, `update_morph()`, `end_morph()`)
+- Face CP positions + camera -> `projects/posebridge/extract_face.py`
 - Outline generation -> `outline_generator_lineart.py`
 - GPU drawing of dots -> `drawing.py`
-- Scene settings/properties -> `core.py`
-- Panel UI -> `panel_ui.py`
+- Scene settings / expression sliders -> `core.py`
+- Panel UI / panel switching -> `projects/posebridge/panel_ui.py`
+- Mesh zone detection -> `dsf_face_groups.py` (`FaceGroupManager`)
 
 ## Project Structure
 ```
 D:\Dev\BlenDAZ\                     # Parent addon (BlenDAZ)
-  daz_bone_select.py                # Modal operator (318K) - hover, rotation, IK
-  daz_shared_utils.py               # Shared utils - control point defs, rotation math
+  daz_bone_select.py                # Modal operator (~7000 lines) - hover, rotation, IK, morph drag
+  daz_shared_utils.py               # Shared utils - control point defs, FACS presets, rotation math
   daz_rig_manager.py                # Rig detection and preparation
   bone_utils.py                     # Bone classification helpers
   rotation_cache.py                 # Rotation preservation across mode switches
   genesis8_limits.py                # LIMIT_ROTATION constraint data
-  panel_ui.py                       # BlenDAZ N-panel UI
+  dsf_face_groups.py                # DSF parser for clean mesh zone detection (face groups)
+  panel_ui.py                       # BlenDAZ N-panel UI (Body Controls, Face Controls)
   projects/
     posebridge/                     # This project
       __init__.py                   # Package init, addon registration
-      core.py                       # PropertyGroup definitions, scene settings
+      core.py                       # PropertyGroup defs, scene settings, expression slider props
       drawing.py                    # GPU overlay rendering (circles, diamonds)
       icons.py                      # View switcher icon shapes
       interaction.py                # Modal interaction (skeleton/TODO)
       control_points.py             # Hit detection utilities (stubs)
       presets.py                    # Genesis 8 control point presets
-      panel_ui.py                   # PoseBridge N-panel UI
+      panel_ui.py                   # PoseBridge N-panel (Body/Face panel switching, visibility)
       outline_generator_lineart.py  # Main outline generator (Line Art modifier)
       outline_generator.py          # GP-based outline (alt)
       outline_generator_body.py     # Skeleton-based outline (alt)
       outline_generator_curves.py   # Curve-based outline (alt)
       outline_generator_simple.py   # Quick skeleton outline (alt)
       extract_hands.py              # Hand geometry extraction
+      extract_face.py               # Face CP positions, face camera setup (PB_Camera_Face)
       extract_icon_shape.py         # Mesh-to-icon utility
-      start_posebridge.py           # Startup script
+      start_posebridge.py           # Startup script (auto-detects DAZ armature)
       recapture_control_points.py   # Position recapture utility
       recapture_with_reload.py      # Dev recapture with reload
       scratchpad_archive/           # Archived scratchpads
@@ -122,9 +128,9 @@ exec(open(r"D:\dev\BlenDAZ\projects\posebridge\recapture_with_reload.py").read()
 - **drawing.py** -- GPU drawing code for circles and diamonds. Static class `PoseBridgeDrawHandler`.
 
 ## Current Focus
-- Finishing group node hookup (per-group axis routing in `update_multi_bone_rotation`)
-- Testing all 8 group nodes with correct axis mappings
-- Completing Phase 1 MVP (cancellation testing, end-to-end verification)
+- **Face Panel**: complete — live face camera, ~26 morph CPs, FACS drag, bilateral/asymmetric modes
+- **N-Panel**: Body Controls (Reset Pose) + Face Controls (Reset Face + expression/viseme sliders) added
+- **Next**: Categorized morph sliders in N-Panel; two known bugs (head CP from deselected state, highlight in wrong viewport)
 
 ## For AI Assistants
 

@@ -1,6 +1,6 @@
 # PoseBridge - TODO
 
-**Last Updated**: 2026-02-20
+**Last Updated**: 2026-02-22
 
 Track current development tasks, future features, and improvements needed.
 
@@ -8,52 +8,63 @@ Track current development tasks, future features, and improvements needed.
 
 ## Current Work
 
-### Validate All Bone Rotation Mappings
-**Description**: Test every control point's 4-way rotation (LMB horiz/vert, RMB horiz/vert) to confirm axes match PowerPose research after the comprehensive audit.
+### N-Panel: Categorized Morph Sliders
+**Description**: Add DAZ-style categorized sections (Brow, Eyes, Mouth, etc.) to the Face Controls N-panel instead of a flat expression/viseme list.
 
 #### Immediate Tasks
-- [ ] Test head, neckUpper, neckLower
-- [ ] Test chestUpper, chestLower, abdomenUpper, abdomenLower, pelvis
-- [ ] Test lCollar/rCollar, lShldrBend/rShldrBend
-- [ ] Test lForearmBend/rForearmBend, lHand/rHand
-- [ ] Test lThighBend/rThighBend (critical - was broken at runtime before fix)
-- [ ] Test lShin/rShin, lFoot/rFoot, lToe/rToe
-- [ ] Test all 8 group nodes (neck, torso, lArm, rArm, lLeg, rLeg, shoulders, legs)
-- [ ] Verify bilateral mirroring on shoulders_group and legs_group
-- [ ] Verify twist bone filtering on arm/leg groups
-- [ ] Fix any axis mappings found to be incorrect
+- [ ] Design category structure for FACS morphs (Brow, Eye, Nose, Mouth, Jaw, Cheek)
+- [ ] Decide UI pattern: collapsible sub-panels vs. labeled sections within Face Controls
+- [ ] Map existing FACS property names to categories
+- [ ] Implement in `panel_ui.py` Face Controls panel
+- [ ] Update `FACE_EXPRESSION_SLIDERS` / `FACE_VISEME_SLIDERS` in `daz_shared_utils.py` if needed
+
+---
+
+## Bug Backlog
+
+### BUG: Head bone selection fails from deselected state
+**Priority**: Medium
+**Description**: Clicking the head CP when nothing is selected doesn't work. Bone selection path probably assumes an already-selected bone.
+**File**: `daz_bone_select.py` — `check_posebridge_hover()` / `start_ik_drag()` head path
+
+### BUG: Mesh highlight shows in left (PoseBridge) viewport
+**Priority**: Medium
+**Description**: The hover highlight overlay appears in the PoseBridge control panel viewport instead of (or in addition to) the 3D character viewport.
+**File**: `daz_bone_select.py` — `draw_highlight_callback()` — viewport targeting
 
 ---
 
 ## Recently Completed (Feb 2026)
 
-- [x] **Dual-viewport interaction** - `_hover_from_posebridge` flag routes 3D mesh drags to IK and control panel drags to PoseBridge rotation
-- [x] **PowerPose axis mapping audit** - Fixed 20+ control point definitions to match PowerPose DSX research
-- [x] **Bilateral mirroring** - `mirror_axes` support for legs_group and shoulders_group
-- [x] **RMB context menu fix** - Multi-layered event suppression prevents Blender context menu during PoseBridge drags
-- [x] **Tooltip flash fix** - Removed premature clear that killed tooltip on next MOUSEMOVE
-- [x] **Human-readable group tooltips** - Groups show "Left Leg Group" instead of comma-separated bone names; bone names looked up from definitions at runtime
+- [x] **Face Panel** - Live camera (`PB_Camera_Face`), ~26 morph CPs, FACS drag (bilateral + asymmetric), morph undo stack
+- [x] **N-Panel overhaul** - Removed old PowerPose panel; added Body Controls (Reset Pose) + Face Controls (Reset Face + expression/viseme sliders)
+- [x] **Undo stack fix** - `self._undo_stack = []` in invoke() was shadowing class list; fixed to use `VIEW3D_OT_daz_bone_select._undo_stack.clear()`
+- [x] **Expression/viseme sliders** - Dynamic FloatProperties on PoseBridgeSettings, update callbacks scaling FACS presets by intensity; `FACE_EXPRESSION_PRESETS` in daz_shared_utils.py
+- [x] **DSF face groups** - Clean hard-edged zone detection; polygon-count-based gender resolution; stale cache fix; geograft fallback
+- [x] **Delegate architecture** - Group nodes use `group_delegates` referencing single-bone node controls; eliminates `bone_overrides` + `mirror_axes` complexity
+- [x] **Leg group twist fix** - Current-bone-axis correction for sibling twist bones after ThighBend raises; identity-skip guard for ERC compatibility
+- [x] **Auto-detect DAZ armature** - start_posebridge.py / recapture scripts auto-find armature by DAZ bone markers
+- [x] **Dual-viewport interaction** - `_hover_from_posebridge` flag routes 3D mesh drags to IK, control panel to PoseBridge
+- [x] **PowerPose axis mapping audit** - Fixed 20+ control point definitions; data-driven group controls
+- [x] **RMB context menu fix** - Multi-layered suppression prevents context menu during PoseBridge drags
 - [x] **TECHNICAL_REFERENCE.md** - PowerPose DSX research data documented
-- [x] **Per-group axis routing** - update_multi_bone_rotation() now uses _rotation_group_id to pick axes per group
-- [x] **Project documentation setup** - CLAUDE.md, INDEX.md, TODO.md, SCRATCHPAD.md created
-- [x] **Toe nodes** - lToe, rToe control points at tail position
-- [x] **Hip node** - hip control at mid-bone position
-- [x] **Base node** - special node that selects armature in object mode
-- [x] **Tooltips** - 1-second hover delay showing control info
-- [x] **Thigh Y-lock** - swing-twist decomposition keeps ThighBend Y at 0
-- [x] **Shoulder debugging** - fixed delta zeroing, swapped axes, twist targeting
-- [x] **PowerPose 4-way controls** - LMB/RMB x horiz/vert per bone
-- [x] **Control mapping adjustments** - inversions for head/neck/torso/collar/shoulder
-- [x] **Rotation constraint enforcement** - depsgraph readback bakes constraints in real-time
-- [x] **Mesh mannequin** - gray material on mesh copy as silhouette backdrop
-- [x] **Phase 1 MVP steps 1-9** - outline generation through rotation testing
+- [x] **Phase 1 MVP** - Outline generation, rotation, tooltips, bilateral mirroring, constraint enforcement
 
 ---
 
 ## Backlog - High Priority
 
+### Validate All Bone Rotation Mappings
+- [ ] Test head, neckUpper, neckLower
+- [ ] Test chestUpper, chestLower, abdomenUpper, abdomenLower, pelvis
+- [ ] Test lCollar/rCollar, lShldrBend/rShldrBend
+- [ ] Test lForearmBend/rForearmBend, lHand/rHand
+- [ ] Test lShin/rShin, lFoot/rFoot, lToe/rToe
+- [ ] Test all 8 group nodes (neck, torso, lArm, rArm, lLeg, rLeg, shoulders, legs)
+- [ ] Fix any axis mappings found to be incorrect
+
 ### Phase 1 Completion
-- [ ] Step 10: Test cancellation (ESC key during rotation)
+- [ ] Test ESC cancellation during rotation
 - [ ] Full end-to-end workflow verification
 - [ ] Verify constraint enforcement on all bone types
 
@@ -65,6 +76,9 @@ Track current development tasks, future features, and improvements needed.
 ---
 
 ## Future Features
+
+### Polish
+- [ ] Shoulders Group LMB horiz — forward/back axis feels off, needs recalibration
 
 ### Phase 2: Hand Panel
 - [ ] Hand extraction workflow integration with PoseBridge UI
