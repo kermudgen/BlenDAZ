@@ -818,6 +818,11 @@ def get_finger_group_bones(group_id):
             for finger in finger_names:
                 bones.extend([f'{prefix}{finger}{j}' for j in (1, 2, 3)])
             return bones
+        # Joint-level group: e.g., 'lJoint1_group' -> all 4 finger bones at joint 1 (no thumb)
+        no_thumb = ['Index', 'Mid', 'Ring', 'Pinky']
+        for joint in (1, 2, 3):
+            if group_id == f'{prefix}Joint{joint}_group':
+                return [f'{prefix}{finger}{joint}' for finger in no_thumb]
     return None
 
 
@@ -856,6 +861,14 @@ def get_group_controls(group_id):
             if 'group_delegates' in cp:
                 return {'group_delegates': cp['group_delegates']}
             return cp.get('controls', {})
+    # Joint-level groups: X curl only, no spread
+    if 'Joint' in group_id and '_group' in group_id:
+        return {
+            'lmb_horiz': None,
+            'lmb_vert':  ('X', False),  # Curl all fingers at this joint
+            'rmb_horiz': None,
+            'rmb_vert':  None,
+        }
     # Hand finger groups and fist controls (not in get_genesis8_control_points)
     if get_finger_group_bones(group_id) is not None:
         return {

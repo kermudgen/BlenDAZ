@@ -4965,7 +4965,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     horiz_axis = 'Z' if is_base_joint else None  # Spread only on base joint
                     vert_axis = 'X'   # Curl
                 else:  # RIGHT
-                    horiz_axis = None
+                    horiz_axis = 'Y' if is_base_joint else None  # Twist only on base joint
+                    if is_base_joint and 'thumb' in bone_lower:
+                        horiz_invert = True
                     vert_axis = 'X'   # Curl only
 
             # FOOT

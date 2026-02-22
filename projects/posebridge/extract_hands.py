@@ -514,6 +514,41 @@ def generate_hand_control_points(bone_positions, hand_side='left'):
             }
         })
 
+    # Joint-level group controls (squares) — curl all fingers at one joint level
+    # Positioned on the pinky side, offset beyond the pinky bone at each joint level
+    no_thumb_fingers = ['Index', 'Mid', 'Ring', 'Pinky']
+    for joint in [1, 2, 3]:
+        pinky_key = f"{prefix}Pinky{joint}"
+        index_key = f"{prefix}Index{joint}"
+        if pinky_key in bone_positions and index_key in bone_positions:
+            pinky_pos = bone_positions[pinky_key]
+            index_pos = bone_positions[index_key]
+            # Offset direction: from index toward pinky (and beyond)
+            spread_dir = pinky_pos - index_pos
+            if spread_dir.length > 0.0001:
+                spread_dir.normalize()
+            # Position: pinky position + offset further outward
+            offset_pos = pinky_pos + spread_dir * 0.015
+            joint_bones = [f"{prefix}{finger}{joint}" for finger in no_thumb_fingers]
+            joint_key = f"{prefix}Joint{joint}_group"
+            control_points.append({
+                'id': joint_key,
+                'bone_names': joint_bones,
+                'label': f'{side_label} Joint {joint}',
+                'group': f'hand_{hand_side}',
+                'panel_view': 'hands',
+                'control_type': 'multi',
+                'shape': 'square',
+                'reference_bone': f"{prefix}Pinky{joint}",
+                'position_3d_fixed': (offset_pos.x, offset_pos.y, offset_pos.z),
+                'controls': {
+                    'lmb_horiz': None,
+                    'lmb_vert': 'X',   # Curl all fingers at this joint
+                    'rmb_horiz': None,
+                    'rmb_vert': None
+                }
+            })
+
     return control_points
 
 
@@ -554,6 +589,7 @@ def store_hand_control_points(result):
         cp.group = cp_def['group']
         cp.panel_view = cp_def['panel_view']
         cp.control_type = cp_def['control_type']
+        cp.shape = cp_def.get('shape', '')
         cp.position_3d_fixed = cp_def['position_3d_fixed']
 
     print(f"Stored {len(all_hand_cps)} hand control points")

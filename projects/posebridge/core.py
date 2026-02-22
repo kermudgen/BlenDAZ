@@ -53,6 +53,12 @@ class PoseBridgeControlPoint(PropertyGroup):
         default='single'
     )
 
+    shape: StringProperty(
+        name="Shape",
+        description="Visual shape for this control point (circle, diamond, square)",
+        default=''
+    )
+
     position_2d: FloatVectorProperty(
         name="2D Position",
         description="Control point position in viewport coordinates (normalized 0-1)",

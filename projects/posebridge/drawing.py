@@ -143,7 +143,14 @@ class PoseBridgeDrawHandler:
             color = (1.0, 1.0, 0.0, 1.0) if is_hovered else (0.0, 0.8, 1.0, 1.0)  # Yellow : Cyan
 
             # Draw control point with appropriate shape
-            if cp.control_type == 'multi':
+            if cp.shape == 'square':
+                PoseBridgeDrawHandler.draw_control_point_square(
+                    pos_2d,
+                    size=8.0,
+                    color=color,
+                    filled=True
+                )
+            elif cp.control_type == 'multi':
                 # Multi-bone control: draw as diamond
                 PoseBridgeDrawHandler.draw_control_point_diamond(
                     pos_2d,
@@ -247,6 +254,39 @@ class PoseBridgeDrawHandler:
         batch.draw(shader)
 
         # Reset state
+        gpu.state.blend_set('NONE')
+
+    @staticmethod
+    def draw_control_point_square(position, size, color, filled=True):
+        """Draw square shape for joint-level group control points
+
+        Args:
+            position: Vector((x, y)) in pixel coordinates
+            size: Half-width of the square in pixels
+            color: (r, g, b, a) color tuple
+            filled: Whether to fill the square or just outline
+        """
+        vertices = [
+            (position[0] - size, position[1] + size),  # Top-left
+            (position[0] + size, position[1] + size),  # Top-right
+            (position[0] + size, position[1] - size),  # Bottom-right
+            (position[0] - size, position[1] - size),  # Bottom-left
+        ]
+
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+
+        if filled:
+            fan_vertices = [position]  # Center point
+            fan_vertices.extend(vertices)
+            fan_vertices.append(vertices[0])  # Close the fan
+            batch = batch_for_shader(shader, 'TRI_FAN', {"pos": fan_vertices})
+        else:
+            batch = batch_for_shader(shader, 'LINE_LOOP', {"pos": vertices})
+
+        gpu.state.blend_set('ALPHA')
+        shader.bind()
+        shader.uniform_float("color", color)
+        batch.draw(shader)
         gpu.state.blend_set('NONE')
 
     @staticmethod
