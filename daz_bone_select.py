@@ -26,8 +26,6 @@ import math
 # Import shared utilities from daz_shared_utils
 import daz_shared_utils
 from daz_shared_utils import (
-    get_bend_axis,
-    get_twist_axis,
     apply_rotation_from_delta,
     decompose_swing_twist
 )
@@ -61,7 +59,7 @@ importlib.reload(bone_utils)
 importlib.reload(dsf_face_groups)
 
 # Re-import after reload to get fresh versions
-from daz_shared_utils import get_bend_axis, get_twist_axis, apply_rotation_from_delta, decompose_swing_twist
+from daz_shared_utils import apply_rotation_from_delta, decompose_swing_twist
 from ik_templates import get_ik_template, calculate_pole_position
 from bone_utils import is_twist_bone, is_pectoral, get_ik_target_bone, calculate_chain_length_skipping_twists, get_smart_chain_length
 
@@ -1955,6 +1953,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _rotation_group_id = None  # Control point ID for group axis lookup
     _rotation_group_controls = None  # Cached controls dict for data-driven group rotation
 
+    # Morph drag state (face panel)
+    _is_morphing = False
+    _morph_controls = None           # Cached controls dict for the active morph CP
+    _morph_initial_values = {}       # {prop_name: float} initial values before drag
+    _morph_initial_mouse = None      # (mouse_x, mouse_y) at drag start
+    _morph_mouse_button = None       # 'LEFT' or 'RIGHT'
+    _morph_cp_id = None              # Control point ID for logging
+
     # Undo stack for Ctrl+Z
     _undo_stack = []  # List of {frame, bones: [(name, rotation, mode)]} entries
 
@@ -1996,8 +2002,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if self._is_dragging:
                 debug_print(f"  [MODAL] MOUSEMOVE while dragging")
             # Check if we should start IK drag or rotation
-            if not self._is_dragging and not self._is_rotating and self._mouse_down_pos and self._drag_bone_name:
-                mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+            if not self._is_dragging and not self._is_rotating and not self._is_morphing and self._mouse_down_pos and self._drag_bone_name:
+                mouse_pos = (event.mouse_x, event.mouse_y)
 
                 # Calculate direct distance from initial mouse-down position
                 distance = ((mouse_pos[0] - self._mouse_down_pos[0])**2 +
@@ -2029,6 +2035,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     self.update_ik_drag(context, event)
                 return {'RUNNING_MODAL'}
 
+            # If morphing (face panel), update morph values
+            if self._is_morphing:
+                self.update_morph(context, event)
+                return {'RUNNING_MODAL'}
+
             # If rotating (pectoral bones), update rotation
             if self._is_rotating:
                 self.update_rotation(context, event)
@@ -2040,17 +2051,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             # Pass through if clicking on UI regions (header, toolbar, etc.)
-            region = context.region
-            if region:
-                mouse_y = event.mouse_region_y
-                mouse_x = event.mouse_region_x
+            # Skip bounds check for cross-viewport clicks (already verified by _crossviewport_raycast)
+            if not getattr(self, '_hover_from_crossviewport', False):
+                region = context.region
+                if region:
+                    mouse_y = event.mouse_region_y
+                    mouse_x = event.mouse_region_x
 
-                # If clicking in header area or outside bounds, pass through
-                if mouse_y > region.height - 40 or mouse_y < 0 or mouse_x < 0 or mouse_x > region.width:
-                    self._mouse_down_pos = None
-                    self._accumulated_drag_distance = 0.0
-                    self._last_detection_mouse_pos = None
-                    return {'PASS_THROUGH'}
+                    # If clicking in header area or outside bounds, pass through
+                    if mouse_y > region.height - 40 or mouse_y < 0 or mouse_x < 0 or mouse_x > region.width:
+                        self._mouse_down_pos = None
+                        self._accumulated_drag_distance = 0.0
+                        self._last_detection_mouse_pos = None
+                        return {'PASS_THROUGH'}
 
             # DOUBLE-CLICK DETECTION: Switch to object mode and select armature (DAZ-style)
             import time
@@ -2126,20 +2139,22 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._just_selected_armature = False
                 # Continue with normal click handling below...
 
-            # Only handle click if we're hovering over a bone (otherwise pass through for gizmos)
-            if not self._hover_bone_name or not self._hover_armature:
+            # Only handle click if we're hovering over a bone or a PoseBridge morph CP
+            # (morph CPs have _hover_bone_name=None to suppress mesh highlighting)
+            if not self._hover_armature or (not self._hover_bone_name and not self._hover_from_posebridge):
                 self._mouse_down_pos = None
                 self._accumulated_drag_distance = 0.0
                 self._last_detection_mouse_pos = None
                 return {'PASS_THROUGH'}
 
             # POSEBRIDGE MODE: Skip raycast check - 2D control point hit detection is sufficient
-            if not self._hover_from_posebridge:
+            # Also skip for cross-viewport hovers (already raycast-verified)
+            if not self._hover_from_posebridge and not getattr(self, '_hover_from_crossviewport', False):
                 # Do a fresh raycast to verify we hit mesh (not clicking through to background)
                 region = context.region
 
-                # Safety check: ensure we're in a 3D viewport
-                if not context.space_data or context.space_data.type != 'VIEW_3D':
+                # Safety check: ensure we're in a 3D viewport with valid region
+                if not region or not context.space_data or context.space_data.type != 'VIEW_3D':
                     return {'PASS_THROUGH'}
 
                 rv3d = context.space_data.region_3d
@@ -2177,9 +2192,20 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     return {'PASS_THROUGH'}
 
             # Record mouse position on press (to detect drags vs clicks)
-            self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
+            # Use absolute coords for cross-viewport compatibility
+            self._mouse_down_pos = (event.mouse_x, event.mouse_y)
             self._accumulated_drag_distance = 0.0  # Reset accumulated distance
             self._last_detection_mouse_pos = self._mouse_down_pos  # Start tracking from mouse-down
+
+            # POSEBRIDGE MORPH CP: Check BEFORE bone name check (morph CPs have _hover_bone_name=None)
+            if self._hover_from_posebridge and self._hover_armature:
+                cp = self._get_hovered_cp(context)
+                if cp and cp.interaction_mode == 'morph':
+                    # Morph CP: don't select bone, just prepare for drag
+                    self._drag_bone_name = self._hover_control_point_id or 'head'
+                    self._drag_armature = self._hover_armature
+                    self._rotation_mouse_button = 'LEFT'
+                    return {'RUNNING_MODAL'}
 
             # Hovering over a bone - prepare for potential drag
             if self._hover_bone_name and self._hover_armature:
@@ -2227,6 +2253,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            # End morph if active
+            if self._is_morphing:
+                self.end_morph(context, cancel=False)
+                return {'RUNNING_MODAL'}
+
             # End rotation if active
             if self._is_rotating:
                 self.end_rotation(context, cancel=False)
@@ -2250,24 +2281,32 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            # POSEBRIDGE MODE: Check if hovering over a control point - if so, start RMB rotation
-            if self._hover_from_posebridge and self._hover_bone_name and self._hover_armature:
-                if not self._is_rotating:
-                    # Start rotation for any bone with right-click
-                    print(f"  Right-click on {self._hover_bone_name}: Starting RMB rotation")
+            # POSEBRIDGE MODE: Check if hovering over a control point - if so, start RMB rotation/morph
+            if self._hover_from_posebridge and self._hover_armature:
+                if not self._is_rotating and not self._is_morphing:
+                    hover_id = self._hover_control_point_id or self._hover_bone_name
+                    if hover_id:
+                        print(f"  Right-click on {hover_id}: Starting RMB drag")
 
-                    # Select bone
-                    self.select_bone(context)
+                        # Select bone (for rotation CPs)
+                        if self._hover_bone_name:
+                            self.select_bone(context)
 
-                    # Prepare for drag
-                    self._drag_bone_name = self._hover_bone_name
-                    self._drag_armature = self._hover_armature
-                    self._rotation_mouse_button = 'RIGHT'  # Track right-click
-                    self._mouse_down_pos = (event.mouse_region_x, event.mouse_region_y)
-                    self._right_click_used_for_drag = True  # Claim this RMB to suppress context menu
+                        # Prepare for drag
+                        self._drag_bone_name = self._hover_bone_name or 'head'
+                        self._drag_armature = self._hover_armature
+                        self._rotation_mouse_button = 'RIGHT'  # Track right-click
+                        self._mouse_down_pos = (event.mouse_x, event.mouse_y)  # Absolute coords for cross-viewport
+                        self._right_click_used_for_drag = True  # Claim this RMB to suppress context menu
 
-                    # Consume event
-                    return {'RUNNING_MODAL'}
+                        # Consume event
+                        return {'RUNNING_MODAL'}
+
+            # Cancel morph if active with LMB (RMB cancels LMB morph)
+            if self._is_morphing and self._morph_mouse_button == 'LEFT':
+                print("  Right-click: Canceling morph")
+                self.end_morph(context, cancel=True)
+                return {'RUNNING_MODAL'}
 
             # Cancel rotation if active (non-head bones or ESC alternative)
             if self._is_rotating:
@@ -2297,6 +2336,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'RIGHTMOUSE' and event.value == 'RELEASE':
+            # End morph if active (for right-click face morphs)
+            if self._is_morphing and self._morph_mouse_button == 'RIGHT':
+                self.end_morph(context, cancel=False)
+                return {'RUNNING_MODAL'}
+
             # End rotation if active (for right-click head rotations)
             if self._is_rotating and self._rotation_mouse_button == 'RIGHT':
                 self.end_rotation(context, cancel=False)
@@ -2372,6 +2416,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         elif event.type == 'ESC' and event.value == 'PRESS':
+            # Cancel morph if active
+            if self._is_morphing:
+                self.end_morph(context, cancel=True)
+                return {'RUNNING_MODAL'}
+
             # Exit on ESC only
             self.finish(context)
             return {'CANCELLED'}
@@ -2451,8 +2500,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._rotation_initial_quat = None
         self._rotation_initial_mouse = None
 
-        # Initialize undo stack
-        self._undo_stack = []
+        # Clear undo stack (use class-level list so external operators can push to it)
+        VIEW3D_OT_daz_bone_select._undo_stack.clear()
 
         # Track temporarily unpinned bones (to restore pins after drag)
         self._temp_unpinned_bone = None
@@ -2545,10 +2594,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Check this BEFORE bounds checking, since PoseBridge handles multi-viewport detection
         if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
             self.check_posebridge_hover(context, event)
-            if self._hover_bone_name:
-                return  # Found a PoseBridge control point, done
-            # No control point found - fall through to normal 3D raycast
-            # This allows direct bone interaction in the 3D mesh viewport
+            if self._hover_from_posebridge:
+                return  # Found a PoseBridge control point (or morph CP), done
+            # Not on a PoseBridge CP — do cross-viewport mesh raycast.
+            # This runs every frame to keep hover updated as the mouse moves.
+            # context.region is the modal's invoke area, NOT where the mouse is,
+            # so we detect the actual viewport and raycast from there.
+            self._crossviewport_raycast(context, event)
+            return
 
         # Skip hover check if mouse is over UI regions (header, toolbar, etc.)
         # This prevents interference with UI elements like transform orientation dropdown
@@ -2713,6 +2766,140 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # No hit
             self.clear_hover(context)
 
+    def _crossviewport_raycast(self, context, event):
+        """Raycast in whichever viewport the mouse is actually in.
+
+        Modal operators receive context.region for their invoke area,
+        which may differ from the viewport the mouse is currently in.
+        This detects the correct viewport and raycasts from there.
+        """
+        mouse_x = event.mouse_x
+        mouse_y = event.mouse_y
+
+        # Find the VIEW_3D region the mouse is in
+        target_region = None
+        target_rv3d = None
+        target_area = None
+        for area in context.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for reg in area.regions:
+                if reg.type != 'WINDOW':
+                    continue
+                if (reg.x <= mouse_x < reg.x + reg.width and
+                        reg.y <= mouse_y < reg.y + reg.height):
+                    target_region = reg
+                    target_area = area
+                    for sp in area.spaces:
+                        if sp.type == 'VIEW_3D':
+                            target_rv3d = sp.region_3d
+                            break
+                    break
+            if target_region:
+                break
+
+        if not target_region or not target_rv3d:
+            self.clear_hover(context)
+            return
+
+        # Store for use by drag functions and redraw (context.region is wrong for cross-viewport)
+        self._crossviewport_region = target_region
+        self._crossviewport_rv3d = target_rv3d
+        self._crossviewport_area = target_area
+
+        # Mouse position relative to the target region
+        local_x = mouse_x - target_region.x
+        local_y = mouse_y - target_region.y
+
+        # Bounds check (header/sidebar)
+        if local_y > target_region.height - 40 or local_y < 0:
+            return
+        if local_x < 0 or local_x > target_region.width:
+            return
+
+        coord = (local_x, local_y)
+
+        # Raycast from the target viewport
+        view_vector = view3d_utils.region_2d_to_vector_3d(target_region, target_rv3d, coord)
+        ray_origin = view3d_utils.region_2d_to_origin_3d(target_region, target_rv3d, coord)
+
+        result = context.scene.ray_cast(
+            context.view_layer.depsgraph,
+            ray_origin,
+            view_vector
+        )
+        success, location, normal, index, obj, matrix = result
+
+        # Also check base body mesh
+        final_mesh = None
+        final_location = None
+
+        if self._base_body_mesh and obj != self._base_body_mesh:
+            body_loc, body_dist = raycast_specific_mesh(
+                self._base_body_mesh, ray_origin, view_vector, context
+            )
+            if body_loc:
+                body_distance = (body_loc - ray_origin).length
+                scene_distance = (location - ray_origin).length if success else float('inf')
+                if body_distance - scene_distance < 1.0:
+                    final_mesh = self._base_body_mesh
+                    final_location = body_loc
+        if not final_mesh and success and obj and obj.type == 'MESH':
+            final_mesh = obj
+            final_location = location
+
+        if final_mesh and final_location:
+            face_index = index if success and obj == final_mesh else None
+            bone_info = self.get_bone_from_hit(final_mesh, final_location, face_index)
+            if bone_info:
+                mesh_name, bone_name, armature = bone_info
+                mapped_bone = get_ik_target_bone(armature, bone_name, silent=True)
+                if mapped_bone:
+                    bone_name = mapped_bone
+
+                self._hover_mesh = final_mesh
+                self._hover_bone_name = bone_name
+                self._hover_armature = armature
+                self._hover_from_posebridge = False
+                self._hover_from_crossviewport = True  # Skip fresh raycast on click (already verified)
+
+                if bone_name != self._last_bone:
+                    data_bone = armature.data.bones.get(bone_name)
+                    pin_status = get_pin_status_text(data_bone) if data_bone else ""
+                    pin_text = f" | {pin_status}" if pin_status else ""
+                    text = f"Hover: {bone_name}{pin_text} | Mesh: {mesh_name} | CLICK to select | P to pin"
+                    if target_area:
+                        target_area.header_text_set(text)
+                    self._last_bone = bone_name
+                    if target_area:
+                        target_area.tag_redraw()
+                return
+
+        self.clear_hover(context)
+
+    def _get_region_rv3d(self, context, event):
+        """Return (region, rv3d, mouse_local) for the viewport the mouse is in.
+
+        Falls back to cross-viewport stored values, then context.region.
+        mouse_local is (x, y) relative to the returned region.
+        """
+        # Try cross-viewport stored values first
+        xv_region = getattr(self, '_crossviewport_region', None)
+        xv_rv3d = getattr(self, '_crossviewport_rv3d', None)
+        if xv_region and xv_rv3d and getattr(self, '_hover_from_crossviewport', False):
+            local_x = event.mouse_x - xv_region.x
+            local_y = event.mouse_y - xv_region.y
+            return xv_region, xv_rv3d, (local_x, local_y)
+
+        # Fall back to context (works when modal and mouse are in same viewport)
+        region = context.region
+        if region and context.space_data and context.space_data.type == 'VIEW_3D':
+            rv3d = context.space_data.region_3d
+            if rv3d:
+                return region, rv3d, (event.mouse_region_x, event.mouse_region_y)
+
+        return None, None, (0, 0)
+
     def check_posebridge_hover(self, context, event):
         """Check for control point hits in PoseBridge mode (2D hit detection)"""
 
@@ -2731,6 +2918,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Find which 3D viewport region the mouse is currently in
         region = None
         rv3d = None
+        viewport_space = None
         mouse_x = event.mouse_x
         mouse_y = event.mouse_y
 
@@ -2748,10 +2936,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     reg.y <= mouse_y < reg.y + reg.height):
                     # Found the region! Get its space's region_3d
                     region = reg
-                    # Get the VIEW_3D space for this area (usually just one)
                     for space in area.spaces:
                         if space.type == 'VIEW_3D':
                             rv3d = space.region_3d
+                            viewport_space = space
                             break
                     break
 
@@ -2760,6 +2948,22 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         if not region or not rv3d:
             return
+
+        # Only run CP hit-testing in PoseBridge camera viewports.
+        # Non-camera viewports (perspective/orbit) are handled by _crossviewport_raycast.
+        PANEL_CAMERAS = {
+            'body':  'PB_Outline_LineArt_Camera',
+            'hands': 'PB_Camera_Hands',
+            'face':  'PB_Camera_Face',
+        }
+        active_panel = settings.active_panel
+        expected_cam = PANEL_CAMERAS.get(active_panel)
+        if expected_cam:
+            if rv3d.view_perspective != 'CAMERA':
+                return  # Not in camera view — let _crossviewport_raycast handle it
+            viewport_cam = viewport_space.camera if viewport_space.camera else context.scene.camera
+            if not viewport_cam or viewport_cam.name != expected_cam:
+                return  # Wrong camera — let _crossviewport_raycast handle it
 
         # Import PoseBridge utilities
         addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2787,6 +2991,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         mouse_region_x = event.mouse_x - region.x
         mouse_region_y = event.mouse_y - region.y
 
+        # For face CPs, precompute head bone's current world matrix (bone-local → world)
+        face_head_matrix = None
+        if active_panel == 'face':
+            head_pbone = armature.pose.bones.get('head')
+            if head_pbone:
+                face_head_matrix = armature.matrix_world @ head_pbone.matrix
+
         # Find closest control point
         closest_bone = None
         closest_cp_id = None
@@ -2795,7 +3006,6 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         from mathutils import Vector
 
-        active_panel = settings.active_panel
         for cp in fixed_control_points:
             # Only test control points that belong to the active panel
             cp_panel = cp.panel_view if cp.panel_view else 'body'
@@ -2806,6 +3016,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Get fixed 3D position (from T-pose, with Z offset already applied)
             fixed_pos_3d = Vector(cp.position_3d_fixed)
+
+            # Face CPs are stored in head-bone-local space — transform to current world
+            if cp_panel == 'face' and face_head_matrix:
+                fixed_pos_3d = face_head_matrix @ fixed_pos_3d
 
             # Project fixed 3D position to 2D viewport coordinates
             pos_2d = view3d_utils.location_3d_to_region_2d(
@@ -2841,8 +3055,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         break
 
             # Update hover state (for mesh highlighting)
-            self._hover_mesh = mesh_obj
-            self._hover_bone_name = closest_bone
+            # Skip mesh highlight for morph CPs — they all reference 'head'
+            # and highlighting the entire head mesh is distracting
+            if closest_cp.interaction_mode == 'morph':
+                self._hover_mesh = None
+                self._hover_bone_name = None
+            else:
+                self._hover_mesh = mesh_obj
+                self._hover_bone_name = closest_bone
             self._hover_armature = armature
             self._hover_from_posebridge = True
 
@@ -2868,8 +3088,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._hover_bone_names = None
 
             # Update PoseBridgeDrawHandler (for control point yellow highlight)
-            # Use ID for multi-bone controls, bone name for single controls
-            PoseBridgeDrawHandler._hovered_control_point = closest_cp_id if closest_cp.control_type == 'multi' else closest_bone
+            # Use ID for multi-bone controls and morph controls, bone name for single rotation controls
+            if closest_cp.control_type == 'multi' or closest_cp.interaction_mode == 'morph':
+                PoseBridgeDrawHandler._hovered_control_point = closest_cp_id
+            else:
+                PoseBridgeDrawHandler._hovered_control_point = closest_bone
 
             # Tooltip timer: Track hover time for detailed tooltips
             import time
@@ -2919,6 +3142,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._hover_bone_name = None
             self._hover_armature = None
             self._hover_from_posebridge = False
+            self._hover_from_crossviewport = False
 
             # Reset tooltip timer and clear tooltip
             self._hover_start_time = None
@@ -3099,70 +3323,54 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Set the active bone
                 armature.data.bones.active = armature.data.bones[bone_name]
 
-                # Force selection by switching to edit mode and back
-                # This is a workaround for bones that don't have direct select attribute
-                current_mode = context.mode
-
+                # Select by switching to edit mode and back (robust workaround)
                 try:
                     # CACHE all bone rotations before mode switch
-                    # (Mode switching discards un-keyframed rotations)
                     rotation_cache = {}
-                    for pose_bone in armature.pose.bones:
-                        if pose_bone.rotation_mode == 'QUATERNION':
-                            rotation_cache[pose_bone.name] = pose_bone.rotation_quaternion.copy()
+                    for pb in armature.pose.bones:
+                        if pb.rotation_mode == 'QUATERNION':
+                            rotation_cache[pb.name] = pb.rotation_quaternion.copy()
                         else:
-                            rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
+                            rotation_cache[pb.name] = pb.rotation_euler.copy()
 
-                    # Go to edit mode
                     bpy.ops.object.mode_set(mode='EDIT')
 
-                    # Select the bone in edit mode
                     edit_bone = armature.data.edit_bones.get(bone_name)
                     if edit_bone:
-                        # Deselect all
                         for eb in armature.data.edit_bones:
                             eb.select = False
                             eb.select_head = False
                             eb.select_tail = False
-
-                        # Select our bone
                         edit_bone.select = True
                         edit_bone.select_head = True
                         edit_bone.select_tail = True
 
-                        print(f"  ✓ Selected in edit mode: {bone_name}")
-
-                    # Go back to pose mode
                     bpy.ops.object.mode_set(mode='POSE')
 
                     # RESTORE all bone rotations after mode switch
-                    rotations_restored = 0
-                    for bone_name_cache, rotation in rotation_cache.items():
-                        pose_bone = armature.pose.bones.get(bone_name_cache)
-                        if pose_bone:
-                            if pose_bone.rotation_mode == 'QUATERNION':
-                                pose_bone.rotation_quaternion = rotation
+                    for bn, rot in rotation_cache.items():
+                        pb = armature.pose.bones.get(bn)
+                        if pb:
+                            if pb.rotation_mode == 'QUATERNION':
+                                pb.rotation_quaternion = rot
                             else:
-                                pose_bone.rotation_euler = rotation
-                            rotations_restored += 1
+                                pb.rotation_euler = rot
 
-                    if rotations_restored > 0:
-                        print(f"  ✓ Preserved rotations for {rotations_restored} bones")
-
-                    # Set active again in pose mode
                     armature.data.bones.active = armature.data.bones[bone_name]
-
                     print(f"  ✓ Selected bone: {bone_name}")
 
                 except Exception as e:
                     print(f"  ✗ Selection error: {e}")
-                    # Make sure we end up in pose mode
                     if context.mode != 'POSE':
                         bpy.ops.object.mode_set(mode='POSE')
 
-            # Update view
+            # Update view — redraw the correct viewport (not modal's invoke area)
             context.view_layer.update()
-            context.area.tag_redraw()
+            xv_area = getattr(self, '_crossviewport_area', None)
+            if xv_area and getattr(self, '_hover_from_crossviewport', False):
+                xv_area.tag_redraw()
+            else:
+                context.area.tag_redraw()
 
             self.report({'INFO'}, f"Selected: {bone_name}")
 
@@ -3180,11 +3388,18 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Ensure rig is in quaternion mode (handles armature switching mid-session)
         prepare_rig_for_ik(self._drag_armature)
 
-        mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+        mouse_pos = (event.mouse_x, event.mouse_y)  # Absolute coords for debug
         print(f"\n=== Starting IK Drag: {self._drag_bone_name} | Mouse: {mouse_pos} ===")
 
         # POSEBRIDGE MODE: Use rotation mode for control point drags (not 3D mesh drags)
         if self._hover_from_posebridge:
+            # Check if this is a morph control point (face panel)
+            cp = self._get_hovered_cp(context)
+            if cp and cp.interaction_mode == 'morph':
+                print("  → PoseBridge mode: Starting morph mode")
+                self.start_morph_drag(context, event)
+                return
+
             print("  → PoseBridge mode: Starting rotation mode")
 
             # Check if this is a multi-bone group control
@@ -3554,12 +3769,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._is_dragging = True
 
                 # Store initial mouse position and foot position for delta-based drag
-                self._drag_initial_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
                 self._drag_initial_target_pos = armature.matrix_world @ foot_bone.tail
 
-                # Store view info for 3D projection
-                region = context.region
-                rv3d = context.space_data.region_3d
+                # Store view info for 3D projection (cross-viewport safe)
+                region, rv3d, mouse_local = self._get_region_rv3d(context, event)
+                if not region or not rv3d:
+                    print("  ⚠️  No valid viewport - cannot start analytical leg IK")
+                    return
+                self._drag_initial_mouse_pos = mouse_local
                 self._drag_plane_normal = rv3d.view_rotation @ Vector((0, 0, -1))
                 self._drag_depth_reference = self._drag_initial_target_pos.copy()
 
@@ -3616,16 +3833,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             print(f"  Tracking {self._soft_pin_child_name} for pin location update on release")
 
         # Store view direction for depth calculation
-        region = context.region
-
-        # Safety check: ensure we're in a 3D viewport
-        if not context.space_data or context.space_data.type != 'VIEW_3D':
-            print("  ⚠️  Not in 3D viewport - cannot start IK drag")
-            return
-
-        rv3d = context.space_data.region_3d
-        if not rv3d:
-            print("  ⚠️  No region_3d - cannot start IK drag")
+        region, rv3d, _ = self._get_region_rv3d(context, event)
+        if not region or not rv3d:
+            print("  ⚠️  No valid viewport - cannot start IK drag")
             return
 
         self._drag_plane_normal = rv3d.view_rotation @ Vector((0, 0, -1))
@@ -3643,13 +3853,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # This prevents bone from snapping to cursor when G is pressed
         self._drag_initial_target_pos = target_world_loc.copy()
 
-        # CRITICAL: Store initial mouse position for delta calculation
-        # Must be stored here to persist across mouse moves
+        # CRITICAL: Store initial mouse position for delta calculation (region-local coords)
+        # _mouse_down_pos is in absolute coords, convert to region-local
         if self._mouse_down_pos:
-            self._drag_initial_mouse_pos = self._mouse_down_pos
+            self._drag_initial_mouse_pos = (
+                self._mouse_down_pos[0] - region.x,
+                self._mouse_down_pos[1] - region.y
+            )
         else:
-            # Fallback: use current event position (shouldn't happen but be safe)
-            self._drag_initial_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+            # Fallback: use _get_region_rv3d local coords
+            _, _, local_mouse = self._get_region_rv3d(context, event)
+            self._drag_initial_mouse_pos = local_mouse
 
         # Reset debug flag for this drag
         self._debug_printed = False
@@ -3693,17 +3907,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return
 
         # Use Blender's built-in region_2d_to_location_3d with delta-based movement
-        region = context.region
-
-        # Safety check: ensure we're in a 3D viewport
-        if not context.space_data or context.space_data.type != 'VIEW_3D':
+        region, rv3d, mouse_pos = self._get_region_rv3d(context, event)
+        if not region or not rv3d:
             return
-
-        rv3d = context.space_data.region_3d
-        if not rv3d:
-            return
-
-        mouse_pos = (event.mouse_region_x, event.mouse_region_y)
 
         # Get current mouse position in 3D (at fixed depth)
         current_mouse_3d = view3d_utils.region_2d_to_location_3d(
@@ -3907,10 +4113,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Collect first 2-3 mouse positions to determine direction
         if not self._pre_bend_applied and len(self._pre_bend_mouse_samples) < 10:  # Allow more samples for slow movements
+            pb_region, pb_rv3d, pb_mouse = self._get_region_rv3d(context, event)
+            if not pb_region or not pb_rv3d:
+                return
             current_mouse_3d = view3d_utils.region_2d_to_location_3d(
-                context.region,
-                context.space_data.region_3d,
-                (event.mouse_region_x, event.mouse_region_y),
+                pb_region,
+                pb_rv3d,
+                pb_mouse,
                 self._drag_depth_reference
             )
 
@@ -4080,7 +4289,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Without this, the next frame would compute the full accumulated delta from
             # drag start, causing a large target jump that flips the IK solver.
             # The target stays at its initial position — no catch-up, no jump.
-            self._drag_initial_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+            _, _, reset_mouse_local = self._get_region_rv3d(context, event)
+            self._drag_initial_mouse_pos = reset_mouse_local
 
             # NOW activate IK constraint
             ik_constraint.influence = 1.0
@@ -4092,7 +4302,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             context.view_layer.update()
 
             # Log key bone positions at IK activation (helpful for snap debugging)
-            mouse_2d = (event.mouse_region_x, event.mouse_region_y)
+            mouse_2d = reset_mouse_local
             target_pos = self._drag_armature.pose.bones[self._ik_target_bone_name].head
             print(f"  [IK ACTIVATED] mouse={mouse_2d} target={target_pos.x:.3f},{target_pos.y:.3f},{target_pos.z:.3f}")
 
@@ -4172,16 +4382,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return
 
         try:
-            # Get mouse position in 3D world space
-            region = context.region
-            if not context.space_data or context.space_data.type != 'VIEW_3D':
+            # Get mouse position in 3D world space (cross-viewport safe)
+            region, rv3d, mouse_2d = self._get_region_rv3d(context, event)
+            if not region or not rv3d:
                 return
-            rv3d = context.space_data.region_3d
-            if not rv3d:
-                return
-
-            # Convert mouse 2D to 3D (using region_2d_to_location_3d with depth from dragged bone)
-            mouse_2d = (event.mouse_region_x, event.mouse_region_y)
 
             # Use dragged bone's current position as depth reference
             dragged_bone = self._drag_armature.pose.bones[self._drag_bone_name]
@@ -4277,11 +4481,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return
 
         try:
-            # Get mouse position and convert to 3D
-            region = context.region
-            rv3d = context.space_data.region_3d
-
-            mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+            # Get mouse position and convert to 3D (cross-viewport safe)
+            region, rv3d, mouse_pos = self._get_region_rv3d(context, event)
+            if not region or not rv3d:
+                return
 
             # Calculate mouse delta from initial position
             if self._drag_initial_mouse_pos:
@@ -4794,13 +4997,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # If using Track To constraint method, move the empty instead
         if self._rotation_target_empty:
-            # Get viewport info
-            region = context.region
-            rv3d = context.space_data.region_3d
+            # Get viewport info (cross-viewport safe)
+            region, rv3d, mouse_coord = self._get_region_rv3d(context, event)
 
             if region and rv3d:
-                # Get mouse position in region coordinates
-                mouse_coord = (event.mouse_region_x, event.mouse_region_y)
 
                 # Get bone head position in world space (rotation pivot point)
                 bone_head_world = self._drag_armature.matrix_world @ self._rotation_bone.head
@@ -5207,8 +5407,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             sensitivity = 0.01
 
             # Get viewport orientation to make rotation follow mouse regardless of armature rotation
-            region = context.region
-            rv3d = context.space_data.region_3d
+            # Cross-viewport safe: use _get_region_rv3d to find correct viewport
+            _, rv3d, _ = self._get_region_rv3d(context, event)
 
             if rv3d:
                 # Simple approach that works for normal armature orientation
@@ -5674,6 +5874,271 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         refresh_3d_viewports(context)
         context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
 
+    # =========================================================================
+    # MORPH DRAG (Face Panel)
+    # =========================================================================
+
+    def _get_hovered_cp(self, context):
+        """Look up the currently hovered control point from settings."""
+        if not self._hover_control_point_id:
+            return None
+        settings = context.scene.posebridge_settings
+        for cp in settings.control_points_fixed:
+            if cp.id == self._hover_control_point_id:
+                return cp
+        return None
+
+    def start_morph_drag(self, context, event):
+        """Start morph property drag on a face control point."""
+        armature = self._drag_armature
+        if not armature:
+            return
+
+        # Look up the controls dict for this face CP (static dict lookup)
+        from daz_shared_utils import get_face_morph_controls
+        cp_id = self._hover_control_point_id
+        controls = get_face_morph_controls(cp_id)
+        print(f"  Morph controls lookup: cp_id='{cp_id}' → {controls}")
+        if not controls:
+            print(f"  No morph controls found for {cp_id}")
+            return
+
+        self._is_morphing = True
+        self._morph_controls = controls
+        self._morph_initial_mouse = (event.mouse_x, event.mouse_y)
+        self._morph_mouse_button = self._rotation_mouse_button  # LEFT or RIGHT
+        self._morph_cp_id = self._hover_control_point_id
+
+        # Snapshot initial values of all morph properties referenced in controls
+        # Include split keys (_pos/_neg) for directional controls
+        self._morph_initial_values = {}
+        all_keys = [
+            'lmb_vert', 'lmb_horiz', 'rmb_vert', 'rmb_horiz',
+            'lmb_vert_pos', 'lmb_vert_neg', 'lmb_horiz_pos', 'lmb_horiz_neg',
+            'rmb_vert_pos', 'rmb_vert_neg', 'rmb_horiz_pos', 'rmb_horiz_neg',
+        ]
+        for key in all_keys:
+            entry = controls.get(key)
+            if entry is not None:
+                prop_name = entry[0]
+                if prop_name not in self._morph_initial_values:
+                    if prop_name in armature:
+                        self._morph_initial_values[prop_name] = float(armature[prop_name])
+                    else:
+                        self._morph_initial_values[prop_name] = 0.0
+
+        # Clear drag bone (morph CPs don't select bones)
+        self._drag_bone_name = None
+
+        context.area.header_text_set(
+            f"PoseBridge Face: {self._morph_cp_id} - Drag to adjust | ESC to cancel"
+        )
+        print(f"\n=== Starting Morph Drag: {self._morph_cp_id} | button={self._morph_mouse_button} ===")
+        print(f"  Initial values: {self._morph_initial_values}")
+
+    def update_morph(self, context, event):
+        """Update morph property values during face drag."""
+        if not self._is_morphing:
+            return
+
+        armature = self._drag_armature
+        if not armature:
+            return
+
+        delta_x = event.mouse_x - self._morph_initial_mouse[0]
+        delta_y = event.mouse_y - self._morph_initial_mouse[1]
+
+        settings = context.scene.posebridge_settings
+        sensitivity = settings.morph_sensitivity
+        controls = self._morph_controls
+
+        # Determine which gesture keys to use based on mouse button
+        horiz_key = 'lmb_horiz' if self._morph_mouse_button == 'LEFT' else 'rmb_horiz'
+        vert_key = 'lmb_vert' if self._morph_mouse_button == 'LEFT' else 'rmb_vert'
+
+        # Apply horizontal gesture (supports split: _pos/_neg for right/left)
+        horiz_pos = controls.get(horiz_key + '_pos')
+        horiz_neg = controls.get(horiz_key + '_neg')
+        if horiz_pos or horiz_neg:
+            self._apply_split_morph(armature, horiz_pos, horiz_neg, delta_x, sensitivity)
+        else:
+            horiz_entry = controls.get(horiz_key)
+            if horiz_entry is not None:
+                self._apply_morph_delta(armature, horiz_entry, delta_x, sensitivity)
+
+        # Apply vertical gesture (supports split: _pos/_neg for up/down)
+        vert_pos = controls.get(vert_key + '_pos')
+        vert_neg = controls.get(vert_key + '_neg')
+        if vert_pos or vert_neg:
+            self._apply_split_morph(armature, vert_pos, vert_neg, delta_y, sensitivity)
+        else:
+            vert_entry = controls.get(vert_key)
+            if vert_entry is not None:
+                self._apply_morph_delta(armature, vert_entry, delta_y, sensitivity)
+
+        # Force driver re-evaluation: tag armature so depsgraph knows properties changed
+        armature.update_tag()
+        context.view_layer.depsgraph.update()
+        context.area.tag_redraw()
+        refresh_3d_viewports(context)
+
+    def _apply_morph_delta(self, armature, entry, delta_pixels, sensitivity):
+        """Apply a morph value change based on mouse delta.
+
+        Args:
+            armature: Armature object with custom properties
+            entry: (prop_name, direction, scale) tuple
+            delta_pixels: Mouse movement in pixels from initial position
+            sensitivity: Base sensitivity (value per pixel)
+        """
+        prop_name, direction, scale = entry[0], entry[1], entry[2]
+
+        # Skip if property doesn't exist on armature
+        if prop_name not in armature and prop_name not in self._morph_initial_values:
+            return
+
+        # Calculate new value from initial + total delta
+        sign = 1.0 if direction == 'positive' else -1.0
+        initial = self._morph_initial_values.get(prop_name, 0.0)
+        new_value = initial + (delta_pixels * sensitivity * scale * sign)
+
+        # Clamp to valid range
+        try:
+            info = armature.id_properties_ui(prop_name).as_dict()
+            min_val = info.get('min', 0.0)
+            max_val = info.get('max', 1.0)
+        except Exception:
+            min_val, max_val = 0.0, 1.0
+
+        new_value = max(min_val, min(max_val, new_value))
+        armature[prop_name] = new_value
+
+    def _apply_split_morph(self, armature, pos_entry, neg_entry, delta_pixels, sensitivity):
+        """Apply split morph using virtual axis for smooth transitions.
+
+        Treats pos and neg as one continuous axis: positive delta activates
+        pos_entry, negative delta activates neg_entry. Smoothly transitions
+        through zero — if neg was at 0.3, dragging positive first decreases
+        neg to 0, then starts increasing pos.
+
+        Args:
+            armature: Armature object
+            pos_entry: (prop_name, direction, scale) for positive direction, or None
+            neg_entry: (prop_name, direction, scale) for negative direction, or None
+            delta_pixels: Mouse movement from initial position
+            sensitivity: Base sensitivity
+        """
+        pos_prop = pos_entry[0] if pos_entry else None
+        neg_prop = neg_entry[0] if neg_entry else None
+        pos_scale = pos_entry[2] if pos_entry else 1.0
+        neg_scale = neg_entry[2] if neg_entry else 1.0
+
+        # Get initial values at drag start
+        pos_initial = self._morph_initial_values.get(pos_prop, 0.0) if pos_prop else 0.0
+        neg_initial = self._morph_initial_values.get(neg_prop, 0.0) if neg_prop else 0.0
+
+        # Virtual axis: positive = pos property, negative = neg property
+        # If pos was 0 and neg was 0.3, virtual_initial = 0 - 0.3 = -0.3
+        virtual_initial = pos_initial - neg_initial
+        virtual_current = virtual_initial + delta_pixels * sensitivity
+
+        if virtual_current >= 0:
+            # Positive side: pos property active, neg zeroed
+            if pos_prop:
+                new_val = virtual_current * pos_scale
+                try:
+                    info = armature.id_properties_ui(pos_prop).as_dict()
+                    new_val = max(info.get('min', 0.0), min(info.get('max', 1.0), new_val))
+                except Exception:
+                    new_val = max(0.0, min(1.0, new_val))
+                armature[pos_prop] = new_val
+            if neg_prop:
+                armature[neg_prop] = 0.0
+        else:
+            # Negative side: neg property active, pos zeroed
+            if neg_prop:
+                new_val = -virtual_current * neg_scale
+                try:
+                    info = armature.id_properties_ui(neg_prop).as_dict()
+                    new_val = max(info.get('min', 0.0), min(info.get('max', 1.0), new_val))
+                except Exception:
+                    new_val = max(0.0, min(1.0, new_val))
+                armature[neg_prop] = new_val
+            if pos_prop:
+                armature[pos_prop] = 0.0
+
+    def end_morph(self, context, cancel=False):
+        """End morph drag and optionally keyframe."""
+        if not self._is_morphing:
+            return
+
+        armature = self._drag_armature
+
+        if cancel:
+            # Restore initial values
+            print(f"\n=== Canceling Morph Drag: {self._morph_cp_id} ===")
+            if armature:
+                for prop_name, initial_val in self._morph_initial_values.items():
+                    armature[prop_name] = initial_val
+        else:
+            # Store undo state
+            print(f"\n=== Ending Morph Drag: {self._morph_cp_id} ===")
+            self.store_morph_undo_state(context)
+
+            # Keyframe all changed morph properties
+            if armature:
+                settings = context.scene.posebridge_settings
+                if settings.auto_keyframe:
+                    frame = context.scene.frame_current
+                    for prop_name in self._morph_initial_values:
+                        if prop_name not in armature:
+                            print(f"  Skipping keyframe (property not found): {prop_name}")
+                            continue
+                        data_path = f'["{prop_name}"]'
+                        try:
+                            armature.keyframe_insert(data_path=data_path, frame=frame)
+                            val = armature.get(prop_name, 0.0)
+                            print(f"  Keyframed: {prop_name} = {val:.3f}")
+                        except Exception as e:
+                            print(f"  Keyframe failed for {prop_name}: {e}")
+
+        # Clear morph state
+        self._is_morphing = False
+        self._morph_controls = None
+        self._morph_initial_values = {}
+        self._morph_initial_mouse = None
+        self._morph_mouse_button = None
+        self._morph_cp_id = None
+        self._mouse_down_pos = None
+        self._accumulated_drag_distance = 0.0
+        self._last_detection_mouse_pos = None
+
+        # Update viewport
+        context.view_layer.update()
+        context.area.tag_redraw()
+        refresh_3d_viewports(context)
+        context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
+
+    def store_morph_undo_state(self, context):
+        """Store morph property values before keyframing (for Ctrl+Z)."""
+        if not self._drag_armature:
+            return
+
+        frame = context.scene.frame_current
+        morph_data = [
+            (prop_name, initial_val)
+            for prop_name, initial_val in self._morph_initial_values.items()
+        ]
+
+        undo_entry = {
+            'frame': frame,
+            'type': 'morph',
+            'morphs': morph_data,
+            'armature': self._drag_armature
+        }
+        self._undo_stack.append(undo_entry)
+        print(f"  Stored morph undo state: frame {frame}, {len(morph_data)} props")
+
     def pin_selected_bone_translation(self, context):
         """Pin translation of the currently active bone"""
         armature = context.active_object
@@ -5890,7 +6355,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         print(f"  Stored rotation undo state: frame {frame}, {len(bones_data)} bones")
 
     def undo_last_drag(self, context):
-        """Undo the last IK drag by restoring previous bone rotations"""
+        """Undo the last IK drag or morph by restoring previous values"""
         if not self._undo_stack:
             self.report({'INFO'}, "Nothing to undo")
             return
@@ -5898,9 +6363,23 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Pop the last undo entry
         undo_entry = self._undo_stack.pop()
         frame = undo_entry['frame']
-        bones_data = undo_entry['bones']
         armature = undo_entry['armature']
 
+        # Check if this is a morph undo entry
+        if undo_entry.get('type') == 'morph':
+            morph_data = undo_entry['morphs']
+            print(f"\n=== Undo Morph: Restoring {len(morph_data)} props at frame {frame} ===")
+            for prop_name, value in morph_data:
+                armature[prop_name] = value
+                armature.keyframe_insert(data_path=f'["{prop_name}"]', frame=frame)
+                print(f"  Restored: {prop_name} = {value:.3f}")
+            context.view_layer.update()
+            self.report({'INFO'}, f"Undone: Restored {len(morph_data)} morph values")
+            print(f"  ✓ Morph undo complete")
+            return
+
+        # Bone rotation undo (existing logic)
+        bones_data = undo_entry['bones']
         print(f"\n=== Undo: Restoring {len(bones_data)} bones at frame {frame} ===")
 
         # Restore bone rotations
@@ -6301,9 +6780,13 @@ def register():
     # Register DAZ Bone Select operator
     bpy.utils.register_class(VIEW3D_OT_daz_bone_select)
 
-    # Register PowerPose classes
-    bpy.utils.register_class(POSE_OT_daz_powerpose_control)
-    bpy.utils.register_class(VIEW3D_PT_daz_powerpose_main)
+    # Register Body Controls classes
+    bpy.utils.register_class(POSE_OT_body_reset)
+    bpy.utils.register_class(VIEW3D_PT_daz_body_controls)
+
+    # Register Face Controls classes
+    bpy.utils.register_class(POSE_OT_face_reset)
+    bpy.utils.register_class(VIEW3D_PT_daz_face_controls)
 
     # Register Clear IK Pose operator
     bpy.utils.register_class(POSE_OT_clear_ik_pose)
@@ -6329,14 +6812,18 @@ def register():
         )
 
         print("Registered DAZ Bone Select - Activate with Ctrl+Shift+D")
-        print("Registered PowerPose - Open N-panel > DAZ tab")
+        print("Registered Face Controls - Open N-panel > DAZ tab")
         print("Registered Clear IK Pose - Alt+Shift+R to reset pose with keyframes")
 
 
 def unregister():
-    # Unregister PowerPose classes
-    bpy.utils.unregister_class(VIEW3D_PT_daz_powerpose_main)
-    bpy.utils.unregister_class(POSE_OT_daz_powerpose_control)
+    # Unregister Face Controls classes
+    bpy.utils.unregister_class(VIEW3D_PT_daz_face_controls)
+    bpy.utils.unregister_class(POSE_OT_face_reset)
+
+    # Unregister Body Controls classes
+    bpy.utils.unregister_class(VIEW3D_PT_daz_body_controls)
+    bpy.utils.unregister_class(POSE_OT_body_reset)
 
     # Unregister Clear IK Pose operator
     bpy.utils.unregister_class(POSE_OT_clear_ik_pose)
@@ -6849,175 +7336,241 @@ def get_genesis8_control_points():
     return control_points
 
 
-class POSE_OT_daz_powerpose_control(bpy.types.Operator):
-    """Click and drag to rotate bone"""
-    bl_idname = "pose.daz_powerpose_control"
-    bl_label = "PowerPose Control"
+# ============================================================================
+# Face Controls — N-Panel operators and panel (replaces old PowerPose)
+# ============================================================================
+
+from daz_shared_utils import FACE_EXPRESSION_SLIDERS, FACE_VISEME_SLIDERS
+
+
+def _get_posebridge_armature(context):
+    """Get the PoseBridge armature (from settings or active object)."""
+    settings = context.scene.posebridge_settings
+    if settings.active_armature_name:
+        arm = bpy.data.objects.get(settings.active_armature_name)
+        if arm and arm.type == 'ARMATURE':
+            return arm
+    obj = context.active_object
+    if obj and obj.type == 'ARMATURE':
+        return obj
+    if obj and obj.type == 'MESH':
+        return obj.find_armature()
+    return None
+
+
+class POSE_OT_body_reset(bpy.types.Operator):
+    """Reset all bone rotations/locations to rest pose"""
+    bl_idname = "pose.body_reset"
+    bl_label = "Reset Pose"
     bl_options = {'REGISTER', 'UNDO'}
 
-    bone_name: bpy.props.StringProperty()
-    control_point_id: bpy.props.StringProperty()
-    action: bpy.props.StringProperty(default='bend')  # 'bend' or 'twist'
-
-    def invoke(self, context, event):
-        """Start rotation operation"""
-        # Action is now set via property when operator is called
-        # No need to detect mouse button
-
-        # Get active armature
-        self.armature = context.active_object
-        if not self.armature or self.armature.type != 'ARMATURE':
-            self.report({'WARNING'}, "No armature selected")
+    def execute(self, context):
+        armature = _get_posebridge_armature(context)
+        if not armature:
+            self.report({'WARNING'}, "No armature found")
             return {'CANCELLED'}
 
-        # Ensure we're in pose mode
-        if context.mode != 'POSE':
-            bpy.ops.object.mode_set(mode='POSE')
+        # Snapshot current state for PoseBridge's internal undo stack
+        frame = context.scene.frame_current
+        bones_snapshot = []
+        for pose_bone in armature.pose.bones:
+            if pose_bone.rotation_mode == 'QUATERNION':
+                rot = pose_bone.rotation_quaternion.copy()
+            else:
+                rot = pose_bone.rotation_euler.copy()
+            bones_snapshot.append((pose_bone.name, rot, pose_bone.rotation_mode))
 
-        # Get the bone
-        if self.bone_name not in self.armature.pose.bones:
-            self.report({'WARNING'}, f"Bone '{self.bone_name}' not found")
-            return {'CANCELLED'}
+        VIEW3D_OT_daz_bone_select._undo_stack.append({
+            'type': 'body_reset',
+            'frame': frame,
+            'bones': bones_snapshot,
+            'armature': armature,
+        })
 
-        self.bone = self.armature.pose.bones[self.bone_name]
+        # Reset all bones
+        count = 0
+        for pose_bone in armature.pose.bones:
+            changed = False
 
-        # Store initial state
-        self.initial_mouse = (event.mouse_x, event.mouse_y)
+            if pose_bone.rotation_mode == 'QUATERNION':
+                if pose_bone.rotation_quaternion != Quaternion((1, 0, 0, 0)):
+                    pose_bone.rotation_quaternion = Quaternion((1, 0, 0, 0))
+                    changed = True
+            elif pose_bone.rotation_mode == 'AXIS_ANGLE':
+                if tuple(pose_bone.rotation_axis_angle) != (0.0, 0.0, 1.0, 0.0):
+                    pose_bone.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+                    changed = True
+            else:
+                if tuple(pose_bone.rotation_euler) != (0.0, 0.0, 0.0):
+                    pose_bone.rotation_euler = (0.0, 0.0, 0.0)
+                    changed = True
 
-        # Force quaternion rotation mode for stability
-        self.bone.rotation_mode = 'QUATERNION'
-        self.initial_rotation = self.bone.rotation_quaternion.copy()
+            if tuple(pose_bone.location) != (0.0, 0.0, 0.0):
+                pose_bone.location = (0.0, 0.0, 0.0)
+                changed = True
 
-        # Determine rotation axis
-        if self.action == 'bend':
-            self.rotation_axis = get_bend_axis(self.bone)
-        else:  # twist
-            self.rotation_axis = get_twist_axis(self.bone)
+            if tuple(pose_bone.scale) != (1.0, 1.0, 1.0):
+                pose_bone.scale = (1.0, 1.0, 1.0)
+                changed = True
 
-        print(f"\n=== PowerPose: {self.bone_name} ===")
-        print(f"  Action: {self.action}")
-        print(f"  Axis: {self.rotation_axis}")
+            if changed:
+                count += 1
 
-        # Enter modal mode
-        context.window_manager.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
+        # Keyframe if auto-keyframe is on
+        settings = context.scene.posebridge_settings
+        if settings.auto_keyframe:
+            for pose_bone in armature.pose.bones:
+                try:
+                    pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                    pose_bone.keyframe_insert(data_path="location", frame=frame)
+                except Exception:
+                    pass
 
-    def modal(self, context, event):
-        """Handle mouse movement and apply rotation"""
-        if event.type == 'MOUSEMOVE':
-            # Calculate mouse delta
-            delta_x = event.mouse_x - self.initial_mouse[0]
-            delta_y = event.mouse_y - self.initial_mouse[1]
-
-            # Apply rotation based on delta
-            # X axis uses vertical drag, Y/Z use horizontal drag
-            delta = delta_y if self.rotation_axis == 'X' else delta_x
-            apply_rotation_from_delta(
-                self.bone,
-                self.initial_rotation,
-                self.rotation_axis,
-                delta,
-                sensitivity=0.01
-            )
-
-            # Update viewport
-            context.area.tag_redraw()
-            refresh_3d_viewports(context)
-            return {'RUNNING_MODAL'}
-
-        elif event.type in {'LEFTMOUSE', 'RIGHTMOUSE'} and event.value == 'RELEASE':
-            # Keyframe the rotation
-            self.bone.keyframe_insert(data_path="rotation_quaternion")
-            print(f"  ✓ Keyframed rotation: {self.bone.rotation_quaternion}")
-            return {'FINISHED'}
-
-        elif event.type == 'ESC':
-            # Restore initial rotation
-            self.bone.rotation_quaternion = self.initial_rotation
-            context.area.tag_redraw()
-            refresh_3d_viewports(context)
-            return {'CANCELLED'}
-
-        return {'RUNNING_MODAL'}
+        context.view_layer.update()
+        context.area.tag_redraw()
+        refresh_3d_viewports(context)
+        self.report({'INFO'}, f"Reset {count} bones to rest pose")
+        return {'FINISHED'}
 
 
-class VIEW3D_PT_daz_powerpose_main(bpy.types.Panel):
-    """Main PowerPose panel with full body controls"""
-    bl_label = "PowerPose"
-    bl_idname = "VIEW3D_PT_daz_powerpose_main"
+class VIEW3D_PT_daz_body_controls(bpy.types.Panel):
+    """Body controls panel with reset and future morph/shapekey slots"""
+    bl_label = "Body Controls"
+    bl_idname = "VIEW3D_PT_daz_body_controls"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'DAZ'
 
     def draw(self, context):
         layout = self.layout
+        armature = _get_posebridge_armature(context)
 
-        # Show active armature
-        if context.active_object and context.active_object.type == 'ARMATURE':
-            armature = context.active_object
+        if not armature:
+            layout.label(text="No armature found", icon='ERROR')
+            return
 
-            # Header
-            box = layout.box()
-            box.label(text=f"Target: {armature.name}", icon='ARMATURE_DATA')
+        # === RESET ===
+        row = layout.row()
+        row.scale_y = 1.4
+        row.operator("pose.body_reset", text="Reset Pose", icon='LOOP_BACK')
 
-            # Instructions
-            layout.label(text="Click Bend or Twist, then drag", icon='INFO')
 
-            # Get control points
-            control_points = get_genesis8_control_points()
+class POSE_OT_face_reset(bpy.types.Operator):
+    """Reset all FACS morph properties to zero"""
+    bl_idname = "pose.face_reset"
+    bl_label = "Reset Face"
+    bl_options = {'REGISTER', 'UNDO'}
 
-            # Group control points by body region
-            groups = {}
-            for cp in control_points:
-                group = cp['group']
-                if group not in groups:
-                    groups[group] = []
-                groups[group].append(cp)
+    def execute(self, context):
+        armature = _get_posebridge_armature(context)
+        if not armature:
+            self.report({'WARNING'}, "No armature found")
+            return {'CANCELLED'}
 
-            # Draw control points by group
-            for group_name in ['head', 'arms', 'torso', 'legs']:
-                if group_name not in groups:
+        # Snapshot current FACS values for undo before resetting
+        frame = context.scene.frame_current
+        morph_snapshot = []
+        for prop_name in list(armature.keys()):
+            if isinstance(prop_name, str) and prop_name.startswith('facs_'):
+                current = armature.get(prop_name, 0.0)
+                if isinstance(current, bool):
                     continue
+                if isinstance(current, (int, float)) and current != 0.0:
+                    morph_snapshot.append((prop_name, current))
 
-                box = layout.box()
-                box.label(text=group_name.upper(), icon='DOT')
+        if morph_snapshot:
+            VIEW3D_OT_daz_bone_select._undo_stack.append({
+                'type': 'morph',
+                'frame': frame,
+                'morphs': morph_snapshot,
+                'armature': armature,
+            })
 
-                for cp in groups[group_name]:
-                    # Skip multi-bone group controls (no single bone_name to show)
-                    if 'bone_name' not in cp:
-                        continue
-                    # Check if bone exists
-                    if cp['bone_name'] not in armature.pose.bones:
-                        continue
+        # Reset all FACS to 0
+        count = 0
+        for prop_name in list(armature.keys()):
+            if isinstance(prop_name, str) and prop_name.startswith('facs_'):
+                current = armature.get(prop_name, 0.0)
+                if isinstance(current, bool):
+                    continue  # Skip boolean properties (e.g. facs_ctrl_EyeLookAuto)
+                if isinstance(current, (int, float)) and current != 0.0:
+                    armature[prop_name] = 0.0
+                    count += 1
 
-                    # Create row with bone label and two buttons
-                    row = box.row(align=True)
-                    row.label(text=cp['label'])
+        # Also reset all expression/viseme sliders to 0
+        settings = context.scene.posebridge_settings
+        for prop_id, _ in FACE_EXPRESSION_SLIDERS:
+            if getattr(settings, prop_id, 0.0) != 0.0:
+                setattr(settings, prop_id, 0.0)
+        for prop_id, _ in FACE_VISEME_SLIDERS:
+            if getattr(settings, prop_id, 0.0) != 0.0:
+                setattr(settings, prop_id, 0.0)
 
-                    # Bend button
-                    op_bend = row.operator(
-                        "pose.daz_powerpose_control",
-                        text="Bend",
-                        icon='LOOP_BACK'
-                    )
-                    op_bend.bone_name = cp['bone_name']
-                    op_bend.control_point_id = cp['id']
-                    op_bend.action = 'bend'
+        # Trigger depsgraph update
+        armature.update_tag()
+        context.view_layer.depsgraph.update()
 
-                    # Twist button
-                    op_twist = row.operator(
-                        "pose.daz_powerpose_control",
-                        text="Twist",
-                        icon='FILE_REFRESH'
-                    )
-                    op_twist.bone_name = cp['bone_name']
-                    op_twist.control_point_id = cp['id']
-                    op_twist.action = 'twist'
+        # Keyframe if auto-keyframe is on
+        if settings.auto_keyframe:
+            frame = context.scene.frame_current
+            for prop_name in armature.keys():
+                if isinstance(prop_name, str) and prop_name.startswith('facs_'):
+                    try:
+                        armature.keyframe_insert(data_path=f'["{prop_name}"]', frame=frame)
+                    except Exception:
+                        pass
 
-        else:
-            # No armature selected
-            layout.label(text="No armature selected", icon='ERROR')
-            layout.label(text="Select an armature in Pose Mode")
+        context.area.tag_redraw()
+        refresh_3d_viewports(context)
+        self.report({'INFO'}, f"Reset {count} FACS properties to 0")
+        return {'FINISHED'}
+
+
+class VIEW3D_PT_daz_face_controls(bpy.types.Panel):
+    """Face controls panel with reset, expression sliders, and viseme sliders"""
+    bl_label = "Face Controls"
+    bl_idname = "VIEW3D_PT_daz_face_controls"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'DAZ'
+
+    def draw(self, context):
+        layout = self.layout
+        armature = _get_posebridge_armature(context)
+
+        if not armature:
+            layout.label(text="No armature found", icon='ERROR')
+            return
+
+        # Check if FACS properties exist
+        has_facs = any(k.startswith('facs_') for k in armature.keys() if isinstance(k, str))
+        if not has_facs:
+            layout.label(text="No FACS morphs loaded", icon='INFO')
+            layout.label(text="Import morphs via Diffeomorphic")
+            return
+
+        settings = context.scene.posebridge_settings
+
+        # === RESET ===
+        row = layout.row()
+        row.scale_y = 1.4
+        row.operator("pose.face_reset", text="Reset Face", icon='LOOP_BACK')
+
+        layout.separator()
+
+        # === EXPRESSION SLIDERS ===
+        box = layout.box()
+        box.label(text="Expressions", icon='MONKEY')
+        for prop_id, label in FACE_EXPRESSION_SLIDERS:
+            box.prop(settings, prop_id, text=label, slider=True)
+
+        layout.separator()
+
+        # === VISEME SLIDERS ===
+        box = layout.box()
+        box.label(text="Visemes", icon='PLAY_SOUND')
+        for prop_id, label in FACE_VISEME_SLIDERS:
+            box.prop(settings, prop_id, text=label, slider=True)
 
 
 # ==================================================================

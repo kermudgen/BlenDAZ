@@ -115,6 +115,26 @@ class PoseBridgeDrawHandler:
         # Get active panel view
         active_panel = settings.active_panel
 
+        # Face CPs live on the actual character (not in offset space),
+        # so only draw them in a viewport that is in camera view through PB_Camera_Face.
+        if active_panel == 'face':
+            if rv3d.view_perspective != 'CAMERA':
+                return
+            space = context.space_data
+            # Local camera override, or fall back to scene camera
+            cam = space.camera if space.camera else context.scene.camera
+            if not cam or cam.name != 'PB_Camera_Face':
+                return
+
+        # For face CPs, precompute head bone's current world matrix (bone-local → world)
+        face_head_matrix = None
+        if active_panel == 'face':
+            armature = bpy.data.objects.get(settings.active_armature_name)
+            if armature and armature.type == 'ARMATURE':
+                head_pbone = armature.pose.bones.get('head')
+                if head_pbone:
+                    face_head_matrix = armature.matrix_world @ head_pbone.matrix
+
         # Draw each fixed control point that matches the active panel
         for cp in fixed_control_points:
             # Filter by panel view - body control points have empty panel_view (legacy)
@@ -126,6 +146,10 @@ class PoseBridgeDrawHandler:
             # Get fixed 3D position (from T-pose, with Z offset already applied)
             fixed_pos_3d = Vector(cp.position_3d_fixed)
 
+            # Face CPs are stored in head-bone-local space — transform to current world
+            if cp_panel == 'face' and face_head_matrix:
+                fixed_pos_3d = face_head_matrix @ fixed_pos_3d
+
             # Project fixed 3D position to 2D viewport coordinates
             pos_2d = view3d_utils.location_3d_to_region_2d(
                 region,
@@ -136,11 +160,19 @@ class PoseBridgeDrawHandler:
             if pos_2d is None:
                 continue  # Bone is behind camera
 
-            # Determine color (yellow if hovered, cyan otherwise)
-            # For multi-bone controls, check against the control point ID
-            check_id = cp.id if cp.control_type == 'multi' else bone_name
+            # Determine color based on hover and interaction mode
+            # For multi-bone and morph controls, check against CP id; single rotation uses bone_name
+            if cp.control_type == 'multi' or cp.interaction_mode == 'morph':
+                check_id = cp.id
+            else:
+                check_id = bone_name
             is_hovered = (PoseBridgeDrawHandler._hovered_control_point == check_id)
-            color = (1.0, 1.0, 0.0, 1.0) if is_hovered else (0.0, 0.8, 1.0, 1.0)  # Yellow : Cyan
+            if is_hovered:
+                color = (1.0, 1.0, 0.0, 1.0)  # Yellow when hovered
+            elif cp.interaction_mode == 'morph':
+                color = (1.0, 0.5, 0.8, 1.0)  # Pink for morph CPs (face)
+            else:
+                color = (0.0, 0.8, 1.0, 1.0)  # Cyan for rotation CPs (body/hands)
 
             # Draw control point with appropriate shape
             if cp.shape == 'square':

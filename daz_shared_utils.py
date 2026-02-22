@@ -880,6 +880,309 @@ def get_group_controls(group_id):
     return {}
 
 
+def get_face_morph_controls(cp_id):
+    """
+    Look up the morph controls dict for a face control point by its ID.
+    Static lookup — no imports or generation needed.
+
+    Returns:
+        dict with control entries, or None if cp_id not found.
+        Each entry is None or (prop_name, direction, scale) tuple.
+        Supports split keys (_pos/_neg) for directional controls.
+    """
+    return FACE_MORPH_CONTROLS.get(cp_id, None)
+
+
+# Static morph controls mapping — single source of truth for all face CP behaviors.
+# Format: (property_name, direction, scale)
+#   direction: 'positive' = drag up/right increases value
+#   Split keys: lmb_vert_pos/neg = separate props for drag up vs down
+FACE_MORPH_CONTROLS = {
+    # === BROW: combined inner brow (up = raise, down = furrow) ===
+    'face_lBrowInner': {
+        'lmb_vert_pos': ('facs_ctrl_BrowInnerUp', 'positive', 1.0),
+        'lmb_vert_neg': ('facs_ctrl_BrowDown', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert_pos': ('facs_bs_BrowInnerUpLeft_div2', 'positive', 1.0),
+        'rmb_vert_neg': ('facs_BrowDownLeft', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rBrowInner': {
+        'lmb_vert_pos': ('facs_ctrl_BrowInnerUp', 'positive', 1.0),
+        'lmb_vert_neg': ('facs_ctrl_BrowDown', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert_pos': ('facs_bs_BrowInnerUpRight_div2', 'positive', 1.0),
+        'rmb_vert_neg': ('facs_BrowDownRight', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === BROW OUTER ===
+    'face_lBrowOuterUp': {
+        'lmb_vert': ('facs_ctrl_BrowUp', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_BrowOuterUpLeft', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rBrowOuterUp': {
+        'lmb_vert': ('facs_ctrl_BrowUp', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_BrowOuterUpRight', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === EYE: combined (up = wide, down = blink) ===
+    'face_lEye': {
+        'lmb_vert_pos': ('facs_ctrl_EyeWide', 'positive', 1.0),
+        'lmb_vert_neg': ('facs_ctrl_EyesBlink', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert_pos': ('facs_jnt_EyesWideLeft', 'positive', 1.0),
+        'rmb_vert_neg': ('facs_jnt_EyeBlinkLeft', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rEye': {
+        'lmb_vert_pos': ('facs_ctrl_EyeWide', 'positive', 1.0),
+        'lmb_vert_neg': ('facs_ctrl_EyesBlink', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert_pos': ('facs_jnt_EyesWideRight', 'positive', 1.0),
+        'rmb_vert_neg': ('facs_jnt_EyeBlinkRight', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === SQUINT ===
+    'face_lSquint': {
+        'lmb_vert': ('facs_ctrl_EyesSquint', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_EyeSquintLeft_div2', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rSquint': {
+        'lmb_vert': ('facs_ctrl_EyesSquint', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_EyeSquintRight_div2', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === NOSE ===
+    'face_lNoseSneer': {
+        'lmb_vert': ('facs_ctrl_NoseSneer', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_NoseSneerLeft_div2', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rNoseSneer': {
+        'lmb_vert': ('facs_ctrl_NoseSneer', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_NoseSneerRight_div2', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === CHEEK ===
+    'face_lCheekPuff': {
+        'lmb_vert': None,
+        'lmb_horiz': ('facs_ctrl_CheekPuff', 'positive', 1.0),
+        'rmb_vert': None,
+        'rmb_horiz': ('facs_bs_CheekPuffLeft_div2', 'positive', 1.0),
+    },
+    'face_rCheekPuff': {
+        'lmb_vert': None,
+        'lmb_horiz': ('facs_ctrl_CheekPuff', 'negative', 1.0),
+        'rmb_vert': None,
+        'rmb_horiz': ('facs_bs_CheekPuffRight_div2', 'negative', 1.0),
+    },
+    # === MOUTH CORNERS: combined (up = smile, down = frown, horiz = stretch) ===
+    'face_lMouthCorner': {
+        'lmb_vert_pos': ('facs_ctrl_MouthSmile', 'positive', 1.0),
+        'lmb_vert_neg': ('facs_ctrl_MouthFrown', 'positive', 1.0),
+        'lmb_horiz': ('facs_ctrl_MouthStretch', 'positive', 1.0),
+        'rmb_vert_pos': ('facs_bs_MouthSmileLeft_div2', 'positive', 1.0),
+        'rmb_vert_neg': ('facs_bs_MouthFrownLeft_div2', 'positive', 1.0),
+        'rmb_horiz': ('facs_bs_MouthStretchLeft_div2', 'positive', 1.0),
+    },
+    'face_rMouthCorner': {
+        'lmb_vert_pos': ('facs_ctrl_MouthSmile', 'positive', 1.0),
+        'lmb_vert_neg': ('facs_ctrl_MouthFrown', 'positive', 1.0),
+        'lmb_horiz': ('facs_ctrl_MouthStretch', 'negative', 1.0),
+        'rmb_vert_pos': ('facs_bs_MouthSmileRight_div2', 'positive', 1.0),
+        'rmb_vert_neg': ('facs_bs_MouthFrownRight_div2', 'positive', 1.0),
+        'rmb_horiz': ('facs_bs_MouthStretchRight_div2', 'negative', 1.0),
+    },
+    # === MOUTH UPPER UP (at LipUpperOuter bones) ===
+    'face_lMouthUpperUp': {
+        'lmb_vert': ('facs_ctrl_MouthUpperUp', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_MouthUpperUpLeft_div2', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rMouthUpperUp': {
+        'lmb_vert': ('facs_ctrl_MouthUpperUp', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_MouthUpperUpRight_div2', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === MOUTH LOWER DOWN (at LipLowerOuter bones) ===
+    'face_lMouthLowerDown': {
+        'lmb_vert': ('facs_ctrl_MouthLowerDown', 'negative', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_MouthLowerDownLeft_div2', 'negative', 1.0),
+        'rmb_horiz': None,
+    },
+    'face_rMouthLowerDown': {
+        'lmb_vert': ('facs_ctrl_MouthLowerDown', 'negative', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_bs_MouthLowerDownRight_div2', 'negative', 1.0),
+        'rmb_horiz': None,
+    },
+    # === MOUTH UPPER ===
+    'face_mouthUpper': {
+        'lmb_vert': ('facs_bs_MouthPucker_div2', 'positive', 1.0),
+        'lmb_horiz': ('facs_bs_MouthFunnel_div2', 'positive', 1.0),
+        'rmb_vert': ('facs_bs_MouthShrugUpper_div2', 'positive', 1.0),
+        'rmb_horiz': ('facs_bs_MouthRollUpper_div2', 'positive', 1.0),
+    },
+    # === MOUTH LOWER ===
+    'face_mouthLower': {
+        'lmb_vert': ('facs_bs_MouthClose_div2', 'positive', 1.0),
+        'lmb_horiz': ('facs_bs_MouthRollLower_div2', 'positive', 1.0),
+        'rmb_vert': ('facs_bs_MouthShrugLower_div2', 'negative', 1.0),
+        'rmb_horiz': None,
+    },
+    # === JAW ===
+    'face_jaw': {
+        'lmb_vert': ('facs_jnt_JawOpen', 'negative', 1.0),
+        'lmb_horiz': ('facs_jnt_JawLeft', 'positive', 1.0),
+        'rmb_vert': ('facs_jnt_JawForward', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+    # === TONGUE ===
+    'face_tongue': {
+        'lmb_vert': ('facs_bs_TongueOut', 'positive', 1.0),
+        'lmb_horiz': None,
+        'rmb_vert': ('facs_jnt_TongueUp', 'positive', 1.0),
+        'rmb_horiz': None,
+    },
+}
+
+
+# ============================================================================
+# Face Expression & Viseme Presets
+# Each preset maps FACS property names to their max values (at slider = 1.0).
+# Slider intensity scales all values proportionally.
+# ============================================================================
+
+FACE_EXPRESSION_PRESETS = {
+    # --- Expressions ---
+    'smile': {
+        'facs_ctrl_MouthSmile': 0.8,
+        'facs_ctrl_EyesSquint': 0.3,
+        'facs_ctrl_CheekPuff': 0.15,
+    },
+    'frown': {
+        'facs_ctrl_MouthFrown': 0.7,
+        'facs_ctrl_BrowDown': 0.5,
+    },
+    'surprise': {
+        'facs_ctrl_EyeWide': 0.8,
+        'facs_ctrl_BrowInnerUp': 0.7,
+        'facs_ctrl_BrowUp': 0.5,
+        'facs_jnt_JawOpen': 0.4,
+    },
+    'anger': {
+        'facs_ctrl_BrowDown': 0.8,
+        'facs_ctrl_EyesSquint': 0.4,
+        'facs_ctrl_NoseSneer': 0.5,
+        'facs_ctrl_MouthFrown': 0.3,
+        'facs_jnt_JawOpen': 0.15,
+    },
+    'disgust': {
+        'facs_ctrl_NoseSneer': 0.8,
+        'facs_ctrl_BrowDown': 0.3,
+        'facs_ctrl_MouthUpperUp': 0.5,
+        'facs_ctrl_MouthFrown': 0.4,
+    },
+    'fear': {
+        'facs_ctrl_EyeWide': 0.7,
+        'facs_ctrl_BrowInnerUp': 0.8,
+        'facs_ctrl_MouthStretch': 0.4,
+        'facs_jnt_JawOpen': 0.25,
+    },
+    'sadness': {
+        'facs_ctrl_BrowInnerUp': 0.6,
+        'facs_ctrl_MouthFrown': 0.5,
+        'facs_ctrl_EyesBlink': 0.2,
+    },
+    'wink_l': {
+        'facs_jnt_EyeBlinkLeft': 0.9,
+        'facs_ctrl_MouthSmile': 0.3,
+    },
+    'wink_r': {
+        'facs_jnt_EyeBlinkRight': 0.9,
+        'facs_ctrl_MouthSmile': 0.3,
+    },
+    # --- Visemes ---
+    'vis_AA': {
+        'facs_jnt_JawOpen': 0.55,
+        'facs_ctrl_MouthStretch': 0.2,
+    },
+    'vis_EE': {
+        'facs_ctrl_MouthSmile': 0.5,
+        'facs_jnt_JawOpen': 0.15,
+        'facs_ctrl_MouthStretch': 0.3,
+    },
+    'vis_IH': {
+        'facs_ctrl_MouthSmile': 0.3,
+        'facs_jnt_JawOpen': 0.2,
+    },
+    'vis_OH': {
+        'facs_jnt_JawOpen': 0.4,
+        'facs_bs_MouthPucker_div2': 0.5,
+        'facs_bs_MouthFunnel_div2': 0.3,
+    },
+    'vis_OO': {
+        'facs_bs_MouthPucker_div2': 0.8,
+        'facs_bs_MouthFunnel_div2': 0.5,
+        'facs_jnt_JawOpen': 0.15,
+    },
+    'vis_FV': {
+        'facs_ctrl_MouthLowerDown': 0.3,
+        'facs_bs_MouthRollLower_div2': 0.4,
+        'facs_ctrl_MouthUpperUp': 0.1,
+    },
+    'vis_TH': {
+        'facs_jnt_JawOpen': 0.15,
+        'facs_bs_TongueOut': 0.3,
+    },
+    'vis_MM': {
+        'facs_bs_MouthClose_div2': 0.7,
+        'facs_bs_MouthPucker_div2': 0.2,
+    },
+    'vis_CH': {
+        'facs_jnt_JawOpen': 0.2,
+        'facs_ctrl_MouthSmile': 0.2,
+        'facs_ctrl_MouthStretch': 0.3,
+    },
+}
+
+# Ordered list for UI drawing: (property_id, display_label)
+FACE_EXPRESSION_SLIDERS = [
+    ('expr_smile', 'Smile'),
+    ('expr_frown', 'Frown'),
+    ('expr_surprise', 'Surprise'),
+    ('expr_anger', 'Anger'),
+    ('expr_disgust', 'Disgust'),
+    ('expr_fear', 'Fear'),
+    ('expr_sadness', 'Sadness'),
+    ('expr_wink_l', 'Wink L'),
+    ('expr_wink_r', 'Wink R'),
+]
+
+FACE_VISEME_SLIDERS = [
+    ('vis_AA', 'AA'),
+    ('vis_EE', 'EE'),
+    ('vis_IH', 'IH'),
+    ('vis_OH', 'OH'),
+    ('vis_OO', 'OO'),
+    ('vis_FV', 'FV'),
+    ('vis_TH', 'TH'),
+    ('vis_MM', 'MM'),
+    ('vis_CH', 'CH'),
+]
+
+
 def get_rotation_axis_from_control(bone_name, mouse_button, is_horizontal):
     """
     Fast lookup for rotation axis based on bone, button, and direction.

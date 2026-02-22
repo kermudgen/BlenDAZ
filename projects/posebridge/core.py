@@ -1,6 +1,8 @@
 """PoseBridge Core - PropertyGroup definitions and data structures"""
 
 import bpy
+import sys
+import os
 from bpy.types import PropertyGroup
 from bpy.props import (
     BoolProperty,
@@ -11,6 +13,58 @@ from bpy.props import (
     FloatVectorProperty,
     PointerProperty,
 )
+
+# Ensure addon root is importable
+_addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _addon_dir not in sys.path:
+    sys.path.insert(0, _addon_dir)
+
+from daz_shared_utils import FACE_EXPRESSION_PRESETS
+
+
+# ============================================================================
+# Expression/Viseme Slider Update Callback
+# ============================================================================
+
+def _apply_expression_preset(self, context, preset_name):
+    """Update callback: apply a face preset scaled by the slider value."""
+    preset_data = FACE_EXPRESSION_PRESETS.get(preset_name)
+    if not preset_data:
+        return
+
+    # Get armature
+    settings = context.scene.posebridge_settings
+    armature = None
+    if settings.active_armature_name:
+        armature = bpy.data.objects.get(settings.active_armature_name)
+    if not armature:
+        obj = context.active_object
+        if obj and obj.type == 'ARMATURE':
+            armature = obj
+        elif obj and obj.type == 'MESH':
+            armature = obj.find_armature()
+    if not armature:
+        return
+
+    # Get slider value (the property that just changed)
+    slider_value = getattr(self, f'expr_{preset_name}', 0.0) if not preset_name.startswith('vis_') else getattr(self, preset_name, 0.0)
+
+    # Apply preset values scaled by slider
+    for prop_name, max_value in preset_data.items():
+        if prop_name in armature:
+            armature[prop_name] = slider_value * max_value
+
+    # Trigger depsgraph update
+    armature.update_tag()
+    context.view_layer.depsgraph.update()
+    context.area.tag_redraw()
+
+
+def _make_expr_update(preset_name):
+    """Factory: create an update callback for a specific preset."""
+    def _update(self, context):
+        _apply_expression_preset(self, context, preset_name)
+    return _update
 
 # ============================================================================
 # PropertyGroup Classes
@@ -91,6 +145,16 @@ class PoseBridgeControlPoint(PropertyGroup):
         name="Panel View",
         description="Which panel this control point belongs to",
         default='body'
+    )
+
+    interaction_mode: EnumProperty(
+        name="Interaction Mode",
+        description="How this control point drives changes",
+        items=[
+            ('rotation', 'Rotation', 'Drive bone rotation (body/hands)'),
+            ('morph', 'Morph', 'Drive FACS morph property value (face)'),
+        ],
+        default='rotation'
     )
 
 
@@ -187,11 +251,55 @@ class PoseBridgeSettings(PropertyGroup):
         default='body'
     )
 
+    morph_sensitivity: FloatProperty(
+        name="Morph Sensitivity",
+        description="Morph value change per pixel of mouse movement",
+        default=0.005,
+        min=0.001,
+        max=0.02,
+        step=0.001,
+        precision=4
+    )
+
     control_points_fixed: CollectionProperty(
         type=PoseBridgeControlPoint,
         name="Fixed Control Points",
         description="Control points with fixed T-pose positions"
     )
+
+
+# Add expression/viseme slider properties dynamically
+# Each is a 0-1 FloatProperty with an update callback that scales the preset
+_EXPR_SLIDER_DEFS = [
+    ('expr_smile', 'Smile', 'smile'),
+    ('expr_frown', 'Frown', 'frown'),
+    ('expr_surprise', 'Surprise', 'surprise'),
+    ('expr_anger', 'Anger', 'anger'),
+    ('expr_disgust', 'Disgust', 'disgust'),
+    ('expr_fear', 'Fear', 'fear'),
+    ('expr_sadness', 'Sadness', 'sadness'),
+    ('expr_wink_l', 'Wink L', 'wink_l'),
+    ('expr_wink_r', 'Wink R', 'wink_r'),
+    ('vis_AA', 'AA', 'vis_AA'),
+    ('vis_EE', 'EE', 'vis_EE'),
+    ('vis_IH', 'IH', 'vis_IH'),
+    ('vis_OH', 'OH', 'vis_OH'),
+    ('vis_OO', 'OO', 'vis_OO'),
+    ('vis_FV', 'FV', 'vis_FV'),
+    ('vis_TH', 'TH', 'vis_TH'),
+    ('vis_MM', 'MM', 'vis_MM'),
+    ('vis_CH', 'CH', 'vis_CH'),
+]
+
+for _prop_id, _label, _preset_name in _EXPR_SLIDER_DEFS:
+    PoseBridgeSettings.__annotations__[_prop_id] = FloatProperty(
+        name=_label,
+        description=f"Intensity of {_label} expression",
+        default=0.0, min=0.0, max=1.0,
+        step=1, precision=2,
+        update=_make_expr_update(_preset_name),
+    )
+
 
 # ============================================================================
 # Helper Functions

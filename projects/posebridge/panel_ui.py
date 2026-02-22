@@ -68,6 +68,7 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         # Toggle object visibility
         show_body  = (self.view == 'body')
         show_hands = (self.view == 'hands')
+        show_face  = (self.view == 'face')
 
         for obj in context.scene.objects:
             name = obj.name
@@ -75,6 +76,13 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
                 obj.hide_viewport = not show_body
             elif name in self.HANDS_OBJECTS:
                 obj.hide_viewport = not show_hands
+
+        # Face panel: hide all PB_ objects (standin, outlines, hand meshes)
+        # Character mesh stays visible for live face preview
+        if show_face:
+            for obj in context.scene.objects:
+                if obj.name.startswith('PB_') and obj.type != 'CAMERA':
+                    obj.hide_viewport = True
 
         context.area.tag_redraw()
 
@@ -113,7 +121,11 @@ class VIEW3D_PT_posebridge_main(Panel):
         if cp_count > 0:
             body_count = sum(1 for cp in settings.control_points_fixed if not cp.panel_view or cp.panel_view == 'body')
             hand_count = sum(1 for cp in settings.control_points_fixed if cp.panel_view == 'hands')
-            layout.label(text=f"Control Points: {body_count} body, {hand_count} hands")
+            face_count = sum(1 for cp in settings.control_points_fixed if cp.panel_view == 'face')
+            parts = [f"{body_count} body", f"{hand_count} hands"]
+            if face_count > 0:
+                parts.append(f"{face_count} face")
+            layout.label(text=f"Control Points: {', '.join(parts)}")
 
 
 class VIEW3D_PT_posebridge_panel_selector(Panel):
@@ -142,10 +154,9 @@ class VIEW3D_PT_posebridge_panel_selector(Panel):
                          depress=(settings.active_panel == 'hands'))
         op.view = 'hands'
 
-        # Face button (disabled for now)
-        sub = row.row(align=True)
-        sub.enabled = False
-        op = sub.operator("posebridge.set_panel_view", text="Face")
+        # Face button
+        op = row.operator("posebridge.set_panel_view", text="Face",
+                         depress=(settings.active_panel == 'face'))
         op.view = 'face'
 
         # Show current view
@@ -172,8 +183,9 @@ class VIEW3D_PT_posebridge_settings(Panel):
 
         layout.separator()
 
-        # Sensitivity slider
+        # Sensitivity sliders
         layout.prop(settings, "sensitivity", text="Rotation Sensitivity", slider=True)
+        layout.prop(settings, "morph_sensitivity", text="Morph Sensitivity", slider=True)
 
         layout.separator()
 
