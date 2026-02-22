@@ -438,6 +438,186 @@ For merged geografts, the mesh polygon count changes, invalidating face group ma
 
 ---
 
+### Legs Group: Knee Bend Coupling + ThighTwist Exclusion (2026-02-21)
+
+#### Problem 1: RMB vert didn't bend the knee
+
+**Observation:** In DAZ PowerPose, dragging RMB vert on the leg group node raises the thigh AND bends the knee simultaneously. Our implementation only raised the thigh — the shin stayed straight.
+
+**Measured data (DAZ):** Drag RMB vert until thigh is level → ThighBend: -84.38°, Shin: +91.38°. Opposite signs, ~1:1 ratio. LMB vert applies the same X rotation to both (whole leg moves as unit, knee angle unchanged).
+
+**Fix:** Added `bone_overrides` to leg group controls dicts — `rmb_vert` on Shin bones gets `('X', True)` (inverted). New `bone_overrides` mechanism in `update_multi_bone_rotation()` re-derives from unmirrored base rotation and applies the specified invert flag, superseding bilateral mirroring.
+
+**Files Modified:**
+- `daz_shared_utils.py` — `bone_overrides` added to `lLeg_group`, `rLeg_group`, `legs_group`
+- `daz_bone_select.py` — `bone_overrides` handling block after bilateral mirroring (~line 5321)
+
+#### Problem 2: Feet twisted backwards when combining RMB vert + RMB horiz
+
+**Symptom:** Raising legs while spreading caused thighs to twist so feet faced backwards.
+
+**Root cause (from DAZ research):** PowerPose NEVER drives `ThighTwist` directly. The bone hierarchy is:
+```
+lThighBend → lThighTwist (ERC-driven from ThighBend) → lShin → lFoot
+```
+We had `lThighTwist` / `rThighTwist` in `bone_names` and were explicitly setting their rotation to `combined_rot @ initial_quat` every drag frame. Since ThighTwist is a twist bone, `combined_rot = identity`, so we locked ThighTwist at `initial_quat` — overriding the ERC/constraint system every frame. Shin (child of ThighTwist) then inherited the wrong orientation.
+
+**Fix:** Removed `lThighTwist` and `rThighTwist` from `bone_names` in all three leg group definitions. ERC constraints now drive ThighTwist correctly from ThighBend.
+
+**Partial fix** — correct for RMB (X/Z), but broke LMB horiz (Y twist). See next entry.
+
+**Files Modified:** `daz_shared_utils.py` — `bone_names` in `lLeg_group`, `rLeg_group`, `legs_group`
+
+#### Problem 3: LMB horiz twist broken after ThighTwist removal + bilateral twist direction wrong
+
+**Symptom:** With ThighTwist excluded, LMB horiz (Y) applied to ThighBend (Y-lock stripped it immediately → zero effect) and Shin (shin twisted → wrong bone). Also, `legs_group` was twisting both ThighTwists in the same Y direction instead of mirroring (both legs twisting inward/outward together rather than symmetrically).
+
+**Root cause:** The identity-write conflict. During RMB (no Y): ThighTwist `combined_rot = identity` → writing `initial_quat` every frame overrides ERC. During LMB (Y): ThighTwist needs to receive Y, so excluding it entirely broke twist.
+
+**Fix — three parts:**
+
+1. **Re-add ThighTwist to `bone_names`** in all three leg groups (reverts Problem 2 exclusion).
+
+2. **Identity-skip guard in `update_multi_bone_rotation()`** — before writing `bone.rotation_quaternion`, check if `combined_rot` is identity (w≈1, x/y/z≈0). If so, skip the write. ERC then drives ThighTwist freely during X/Z-only RMB drags; Y twist writes still go through on LMB horiz.
+   - RMB drag (X/Z, no Y): ThighTwist `combined_rot = identity` → skip → `view_layer.update()` lets ERC set ThighTwist from ThighBend ✓
+   - LMB horiz (Y): ThighTwist `combined_rot = rot_y` → non-identity → write → correct twist ✓
+   - ThighBend: never identity during active drags (always has X or Z) → always written, Y-lock still applies ✓
+
+3. **Add `'Y'` to `mirror_axes` in `legs_group`** → `mirror_axes: ['Z', 'Y']` — `rThighTwist` gets inverted Y, producing bilateral turnout/turnin symmetry.
+
+**Rule revised:** Include twist bones in `bone_names`, but use the identity-skip guard to avoid fighting ERC on frames where the twist bone has no explicit rotation to apply.
+
+**Files Modified:**
+- `daz_shared_utils.py` — ThighTwist back in all three leg group `bone_names`; `legs_group` `mirror_axes: ['Z', 'Y']`
+- `daz_bone_select.py` — identity-skip guard before `bone.rotation_quaternion` write (~line 5372)
+
+#### Problem 4: LMB horiz twist direction wrong on rLeg_group + Shin double-twist causing spread on legs_group
+
+**Symptoms:**
+- `lLeg_group` LMB horiz: correct twist ✓
+- `rLeg_group` LMB horiz: twist in wrong direction (needs inversion)
+- `legs_group` LMB horiz: visual spreading instead of twist
+
+**Root cause — rLeg_group direction:** `lmb_horiz: ('Y', False)` is correct for left leg but the right leg's ThighTwist needs opposite Y to mirror correctly. Changed to `('Y', True)`.
+
+**Root cause — legs_group spreading:** Shin bones were receiving explicit Y rotation from `lmb_horiz` on top of already inheriting ThighTwist's Y motion via the parent-child hierarchy. ThighTwist (parent of Shin) twisting + Shin being independently set to twist in opposite bilateral directions compounds into a visual spread.
+
+**Fix:**
+1. `rLeg_group`: `lmb_horiz: ('Y', True)` — inverted to match right-leg mirror
+2. All three leg groups: added `'lmb_horiz': {Shin: None}` to `bone_overrides` — Shin excluded from explicit Y rotation; it follows ThighTwist naturally as its parent
+3. `daz_bone_select.py` `bone_overrides` handler extended to support `None` as an exclusion marker. `None` zeroes out the relevant `bone_rot_x/y/z` for that bone, preventing that axis from being applied. Previously only `(axis, invert)` tuples were supported.
+
+**Files Modified:**
+- `daz_shared_utils.py` — `rLeg_group lmb_horiz` inverted; `lmb_horiz` Shin `None` exclusions in all three leg groups
+- `daz_bone_select.py` — `bone_overrides` handler: key-existence check + `None` exclusion branch (~line 5322)
+
+#### Problem 5: Twist bones spread instead of twist when parent bend bone is raised
+
+**Symptom:** LMB horiz (Y twist) on Left Leg Group works at rest pose. After raising the thigh 90° forward, LMB horiz produces a spreading motion instead of an axial twist.
+
+**Root cause:** ThighTwist is a **sibling** of ThighBend (both children of hip) in the Diffeomorphic import — NOT a child of ThighBend. ThighTwist's local Y axis is therefore fixed relative to hip's frame, not ThighBend's current orientation. At rest pose, this local Y happens to align with the bone's length direction, so Y rotation = axial twist ✓. After ThighBend raises the leg, this fixed local Y no longer points along the bone — rotating around it produces spreading instead of twisting.
+
+**Fix:** For twist bones, derive the correct rotation axis from the bone's **current** orientation rather than the fixed rest-pose `(0,1,0)`:
+```python
+_bone_y = Vector((0, 1, 0))
+_bone_y.rotate(initial_quat)   # initial_quat = ERC pose at drag start
+_twist_angle = 2.0 * math.atan2(bone_rot_y.y, bone_rot_y.w)
+combined_rot = Quaternion(_bone_y, _twist_angle) @ combined_rot
+```
+`initial_quat` encodes the ERC-adjusted orientation (ThighTwist follows ThighBend via ERC). Rotating `(0,1,0)` by `initial_quat` gives the bone's actual current direction in parent space — always the bone's length axis regardless of pose. The signed angle is extracted via `atan2` from the original `bone_rot_y` quaternion (preserves bilateral mirror sign).
+
+**Why this is general:** The same problem exists for any sibling twist bone (ShldrTwist when shoulder is raised, etc.). The fix applies to ALL twist bones in group contexts, not just legs.
+
+**Files Modified:**
+- `daz_bone_select.py` — Y rotation section of per-bone loop in `update_multi_bone_rotation()` (~line 5355)
+
+#### Problem 6: Group node architecture too complex — delegate redesign
+
+**Symptom:** After Problems 2-5, the leg group nodes accumulated significant complexity: `bone_overrides`, `mirror_axes`, current-bone-axis correction, identity-skip guard — and still didn't behave correctly in all poses (LMB horiz spreads when thigh is raised).
+
+**Root cause:** Group nodes were trying to manage axis/inversion for ALL their bones with a single shared `controls` dict, then patching individual bone behavior via `bone_overrides`. This created a fragile, hard-to-reason-about system.
+
+**Architectural insight (user):** Group nodes should simply *invoke* the existing single-bone node controls. Each single-bone node (e.g. `lThigh`, `lShin`) already has correct axis/inversion calibrated for its bones. Group nodes just need to combine those behaviors.
+
+**Solution: Delegate architecture**
+
+Group nodes with `group_delegates` replace the `controls` + `bone_overrides` + `mirror_axes` pattern:
+
+```python
+# lLeg_group — instead of a complex controls dict:
+'group_delegates': {
+    'lmb_vert':  [('lThigh', 'lmb_vert')],                        # ThighBend raises; Shin follows as child
+    'lmb_horiz': [('lThigh', 'lmb_horiz')],                       # ThighTwist twists; Shin excluded (child)
+    'rmb_horiz': [('lThigh', 'rmb_horiz')],                       # ThighBend spreads
+    'rmb_vert':  [('lThigh', 'rmb_vert'), ('lShin', 'lmb_vert')], # raise + bend knee (opposite dirs naturally)
+}
+```
+
+Each delegate tuple: `(node_id, gesture_key)` or `(node_id, gesture_key, extra_invert)`.
+
+**Why knee bend works naturally:** `lThigh.rmb_vert = ('X', True)` → ThighBend angle = `+delta_y`. `lShin.lmb_vert = ('X', False)` → Shin angle = `-delta_y`. Same mouse input, opposite angles → knee bends as thigh raises. No `bone_overrides` needed.
+
+**Why bilateral legs_group is clean:** Both `lThigh` and `rThigh` already carry their own inversions (e.g. twist direction). Delegating to both gives correct bilateral behavior without `mirror_axes`.
+
+**Runtime resolution in `update_multi_bone_rotation()`:**
+1. Detect `group_delegates` in cached controls → enter delegate mode
+2. For each active gesture (horiz/vert), iterate delegate list
+3. Look up referenced node via `get_control_point_by_id(node_id)`
+4. Extract `(axis, invert)` from node's `controls[gesture_key]`
+5. Build `bone_name → (axis, Quaternion)` maps
+6. Apply to each bone in `self._rotation_bones` with existing twist filtering + Y-lock
+
+**Twist filtering unchanged:** ThighTwist still gets current-bone-axis correction (Problem 5 fix) when axis=Y. Non-Y axes on twist bones still skipped. ERC identity-skip still applies.
+
+**Files Modified:**
+- `daz_shared_utils.py`:
+  - Added `get_control_point_by_id(cp_id)` — returns full CP dict by ID
+  - Updated `get_group_controls()` — returns `{'group_delegates': ...}` for delegate nodes
+  - Replaced `lLeg_group`, `rLeg_group`, `legs_group` `controls` dicts with `group_delegates`
+- `daz_bone_select.py`:
+  - `update_multi_bone_rotation()` — new `if group_delegates:` branch before standard mode
+
+**Delegate data for all three leg group nodes:**
+```python
+# lLeg_group
+'lmb_vert':  [('lThigh', 'lmb_vert')]
+'lmb_horiz': [('lThigh', 'lmb_horiz')]
+'rmb_horiz': [('lThigh', 'rmb_horiz')]
+'rmb_vert':  [('lThigh', 'rmb_vert'), ('lShin', 'lmb_vert')]
+
+# rLeg_group (mirrors lLeg_group using rThigh/rShin nodes)
+'lmb_vert':  [('rThigh', 'lmb_vert')]
+'lmb_horiz': [('rThigh', 'lmb_horiz')]
+'rmb_horiz': [('rThigh', 'rmb_horiz')]
+'rmb_vert':  [('rThigh', 'rmb_vert'), ('rShin', 'lmb_vert')]
+
+# legs_group (bilateral: both legs simultaneously)
+'lmb_vert':  [('lThigh', 'lmb_vert'),  ('rThigh', 'lmb_vert')]
+'lmb_horiz': [('lThigh', 'lmb_horiz'), ('rThigh', 'lmb_horiz')]
+'rmb_horiz': [('lThigh', 'rmb_horiz'), ('rThigh', 'rmb_horiz')]
+'rmb_vert':  [('lThigh', 'rmb_vert'),  ('lShin', 'lmb_vert', True),
+               ('rThigh', 'rmb_vert'),  ('rShin', 'lmb_vert', True)]
+```
+
+#### Calibration fixes during delegate implementation
+
+**Two code paths for rotation:**
+- Single-bone nodes (lShin, rShin, lFoot, etc.) → hardcoded if/elif chain in `update_rotation()` (~line 4930). The `controls` dict is NOT read.
+- Multi-bone nodes with `controls` (lThigh, rThigh) → `update_multi_bone_rotation()` standard mode reads the `controls` dict.
+- Multi-bone nodes with `group_delegates` (lLeg_group, etc.) → `update_multi_bone_rotation()` delegate mode.
+
+**Auto-mirror exclusions:** The single-bone path has an auto-mirror at ~line 4978 that flips inversions for right-side bones. DAZ Genesis 8 thigh and shin bones have local axes oriented so both sides use the **same** inversions. Added exclusions: `'shin' not in bone_lower and 'thigh' not in bone_lower`.
+
+**lShin LMB vert fix:** Added `vert_invert = True` to the SHIN section of the if/elif chain (single-bone path). Both lShin and rShin need True; rShin gets it from the same code since shin is excluded from auto-mirror.
+
+**Vert sign convention fix:** The delegate mode originally used `delta_raw = -delta_y` for vert (inherited from standard group mode). The single-bone path uses `delta_y` with inversion applied via ternary. Changed delegate mode to `delta_raw = delta_y` to match the single-bone convention.
+
+**Controls dicts must match single-bone behavior:** Since delegates read the `controls` dict at runtime, right-side nodes (rThigh, rShin) must have the **same** inversion values as their left-side counterparts (both sides True). This mirrors the if/elif chain where thigh/shin are excluded from auto-mirror.
+
+**Flip flag:** Third element in delegate tuple (e.g. `('lShin', 'lmb_vert', True)`) negates the angle. Used for rmb_vert where thigh raises while knee bends in the opposite direction. Simple `angle = -angle` — no XOR or extra logic.
+
+---
+
 ## Quick Reference
 
 ### Useful Commands

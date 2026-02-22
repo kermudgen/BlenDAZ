@@ -4874,6 +4874,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if self._rotation_mouse_button == 'LEFT':
                     horiz_axis = 'Y'  # Twist
                     vert_axis = 'X'   # Bend
+                    vert_invert = True
+                    if 'pelvis' in bone_lower:
+                        vert_invert = False
                 else:  # RIGHT
                     horiz_axis = 'Z'  # Side lean
                     horiz_invert = True  # Invert direction per user testing
@@ -4887,6 +4890,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 else:  # RIGHT
                     horiz_axis = None  # Removed per user testing
                     vert_axis = 'Y'   # Twist (changed from None per user testing)
+                    if self._rotation_bone.name.startswith('l'):
+                        vert_invert = True
 
             # UPPER ARM (Shoulder)
             elif 'shldr' in bone_lower or 'shoulder' in bone_lower:
@@ -4910,7 +4915,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     horiz_invert = True  # Invert horizontal bend direction
                     vert_invert = True  # Invert twist direction
                 else:  # RIGHT
-                    horiz_axis = 'Y'  # Twist
+                    horiz_axis = None
                     vert_axis = None
 
             # HAND
@@ -4921,7 +4926,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     horiz_invert = True  # Invert twist direction
                 else:  # RIGHT
                     horiz_axis = 'X'  # Side-to-side
-                    horiz_invert = False
+                    horiz_invert = True
                     vert_axis = 'Z'   # Up/down
 
             # THIGH
@@ -4948,6 +4953,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if self._rotation_mouse_button == 'LEFT':
                     horiz_axis = None
                     vert_axis = 'X'   # Bend knee
+                    vert_invert = True
                 else:  # RIGHT
                     horiz_axis = 'Y'  # Twist
                     vert_axis = None
@@ -4973,8 +4979,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # MIRROR FOR RIGHT SIDE: Invert all controls for right-side bones
             # User configures controls for left side, right side mirrors them
-            # (collar handles its own inversions manually above)
-            if self._rotation_bone.name.startswith('r') and 'collar' not in bone_lower:
+            # (collar/shin/thigh excluded — DAZ bone local axes are oriented so both sides use the same inversions)
+            if self._rotation_bone.name.startswith('r') and 'collar' not in bone_lower and 'shin' not in bone_lower and 'thigh' not in bone_lower:
                 horiz_invert = not horiz_invert
                 vert_invert = not vert_invert
 
@@ -5094,7 +5100,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     combined_rot = rot_v @ combined_rot
 
                 # Apply combined rotation to initial
-                self._rotation_bone.rotation_quaternion = combined_rot @ self._rotation_initial_quat
+                if ('thigh' in bone_lower and 'bend' in bone_lower) or 'shldr' in bone_lower or 'shoulder' in bone_lower or 'collar' in bone_lower:
+                    # Post-multiply: rotate in bone's LOCAL frame so axes
+                    # stay aligned regardless of current pose.
+                    self._rotation_bone.rotation_quaternion = self._rotation_initial_quat @ combined_rot
+                else:
+                    self._rotation_bone.rotation_quaternion = combined_rot @ self._rotation_initial_quat
             else:
                 # SEPARATE ROTATIONS: Axes target different bones
 
@@ -5261,111 +5272,284 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Each entry is None or (axis, inverted) — single source of truth in daz_shared_utils.py
             controls = getattr(self, '_rotation_group_controls', None) or {}
 
-            if self._rotation_mouse_button == 'LEFT':
-                horiz_entry = controls.get('lmb_horiz')
-                vert_entry = controls.get('lmb_vert')
-            else:
-                horiz_entry = controls.get('rmb_horiz')
-                vert_entry = controls.get('rmb_vert')
+            # Check for delegate mode: group_delegates replaces controls for complex groups
+            # (e.g. leg groups). Delegates reference single-bone node controls directly,
+            # so no bone_overrides or mirror_axes hacks are needed.
+            group_delegates = controls.get('group_delegates')
 
-            horiz_axis, horiz_invert = horiz_entry if horiz_entry else (None, False)
-            vert_axis, vert_invert = vert_entry if vert_entry else (None, False)
+            if group_delegates:
+                # ================================================================
+                # DELEGATE MODE
+                # Each gesture maps to a list of (node_id, gesture_key) tuples.
+                # We look up the referenced node's axis/invert, build per-bone
+                # rotation quaternions, then apply with twist filtering and Y-lock.
+                # ================================================================
+                from daz_shared_utils import get_control_point_by_id
 
-            # Build per-axis rotation quaternions from mouse deltas
-            rot_x = None
-            rot_y = None
-            rot_z = None
+                horiz_key = 'lmb_horiz' if self._rotation_mouse_button == 'LEFT' else 'rmb_horiz'
+                vert_key  = 'lmb_vert'  if self._rotation_mouse_button == 'LEFT' else 'rmb_vert'
 
-            axis_vectors = {'X': Vector((1, 0, 0)), 'Y': Vector((0, 1, 0)), 'Z': Vector((0, 0, 1))}
+                axis_vecs = {'X': Vector((1, 0, 0)), 'Y': Vector((0, 1, 0)), 'Z': Vector((0, 0, 1))}
 
-            # Horizontal drag (delta_x)
-            if horiz_axis:
-                h_angle = delta_x * sensitivity * (-1 if horiz_invert else 1)
-                h_quat = Quaternion(axis_vectors[horiz_axis], h_angle)
-                if horiz_axis == 'X': rot_x = h_quat
-                elif horiz_axis == 'Y': rot_y = h_quat
-                elif horiz_axis == 'Z': rot_z = h_quat
+                # Build bone_name → (axis, Quaternion) maps for horiz and vert gestures.
+                # Separate maps so twist-axis logic can be applied per gesture independently.
+                bone_horiz_rots = {}
+                bone_vert_rots  = {}
 
-            # Vertical drag (-delta_y, base inverted for screen coords)
-            if vert_axis:
-                v_angle = -delta_y * sensitivity * (-1 if vert_invert else 1)
-                v_quat = Quaternion(axis_vectors[vert_axis], v_angle)
-                if vert_axis == 'X': rot_x = v_quat
-                elif vert_axis == 'Y': rot_y = v_quat
-                elif vert_axis == 'Z': rot_z = v_quat
+                for gesture_key, delta_raw, bone_map in [
+                    (horiz_key,  delta_x,  bone_horiz_rots),
+                    (vert_key,   delta_y,  bone_vert_rots),
+                ]:
+                    for delegate in group_delegates.get(gesture_key, []):
+                        node_id      = delegate[0]
+                        node_gesture = delegate[1]
+                        flip         = delegate[2] if len(delegate) > 2 else False
+                        scale        = delegate[3] if len(delegate) > 3 else 1.0
 
-            # Bilateral mirroring: check which axes need L/R inversion
-            mirror_axes = controls.get('mirror_axes', [])
+                        node_cp = get_control_point_by_id(node_id)
+                        if not node_cp:
+                            continue
+                        ctrl_entry = node_cp.get('controls', {}).get(node_gesture)
+                        if not ctrl_entry:
+                            continue
 
-            # Apply rotation to each bone with axis filtering (Individual Origins)
-            # Twist bones only receive Y-axis rotations, Bend bones receive all axes
-            for i, bone in enumerate(self._rotation_bones):
-                initial_quat = self._rotation_initial_quats[i]
+                        axis, invert = ctrl_entry
+                        angle = delta_raw * sensitivity * scale * (-1 if invert else 1)
+                        if flip:
+                            angle = -angle  # Reverse direction (e.g. knee bends opposite to thigh raise)
 
-                # Check if this is a twist bone (should only rotate on Y-axis)
-                is_twist_bone = 'twist' in bone.name.lower()
+                        # Get bones owned by the referenced node
+                        node_bones = node_cp.get('bone_names', [])
+                        if not node_bones:
+                            bn = node_cp.get('bone_name')
+                            if bn:
+                                node_bones = [bn]
 
-                # Finger bones: Z (spread) only applies to the base joint (bone1)
-                bone_lower = bone.name.lower()
-                is_finger_bone = any(p in bone_lower for p in ['thumb', 'index', 'mid', 'ring', 'pinky'])
-                is_base_joint = bone.name[-1] == '1'
+                        rot_quat = Quaternion(axis_vecs[axis], angle)
+                        for bone_name in node_bones:
+                            if bone_name in bone_map:
+                                # Compose with existing rotation for this bone
+                                prev_axis, prev_rot = bone_map[bone_name]
+                                bone_map[bone_name] = (prev_axis, rot_quat @ prev_rot)
+                            else:
+                                bone_map[bone_name] = (axis, rot_quat)
 
-                # Bilateral mirroring: detect right-side bones (rThighBend, rShin, rCollar, etc.)
-                is_right_side = bone.name.startswith('r') and len(bone.name) > 1 and bone.name[1].isupper()
-                mirror_this_bone = is_right_side and len(mirror_axes) > 0
+                # Apply per-bone rotations with twist filtering and Y-lock
+                for i, bone in enumerate(self._rotation_bones):
+                    initial_quat = self._rotation_initial_quats[i]
+                    is_twist_bone = 'twist' in bone.name.lower()
+                    combined_rot = Quaternion()
 
-                # Per-bone rotation quaternions (mirrored if needed)
-                bone_rot_x = rot_x.inverted() if (rot_x and mirror_this_bone and 'X' in mirror_axes) else rot_x
-                bone_rot_y = rot_y.inverted() if (rot_y and mirror_this_bone and 'Y' in mirror_axes) else rot_y
-                bone_rot_z = rot_z.inverted() if (rot_z and mirror_this_bone and 'Z' in mirror_axes) else rot_z
+                    for bone_map in (bone_horiz_rots, bone_vert_rots):
+                        info = bone_map.get(bone.name)
+                        if not info:
+                            continue
+                        axis, rot_quat = info
 
-                # Build combined rotation based on bone type
-                combined_rot = Quaternion()  # Identity quaternion
-
-                # Y-axis rotation (twist) - apply to ALL bones
-                if bone_rot_y:
-                    combined_rot = bone_rot_y @ combined_rot
-
-                # X and Z-axis rotations (bending) - only apply to non-twist bones
-                if not is_twist_bone:
-                    if bone_rot_x:
-                        if is_finger_bone:
-                            # Per-finger curl weight: thumb curls differently / overshoots
-                            _curl_weights = {'thumb': 0.25, 'index': 1.0, 'mid': 1.0, 'ring': 1.0, 'pinky': 0.9}
-                            curl_weight = next((w for k, w in _curl_weights.items() if k in bone_lower), 1.0)
-                            effective_rot_x = Quaternion().slerp(bone_rot_x, curl_weight)
+                        if is_twist_bone:
+                            if axis == 'Y':
+                                # Current-bone-axis correction: when a sibling twist bone's
+                                # parent is raised, local Y no longer points along the limb.
+                                # Rotate (0,1,0) by initial_quat to get the current bone axis.
+                                _bone_y = Vector((0, 1, 0))
+                                _bone_y.rotate(initial_quat)
+                                if _bone_y.length_squared > 0.000001:
+                                    _bone_y.normalize()
+                                    _twist_angle = 2.0 * math.atan2(rot_quat.y, rot_quat.w)
+                                    combined_rot = Quaternion(_bone_y, _twist_angle) @ combined_rot
+                                else:
+                                    combined_rot = rot_quat @ combined_rot
+                            # Non-Y axes on twist bones are silently skipped (ERC drives them)
                         else:
-                            effective_rot_x = bone_rot_x
-                        combined_rot = effective_rot_x @ combined_rot
-                    if bone_rot_z:
-                        # Finger bones: spread (Z) only on base joint
-                        if not is_finger_bone or is_base_joint:
-                            # Ring and Pinky spread in opposite direction for natural fan spread
-                            is_ulnar_finger = is_finger_bone and any(p in bone_lower for p in ['ring', 'pinky'])
-                            effective_rot_z = bone_rot_z.inverted() if is_ulnar_finger else bone_rot_z
-                            # Per-finger spread weight: middle barely moves, pinky/index spread most
+                            combined_rot = rot_quat @ combined_rot
+
+                    # Identity skip: allow ERC to drive twist bones when no Y gesture active
+                    _is_identity = (abs(combined_rot.w - 1.0) < 0.0001 and
+                                    abs(combined_rot.x) < 0.0001 and
+                                    abs(combined_rot.y) < 0.0001 and
+                                    abs(combined_rot.z) < 0.0001)
+                    if not _is_identity:
+                        bone_lower = bone.name.lower()
+                        if ('thigh' in bone_lower and 'bend' in bone_lower):
+                            # Post-multiply: rotate in bone's LOCAL frame so axes
+                            # stay aligned regardless of current pose.
+                            bone.rotation_quaternion = initial_quat @ combined_rot
+                        else:
+                            bone.rotation_quaternion = combined_rot @ initial_quat
+
+                    # Y-LOCK for ThighBend bones
+                    bone_lower = bone.name.lower()
+                    if 'thigh' in bone_lower and 'bend' in bone_lower:
+                        current_quat = bone.rotation_quaternion.copy()
+                        swing_quat, twist_quat = decompose_swing_twist(current_quat, 'Y')
+                        bone.rotation_quaternion = swing_quat
+                        twist_angle = 2.0 * math.acos(min(1.0, abs(twist_quat.w)))
+                        if twist_angle > 0.01:
+                            print(f"  [Y-LOCK DELEGATE] Removed {math.degrees(twist_angle):.1f} deg Y from {bone.name}")
+
+            else:
+                # ================================================================
+                # STANDARD MODE: shared axis-driven rotation for all bones
+                # ================================================================
+                if self._rotation_mouse_button == 'LEFT':
+                    horiz_entry = controls.get('lmb_horiz')
+                    vert_entry = controls.get('lmb_vert')
+                else:
+                    horiz_entry = controls.get('rmb_horiz')
+                    vert_entry = controls.get('rmb_vert')
+
+                horiz_axis, horiz_invert = horiz_entry if horiz_entry else (None, False)
+                vert_axis, vert_invert = vert_entry if vert_entry else (None, False)
+
+                # Build per-axis rotation quaternions from mouse deltas
+                rot_x = None
+                rot_y = None
+                rot_z = None
+
+                axis_vectors = {'X': Vector((1, 0, 0)), 'Y': Vector((0, 1, 0)), 'Z': Vector((0, 0, 1))}
+
+                # Horizontal drag (delta_x)
+                if horiz_axis:
+                    h_angle = delta_x * sensitivity * (-1 if horiz_invert else 1)
+                    h_quat = Quaternion(axis_vectors[horiz_axis], h_angle)
+                    if horiz_axis == 'X': rot_x = h_quat
+                    elif horiz_axis == 'Y': rot_y = h_quat
+                    elif horiz_axis == 'Z': rot_z = h_quat
+
+                # Vertical drag (-delta_y, base inverted for screen coords)
+                if vert_axis:
+                    v_angle = -delta_y * sensitivity * (-1 if vert_invert else 1)
+                    v_quat = Quaternion(axis_vectors[vert_axis], v_angle)
+                    if vert_axis == 'X': rot_x = v_quat
+                    elif vert_axis == 'Y': rot_y = v_quat
+                    elif vert_axis == 'Z': rot_z = v_quat
+
+                # Bilateral mirroring: check which axes need L/R inversion
+                mirror_axes = controls.get('mirror_axes', [])
+
+                # Apply rotation to each bone with axis filtering (Individual Origins)
+                # Twist bones only receive Y-axis rotations, Bend bones receive all axes
+                for i, bone in enumerate(self._rotation_bones):
+                    initial_quat = self._rotation_initial_quats[i]
+
+                    # Check if this is a twist bone (should only rotate on Y-axis)
+                    is_twist_bone = 'twist' in bone.name.lower()
+
+                    # Finger bones: Z (spread) only applies to the base joint (bone1)
+                    bone_lower = bone.name.lower()
+                    is_finger_bone = any(p in bone_lower for p in ['thumb', 'index', 'mid', 'ring', 'pinky'])
+                    is_base_joint = bone.name[-1] == '1'
+
+                    # Bilateral mirroring: detect right-side bones (rThighBend, rShin, rCollar, etc.)
+                    is_right_side = bone.name.startswith('r') and len(bone.name) > 1 and bone.name[1].isupper()
+                    mirror_this_bone = is_right_side and len(mirror_axes) > 0
+
+                    # Per-bone rotation quaternions (mirrored if needed)
+                    bone_rot_x = rot_x.inverted() if (rot_x and mirror_this_bone and 'X' in mirror_axes) else rot_x
+                    bone_rot_y = rot_y.inverted() if (rot_y and mirror_this_bone and 'Y' in mirror_axes) else rot_y
+                    bone_rot_z = rot_z.inverted() if (rot_z and mirror_this_bone and 'Z' in mirror_axes) else rot_z
+
+                    # Apply per-bone axis overrides from controls dict
+                    # Format: bone_overrides = {'rmb_vert': {'lShin': ('X', True)}, ...}
+                    # Override value can be:
+                    #   (axis, invert) — re-derives rotation from unmirrored base with the given invert flag
+                    #   None           — exclude this bone from this control's axis entirely
+                    bone_overrides = controls.get('bone_overrides', {})
+                    if bone_overrides:
+                        active_horiz_key = 'lmb_horiz' if self._rotation_mouse_button == 'LEFT' else 'rmb_horiz'
+                        active_vert_key = 'lmb_vert' if self._rotation_mouse_button == 'LEFT' else 'rmb_vert'
+                        for ctrl_key in (active_horiz_key, active_vert_key):
+                            ctrl_overrides = bone_overrides.get(ctrl_key, {})
+                            if bone.name in ctrl_overrides:
+                                bone_override = ctrl_overrides[bone.name]
+                                if bone_override is None:
+                                    # Exclude: zero out whichever axis this control drives
+                                    ctrl_entry = controls.get(ctrl_key)
+                                    if ctrl_entry:
+                                        excl_axis = ctrl_entry[0]
+                                        if excl_axis == 'X': bone_rot_x = None
+                                        elif excl_axis == 'Y': bone_rot_y = None
+                                        elif excl_axis == 'Z': bone_rot_z = None
+                                else:
+                                    ov_axis, ov_invert = bone_override
+                                    base_rot = {'X': rot_x, 'Y': rot_y, 'Z': rot_z}.get(ov_axis)
+                                    if base_rot:
+                                        new_rot = base_rot.inverted() if ov_invert else base_rot
+                                        if ov_axis == 'X': bone_rot_x = new_rot
+                                        elif ov_axis == 'Y': bone_rot_y = new_rot
+                                        elif ov_axis == 'Z': bone_rot_z = new_rot
+
+                    # Build combined rotation based on bone type
+                    combined_rot = Quaternion()  # Identity quaternion
+
+                    # Y-axis rotation (twist) - apply to ALL bones
+                    if bone_rot_y:
+                        if is_twist_bone:
+                            # Twist bones: rotate around the bone's CURRENT axis rather than the
+                            # fixed rest-pose Y. When the parent bend bone is raised, the local Y
+                            # axis of a sibling twist bone no longer points along the limb — using
+                            # a fixed Y would produce a spread instead of an axial twist.
+                            # initial_quat encodes the ERC-adjusted orientation at drag start;
+                            # rotating (0,1,0) by it gives the bone's current direction in parent space.
+                            _bone_y = Vector((0, 1, 0))
+                            _bone_y.rotate(initial_quat)
+                            if _bone_y.length_squared > 0.000001:
+                                _bone_y.normalize()
+                                _twist_angle = 2.0 * math.atan2(bone_rot_y.y, bone_rot_y.w)
+                                combined_rot = Quaternion(_bone_y, _twist_angle) @ combined_rot
+                            else:
+                                combined_rot = bone_rot_y @ combined_rot
+                        else:
+                            combined_rot = bone_rot_y @ combined_rot
+
+                    # X and Z-axis rotations (bending) - only apply to non-twist bones
+                    if not is_twist_bone:
+                        if bone_rot_x:
                             if is_finger_bone:
-                                _spread_weights = {'thumb': 0.5, 'index': 0.8, 'mid': 0.1, 'ring': 0.7, 'pinky': 1.0}
-                                spread_weight = next((w for k, w in _spread_weights.items() if k in bone_lower), 1.0)
-                                effective_rot_z = Quaternion().slerp(effective_rot_z, spread_weight)
-                            combined_rot = effective_rot_z @ combined_rot
+                                # Per-finger curl weight: thumb curls differently / overshoots
+                                _curl_weights = {'thumb': 0.25, 'index': 1.0, 'mid': 1.0, 'ring': 1.0, 'pinky': 0.9}
+                                curl_weight = next((w for k, w in _curl_weights.items() if k in bone_lower), 1.0)
+                                effective_rot_x = Quaternion().slerp(bone_rot_x, curl_weight)
+                            else:
+                                effective_rot_x = bone_rot_x
+                            combined_rot = effective_rot_x @ combined_rot
+                        if bone_rot_z:
+                            # Finger bones: spread (Z) only on base joint
+                            if not is_finger_bone or is_base_joint:
+                                # Ring and Pinky spread in opposite direction for natural fan spread
+                                is_ulnar_finger = is_finger_bone and any(p in bone_lower for p in ['ring', 'pinky'])
+                                effective_rot_z = bone_rot_z.inverted() if is_ulnar_finger else bone_rot_z
+                                # Per-finger spread weight: middle barely moves, pinky/index spread most
+                                if is_finger_bone:
+                                    _spread_weights = {'thumb': 0.5, 'index': 0.8, 'mid': 0.1, 'ring': 0.7, 'pinky': 1.0}
+                                    spread_weight = next((w for k, w in _spread_weights.items() if k in bone_lower), 1.0)
+                                    effective_rot_z = Quaternion().slerp(effective_rot_z, spread_weight)
+                                combined_rot = effective_rot_z @ combined_rot
 
-                bone.rotation_quaternion = combined_rot @ initial_quat
+                    # Skip writing if combined_rot is identity — allows ERC constraints to drive
+                    # twist bones freely when no explicit rotation applies (e.g. ThighTwist during
+                    # X/Z-only RMB drags; writing identity every frame would override the ERC result).
+                    _is_identity = (abs(combined_rot.w - 1.0) < 0.0001 and
+                                    abs(combined_rot.x) < 0.0001 and
+                                    abs(combined_rot.y) < 0.0001 and
+                                    abs(combined_rot.z) < 0.0001)
+                    if not _is_identity:
+                        bone.rotation_quaternion = combined_rot @ initial_quat
 
-                # Y-LOCK for ThighBend bones in group rotation
-                # ThighBend should NEVER have Y rotation — only X (forward/back) and Z (spread).
-                # Quaternion composition of X and Z can introduce tiny Y components,
-                # so we actively strip Y after each frame (same pattern as single-bone rotation).
-                bone_lower = bone.name.lower()
-                if 'thigh' in bone_lower and 'bend' in bone_lower:
-                    current_quat = bone.rotation_quaternion.copy()
-                    swing_quat, twist_quat = decompose_swing_twist(current_quat, 'Y')
-                    bone.rotation_quaternion = swing_quat
+                    # Y-LOCK for ThighBend bones in group rotation
+                    # ThighBend should NEVER have Y rotation — only X (forward/back) and Z (spread).
+                    # Quaternion composition of X and Z can introduce tiny Y components,
+                    # so we actively strip Y after each frame (same pattern as single-bone rotation).
+                    bone_lower = bone.name.lower()
+                    if 'thigh' in bone_lower and 'bend' in bone_lower:
+                        current_quat = bone.rotation_quaternion.copy()
+                        swing_quat, twist_quat = decompose_swing_twist(current_quat, 'Y')
+                        bone.rotation_quaternion = swing_quat
 
-                    # Debug: show if we removed any Y rotation
-                    twist_angle = 2.0 * math.acos(min(1.0, abs(twist_quat.w)))
-                    if twist_angle > 0.01:  # Only log if > 0.5 degrees
-                        print(f"  [Y-LOCK GROUP] Removed {math.degrees(twist_angle):.1f} deg Y from {bone.name}")
+                        # Debug: show if we removed any Y rotation
+                        twist_angle = 2.0 * math.acos(min(1.0, abs(twist_quat.w)))
+                        if twist_angle > 0.01:  # Only log if > 0.5 degrees
+                            print(f"  [Y-LOCK GROUP] Removed {math.degrees(twist_angle):.1f} deg Y from {bone.name}")
 
             print(f"  Multi-bone rotation: delta_x={delta_x:.2f}, delta_y={delta_y:.2f}, {len(self._rotation_bones)} bones")
 
@@ -6653,7 +6837,7 @@ def get_genesis8_control_points():
         # Group Nodes (diamond-shaped hierarchical controls)
         {'id': 'lArm_group', 'bone_names': ['lShldrBend', 'lShldrTwist', 'lForearmBend', 'lForearmTwist'], 'label': 'Left Arm Group', 'group': 'arms', 'shape': 'diamond', 'reference_bone': 'lShldrTwist', 'offset': (0.075, 0, 0)},
         {'id': 'rArm_group', 'bone_names': ['rShldrBend', 'rShldrTwist', 'rForearmBend', 'rForearmTwist'], 'label': 'Right Arm Group', 'group': 'arms', 'shape': 'diamond', 'reference_bone': 'rShldrTwist', 'offset': (-0.075, 0, 0)},
-        {'id': 'shoulders_group', 'bone_names': ['lCollar', 'rCollar', 'lShldrBend', 'rShldrBend'], 'label': 'Shoulders Group', 'group': 'torso', 'shape': 'diamond', 'reference_bone': 'chestUpper', 'offset': (0, 0, 0.075)},
+        {'id': 'shoulders_group', 'bone_names': ['lCollar', 'rCollar', 'lShldrBend', 'rShldrBend', 'lShldrTwist', 'rShldrTwist'], 'label': 'Shoulders Group', 'group': 'torso', 'shape': 'diamond', 'reference_bone': 'chestUpper', 'offset': (0, 0, 0.075)},
         {'id': 'torso_group', 'bone_names': ['abdomenLower', 'abdomenUpper', 'chestLower', 'chestUpper'], 'label': 'Torso Group', 'group': 'torso', 'shape': 'diamond', 'reference_bone': 'abdomenUpper', 'offset': (-0.1, 0, 0)},
         {'id': 'lLeg_group', 'bone_names': ['lThighBend', 'lThighTwist', 'lShin'], 'label': 'Left Leg Group', 'group': 'legs', 'shape': 'diamond', 'reference_bone': 'lThighTwist', 'offset': (0.075, 0, 0)},
         {'id': 'rLeg_group', 'bone_names': ['rThighBend', 'rThighTwist', 'rShin'], 'label': 'Right Leg Group', 'group': 'legs', 'shape': 'diamond', 'reference_bone': 'rThighTwist', 'offset': (-0.075, 0, 0)},

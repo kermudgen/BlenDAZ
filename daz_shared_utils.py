@@ -413,6 +413,15 @@ def get_genesis8_control_points():
                 'rmb_vert': ('Y', True)      # Arm twist (inverted, targets lShldrTwist)
             }
         },
+        # Virtual entry for delegate targeting (no visual node)
+        {
+            'id': 'lShldrTwist',
+            'bone_name': 'lShldrTwist',
+            'hidden': True,
+            'controls': {
+                'lmb_vert': ('Y', True),    # Twist
+            }
+        },
         {
             'id': 'lForearmBend',
             'bone_name': 'lForearmBend',
@@ -423,6 +432,15 @@ def get_genesis8_control_points():
                 'lmb_vert': ('Y', True),     # Twist (inverted, targets lForearmTwist)
                 'rmb_horiz': ('Y', False),   # Forearm twist
                 'rmb_vert': None
+            }
+        },
+        # Virtual entry for delegate targeting (no visual node)
+        {
+            'id': 'lForearmTwist',
+            'bone_name': 'lForearmTwist',
+            'hidden': True,
+            'controls': {
+                'lmb_vert': ('Y', True),    # Twist
             }
         },
         {
@@ -465,6 +483,15 @@ def get_genesis8_control_points():
                 'rmb_vert': ('Y', True)      # Arm twist (inverted, targets rShldrTwist)
             }
         },
+        # Virtual entry for delegate targeting (no visual node)
+        {
+            'id': 'rShldrTwist',
+            'bone_name': 'rShldrTwist',
+            'hidden': True,
+            'controls': {
+                'lmb_vert': ('Y', True),    # Twist
+            }
+        },
         {
             'id': 'rForearmBend',
             'bone_name': 'rForearmBend',
@@ -475,6 +502,15 @@ def get_genesis8_control_points():
                 'lmb_vert': ('Y', True),     # Twist (inverted, targets rForearmTwist)
                 'rmb_horiz': ('Y', False),   # Forearm twist
                 'rmb_vert': None
+            }
+        },
+        # Virtual entry for delegate targeting (no visual node)
+        {
+            'id': 'rForearmTwist',
+            'bone_name': 'rForearmTwist',
+            'hidden': True,
+            'controls': {
+                'lmb_vert': ('Y', True),    # Twist
             }
         },
         {
@@ -511,7 +547,7 @@ def get_genesis8_control_points():
             'group': 'legs',
             'controls': {
                 'lmb_horiz': None,           # Limited
-                'lmb_vert': ('X', False),    # Bend knee (main function)
+                'lmb_vert': ('X', True),     # Bend knee (main function)
                 'rmb_horiz': ('Y', False),   # Shin twist
                 'rmb_vert': None
             }
@@ -537,10 +573,10 @@ def get_genesis8_control_points():
             'group': 'legs',
             'position': 'tail',
             'controls': {
-                'lmb_horiz': ('Y', True),   # Twist (inverted, targets ThighTwist via filtering)
-                'lmb_vert': ('X', True),    # Forward/back swing (inverted)
-                'rmb_horiz': ('Z', True),   # Spread (inverted)
-                'rmb_vert': ('X', True)     # Forward/back (inverted)
+                'lmb_horiz': ('Y', True),   # Twist (targets ThighTwist via filtering)
+                'lmb_vert': ('X', True),    # Forward/back swing
+                'rmb_horiz': ('Z', True),   # Spread
+                'rmb_vert': ('X', True)     # Forward/back
             }
         },
         {
@@ -550,7 +586,7 @@ def get_genesis8_control_points():
             'group': 'legs',
             'controls': {
                 'lmb_horiz': None,
-                'lmb_vert': ('X', False),
+                'lmb_vert': ('X', True),
                 'rmb_horiz': ('Y', False),
                 'rmb_vert': None
             }
@@ -579,11 +615,11 @@ def get_genesis8_control_points():
             'shape': 'diamond',
             'reference_bone': 'lShldrTwist',
             'offset': (0.075, 0, 0),
-            'controls': {
-                'lmb_horiz': ('X', False),  # Swing forward/back
-                'lmb_vert': ('Z', False),   # Raise/lower
-                'rmb_horiz': ('Y', False),  # Twist
-                'rmb_vert': None
+            # LMB horiz = bend shldr+forearm on X, LMB vert = twist both twist bones
+            # RMB = none
+            'group_delegates': {
+                'lmb_horiz': [('lShldrBend', 'lmb_horiz'), ('lForearmBend', 'lmb_horiz')],
+                'lmb_vert':  [('lShldrTwist', 'lmb_vert'),  ('lForearmTwist', 'lmb_vert')],
             }
         },
         {
@@ -594,27 +630,34 @@ def get_genesis8_control_points():
             'shape': 'diamond',
             'reference_bone': 'rShldrTwist',
             'offset': (-0.075, 0, 0),
-            'controls': {
-                'lmb_horiz': ('X', False),  # Swing forward/back
-                'lmb_vert': ('Z', False),   # Raise/lower
-                'rmb_horiz': ('Y', False),  # Twist
-                'rmb_vert': None
+            'group_delegates': {
+                'lmb_horiz': [('rShldrBend', 'lmb_horiz', True), ('rForearmBend', 'lmb_horiz', True)],
+                'lmb_vert':  [('rShldrTwist', 'lmb_vert', True),  ('rForearmTwist', 'lmb_vert', True)],
             }
         },
         {
             'id': 'shoulders_group',
-            'bone_names': ['lCollar', 'rCollar', 'lShldrBend', 'rShldrBend'],
+            'bone_names': ['lCollar', 'rCollar', 'lShldrBend', 'rShldrBend', 'lShldrTwist', 'rShldrTwist'],
             'label': 'Shoulders Group',
             'group': 'torso',
             'shape': 'diamond',
             'reference_bone': 'chestUpper',
             'offset': (0, 0, 0.075),
-            'controls': {
-                'lmb_horiz': ('Z', False),  # Shrug/drop
-                'lmb_vert': ('X', False),   # Forward/back
-                'rmb_horiz': ('Y', False),  # Roll
-                'rmb_vert': None,
-                'mirror_axes': ['Z']  # Bilateral: invert Z for right-side bones
+            # LMB vert = raise collars (X) + shldrBends (Z)
+            # LMB horiz = forward/back collars (X via lmb_vert) + shldrBends (X via lmb_horiz)
+            # RMB vert = twist collars (Y) + shldrTwists (Y)
+            # RMB horiz = shrug: collar up (Z) + shldrBend down (Z, flipped)
+            'group_delegates': {
+                'lmb_vert':  [('lCollar', 'lmb_vert', False, 0.3),  ('lShldrBend', 'lmb_vert', True),
+                               ('rCollar', 'lmb_vert', False, 0.3),  ('rShldrBend', 'lmb_vert')],
+                'lmb_horiz': [('lCollar', 'lmb_vert', False, 0.33), ('lCollar', 'lmb_horiz', False, 0.33),
+                               ('lShldrBend', 'lmb_horiz'),
+                               ('rCollar', 'lmb_vert', False, 0.33), ('rCollar', 'lmb_horiz', True, 0.33),
+                               ('rShldrBend', 'lmb_horiz')],
+                'rmb_vert':  [('lCollar', 'rmb_vert'),  ('lShldrTwist', 'lmb_vert', True),
+                               ('rCollar', 'rmb_vert', True),  ('rShldrTwist', 'lmb_vert')],
+                'rmb_horiz': [('lCollar', 'lmb_vert', True), ('lShldrBend', 'lmb_vert'),
+                               ('rCollar', 'lmb_vert', True), ('rShldrBend', 'lmb_vert', True)],
             }
         },
         {
@@ -629,7 +672,7 @@ def get_genesis8_control_points():
                 'lmb_horiz': ('Y', False),  # Twist
                 'lmb_vert': ('X', False),   # Bend forward/back
                 'rmb_horiz': ('Z', True),   # Side lean (inverted)
-                'rmb_vert': None
+                'rmb_vert': ('X', False)    # Bend forward/back (same as LMB vert)
             }
         },
         {
@@ -640,11 +683,15 @@ def get_genesis8_control_points():
             'shape': 'diamond',
             'reference_bone': 'lThighTwist',
             'offset': (0.075, 0, 0),
-            'controls': {
-                'lmb_horiz': ('Y', False),  # Twist (targets twist bones via filtering)
-                'lmb_vert': ('X', False),   # Forward/back swing
-                'rmb_horiz': ('Z', True),   # Spread (inverted)
-                'rmb_vert': ('X', False)    # Forward/back
+            # Delegate-mode: each gesture invokes the referenced single-bone node controls.
+            # This avoids bone_overrides/mirror_axes complexity — each node handles its own bones.
+            # lThigh controls [lThighBend, lThighTwist]; lShin controls [lShin].
+            # Shin follows ThighTwist as a child, so it only needs explicit rotation for knee bend.
+            'group_delegates': {
+                'lmb_vert':  [('lThigh', 'lmb_vert')],                              # Raise/lower whole leg straight
+                'lmb_horiz': [('lThigh', 'lmb_horiz')],                             # Twist ThighTwist only
+                'rmb_horiz': [('lThigh', 'rmb_horiz')],                             # Spread leg
+                'rmb_vert':  [('lThigh', 'rmb_vert'), ('lShin', 'lmb_vert', True)],  # Raise thigh + bend knee (shin flipped)
             }
         },
         {
@@ -655,11 +702,13 @@ def get_genesis8_control_points():
             'shape': 'diamond',
             'reference_bone': 'rThighTwist',
             'offset': (-0.075, 0, 0),
-            'controls': {
-                'lmb_horiz': ('Y', False),  # Twist (targets twist bones via filtering)
-                'lmb_vert': ('X', False),   # Forward/back swing
-                'rmb_horiz': ('Z', True),   # Spread (inverted)
-                'rmb_vert': ('X', False)    # Forward/back
+            # Delegate-mode: mirrors lLeg_group using rThigh/rShin nodes.
+            # rThigh already has the correct axis inversions for the right leg.
+            'group_delegates': {
+                'lmb_vert':  [('rThigh', 'lmb_vert')],
+                'lmb_horiz': [('rThigh', 'lmb_horiz')],
+                'rmb_horiz': [('rThigh', 'rmb_horiz')],
+                'rmb_vert':  [('rThigh', 'rmb_vert'), ('rShin', 'lmb_vert', True)],
             }
         },
         {
@@ -670,12 +719,14 @@ def get_genesis8_control_points():
             'shape': 'diamond',
             'reference_bone': 'pelvis',
             'offset': (0, 0, -0.275),
-            'controls': {
-                'lmb_horiz': ('Y', False),  # Twist (targets twist bones via filtering)
-                'lmb_vert': ('X', False),   # Forward/back swing
-                'rmb_horiz': ('Z', True),   # Spread (inverted)
-                'rmb_vert': ('X', False),   # Forward/back
-                'mirror_axes': ['Z']  # Bilateral: invert Z for right-side bones (spread)
+            # Delegate-mode: bilateral version combining lLeg + rLeg delegates.
+            # Each referenced node carries its own axis inversions, so no mirror_axes needed.
+            'group_delegates': {
+                'lmb_vert':  [('lThigh', 'lmb_vert'),  ('rThigh', 'lmb_vert')],
+                'lmb_horiz': [('lThigh', 'lmb_horiz'), ('rThigh', 'lmb_horiz', True)],
+                'rmb_horiz': [('lThigh', 'rmb_horiz'), ('rThigh', 'rmb_horiz', True)],
+                'rmb_vert':  [('lThigh', 'rmb_vert'),  ('lShin', 'lmb_vert', True),
+                               ('rThigh', 'rmb_vert'),  ('rShin', 'lmb_vert', True)],
             }
         },
 
@@ -770,6 +821,22 @@ def get_finger_group_bones(group_id):
     return None
 
 
+def get_control_point_by_id(cp_id):
+    """
+    Look up a control point definition by its ID.
+
+    Args:
+        cp_id: Control point ID (e.g., 'lThigh', 'lShin')
+
+    Returns:
+        The control point dict, or None if not found.
+    """
+    for cp in get_genesis8_control_points():
+        if cp['id'] == cp_id:
+            return cp
+    return None
+
+
 def get_group_controls(group_id):
     """
     Look up the controls dict for a group node by its ID.
@@ -781,10 +848,13 @@ def get_group_controls(group_id):
     Returns:
         dict with lmb_horiz, lmb_vert, rmb_horiz, rmb_vert entries.
         Each entry is None or (axis, inverted) tuple.
+        For delegate-mode groups, returns {'group_delegates': {...}}.
         Returns empty dict if group_id not found.
     """
     for cp in get_genesis8_control_points():
         if cp['id'] == group_id:
+            if 'group_delegates' in cp:
+                return {'group_delegates': cp['group_delegates']}
             return cp.get('controls', {})
     # Hand finger groups and fist controls (not in get_genesis8_control_points)
     if get_finger_group_bones(group_id) is not None:

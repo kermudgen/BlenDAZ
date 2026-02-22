@@ -127,12 +127,24 @@ exec(open(r"D:\dev\BlenDAZ\projects\posebridge\recapture_with_reload.py").read()
 - Completing Phase 1 MVP (cancellation testing, end-to-end verification)
 
 ## For AI Assistants
-When working on this project:
-1. Check [INDEX.md](INDEX.md) to find files before searching
-2. Check [TODO.md](TODO.md) for current priorities and planned work
-3. Check [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) for rotation architecture, PowerPose research, and DAZ bone system details
-4. Follow the principles in this document
-5. Update [SCRATCHPAD.md](SCRATCHPAD.md) as you work
-6. Update [TODO.md](TODO.md) when completing tasks or discovering new ones
-7. Prefer simple solutions over complex ones
-8. Ask questions if requirements are unclear
+
+### Step 1 — Always read first
+**[SESSION_START.md](SESSION_START.md)** — current state, last session, next up, gotchas, active files.
+This is the only file you need for most sessions. Read it before anything else.
+
+### Step 2 — Read this file (CLAUDE.md)
+Architecture, principles, axis conventions, and running the app.
+
+### Step 3 — Only if the task requires it
+- Finding a file → [INDEX.md](INDEX.md)
+- Technical findings, research, rig architecture → [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)
+- Understanding recent decisions → [SCRATCHPAD.md](SCRATCHPAD.md) (recent entries only)
+- Parent project context → [../../docs/CLAUDE.md](../../docs/CLAUDE.md)
+
+### Don't front-load
+Do NOT read TECHNICAL_REFERENCE.md (34KB), full SCRATCHPAD.md (26KB), or INDEX.md (13KB)
+upfront. They are reference docs — look things up in them as needed.
+
+### End of session
+Update [SESSION_START.md](SESSION_START.md) with what changed, what's next, and any new gotchas.
+Takes 3-5 minutes. Keeps the next session fast.

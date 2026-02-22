@@ -6,6 +6,27 @@ Hard-won knowledge about PowerPose-style rotation controls, DAZ bone architectur
 
 ---
 
+## Research Status
+
+Quick scan of what's been researched. Update when a topic is confirmed or a dead end is hit.
+
+Source quality: ⭐ = authoritative (official docs/code), ★★☆ = community-verified, ★☆☆ = inferred/unverified
+
+| Topic | Status | Quality | Notes |
+|-------|--------|---------|-------|
+| PowerPose DSX format | ✅ Confirmed | ⭐ | Forum template scripts + official DSX structure |
+| G8 per-bone axis mappings | ⚠️ Inferred | ★☆☆ | .dse encrypted; derived from G2 templates + anatomy |
+| Twist bone routing (ThighTwist etc.) | ✅ Confirmed | ⭐ | Forum bug report + DSX structure confirms explicit routing |
+| Euler rotation orders per bone (YZX etc.) | ✅ Confirmed | ★★☆ | Forum dev post, consistent with PowerPose behavior |
+| Quaternion Y-lock via swing-twist | ✅ Confirmed | ⭐ | Math verified + debug-tested in PoseBridge |
+| Diffeomorphic bone naming patterns | ✅ Confirmed | ⭐ | Code inspection |
+| DSF face groups (mesh zone detection) | ✅ Confirmed | ★★☆ | Community tools + code inspection |
+| Blender module reload / caching behavior | ✅ Confirmed | ⭐ | Tested, documented in Troubleshooting |
+| NorthOf45 alternative G8 templates | ❓ Partial | ★★☆ | Templates exist; axis mappings not verified against PoseBridge |
+| Genesis 9 rig compatibility | ❓ Unknown | — | Not yet researched |
+
+---
+
 ## Table of Contents
 
 1. [DAZ Studio PowerPose Architecture](#daz-studio-powerpose-architecture)
@@ -14,8 +35,9 @@ Hard-won knowledge about PowerPose-style rotation controls, DAZ bone architectur
 4. [DSF Face Groups (Mesh Zone Detection)](#dsf-face-groups-mesh-zone-detection)
 5. [Control Point System](#control-point-system)
 6. [Research Findings](#research-findings)
-7. [Troubleshooting Guide](#troubleshooting-guide)
-8. [Code Reference](#code-reference)
+7. [Research Dead Ends](#research-dead-ends)
+8. [Troubleshooting Guide](#troubleshooting-guide)
+9. [Code Reference](#code-reference)
 
 ---
 
@@ -522,6 +544,18 @@ Control points are defined in **two places** (must stay in sync):
 **Consequence**: All group rotation code must check for twist bones and filter accordingly.
 **Solution**: `is_twist_bone = 'twist' in bone.name.lower()` — only apply `rot_y` to twist bones, apply all axes to non-twist bones.
 **See**: daz_bone_select.py:5271-5293
+
+---
+
+## Research Dead Ends
+
+> Searches that went nowhere. Don't retry without a new angle.
+
+### Genesis 8 PowerPose template axis mappings
+**Searched**: DAZ forums, GitHub, reverse engineering .dse files
+**Result**: Templates are fully encrypted since Genesis 8. No community workaround exists for reading .dse files.
+**Don't retry**: Unless DAZ releases an SDK, or a community member publishes a reverse-engineered mapping.
+**Workaround**: Using Genesis 2 .dsx templates + anatomical reasoning as a substitute. Currently marked ⚠️ Inferred in Research Status.
 
 ---
 
