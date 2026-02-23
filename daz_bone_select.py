@@ -2275,7 +2275,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Normal bone selection
                 # Select bone immediately (don't wait for release)
                 # This allows click-drag to work in one motion
-                self.select_bone(context)
+                # Shift+click = additive selection (for multi-bone R rotate)
+                self.select_bone(context, additive=event.shift)
 
                 # Prepare for potential drag
                 self._drag_bone_name = self._hover_bone_name
@@ -3356,8 +3357,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         return None
 
-    def select_bone(self, context):
-        """Select the hovered bone in pose mode (with mapping for metatarsals/metacarpals)"""
+    def select_bone(self, context, additive=False):
+        """Select the hovered bone in pose mode (with mapping for metatarsals/metacarpals).
+        If additive=True (Shift+click), adds to current selection instead of replacing."""
 
         if not self._hover_armature or not self._hover_bone_name:
             return
@@ -3392,7 +3394,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
             # Always go through full selection path (edit mode roundtrip)
             # The rotation/location cache preserves all pose data through the mode switch
-            bpy.ops.pose.select_all(action='DESELECT')
+            if not additive:
+                bpy.ops.pose.select_all(action='DESELECT')
 
             # Set the active bone
             armature.data.bones.active = armature.data.bones[bone_name]
@@ -3415,10 +3418,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                 edit_bone = armature.data.edit_bones.get(bone_name)
                 if edit_bone:
-                    for eb in armature.data.edit_bones:
-                        eb.select = False
-                        eb.select_head = False
-                        eb.select_tail = False
+                    if not additive:
+                        for eb in armature.data.edit_bones:
+                            eb.select = False
+                            eb.select_head = False
+                            eb.select_tail = False
                     edit_bone.select = True
                     edit_bone.select_head = True
                     edit_bone.select_tail = True
@@ -3441,7 +3445,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         pb.location = loc
 
                 armature.data.bones.active = armature.data.bones[bone_name]
-                print(f"  ✓ Selected bone: {bone_name}")
+                print(f"  ✓ {'Added' if additive else 'Selected'} bone: {bone_name}")
 
             except Exception as e:
                 print(f"  ✗ Selection error: {e}")
