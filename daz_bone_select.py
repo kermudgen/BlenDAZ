@@ -2289,6 +2289,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            # End hip pin IK if native translate just confirmed
+            if self._use_hip_pin_ik:
+                self._end_hip_pin_ik(context, cancel=False)
+                return {'RUNNING_MODAL'}
+
             # End morph if active
             if self._is_morphing:
                 self.end_morph(context, cancel=False)
@@ -2349,6 +2354,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         # Consume event
                         return {'RUNNING_MODAL'}
 
+            # Cancel hip pin IK if native translate was cancelled
+            if self._use_hip_pin_ik:
+                print("  Right-click: Canceling hip pin IK")
+                self._end_hip_pin_ik(context, cancel=True)
+                return {'RUNNING_MODAL'}
+
             # Cancel morph if active with LMB (RMB cancels LMB morph)
             if self._is_morphing and self._morph_mouse_button == 'LEFT':
                 print("  Right-click: Canceling morph")
@@ -2378,6 +2389,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # PoseBridge active: consume RMB to prevent context menu
             # (mouse may have drifted off control point between drags)
             if hasattr(context.scene, 'posebridge_settings') and context.scene.posebridge_settings.is_active:
+                return {'RUNNING_MODAL'}
+
+            # Show context menu if a bone is selected (hovered or active)
+            armature = context.active_object
+            if armature and armature.type == 'ARMATURE' and armature.data.bones.active:
+                bpy.ops.wm.call_menu(name='DAZ_MT_bone_context')
                 return {'RUNNING_MODAL'}
 
             return {'PASS_THROUGH'}
@@ -2464,6 +2481,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'RUNNING_MODAL'}
 
         elif event.type == 'ESC' and event.value == 'PRESS':
+            # Cancel hip pin IK if active
+            if self._use_hip_pin_ik:
+                print("  ESC: Canceling hip pin IK")
+                self._end_hip_pin_ik(context, cancel=True)
+                return {'RUNNING_MODAL'}
+
             # Cancel morph if active
             if self._is_morphing:
                 self.end_morph(context, cancel=True)
@@ -2543,6 +2566,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._analytical_arm_collar_influence = 0.45  # Fractional damped-track rotation for collar bone
         self._analytical_arm_debug_draw_data = {}
         self._analytical_arm_debug_trail = []
+
+        # Hip pin-driven IK state (analytical IK on pinned limbs while dragging hip)
+        self._use_hip_pin_ik = False
+        self._hip_pin_limbs = []          # List of per-limb state dicts
+        self._hip_bone = None             # Hip pose bone reference
+        self._hip_original_location = None  # For cancel/undo
+        self._hip_original_rotations = {}  # {bone_name: {location, rotation}} for all affected bones
+        self._hip_pin_muted_constraints = []  # [(pose_bone, constraint)] to unmute on end
+        self._hip_debug_frame = 0
 
         # Soft pin system state (DAZ-like yielding pins)
         self._soft_pin_active = False
@@ -3626,18 +3658,27 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._drag_armature = None
                 return
 
-        # Root bone (hip): no parent for IK chain — use native translate
+        # Root bone (hip): no parent for IK chain
         pose_bone = self._drag_armature.pose.bones.get(ik_bone_name)
         if pose_bone and not pose_bone.parent:
-            print(f"  → Root bone ({ik_bone_name}): Using Blender's native translate")
-            try:
-                bpy.ops.transform.translate('INVOKE_DEFAULT')
-                print("  ✓ Invoked native translate")
-            except Exception as e:
-                print(f"  ✗ Could not invoke translate: {e}")
-            self._drag_bone_name = None
-            self._drag_armature = None
-            return
+            armature = self._drag_armature
+            pinned_limbs = self._find_pinned_limbs(armature)
+            if pinned_limbs:
+                # Pin-driven hip drag: use native translate + depsgraph handler for IK
+                print(f"  → Root bone ({ik_bone_name}): Native translate + pin IK ({len(pinned_limbs)} pinned limb(s))")
+                self._start_hip_pin_drag(context, event, pose_bone, pinned_limbs)
+                return
+            else:
+                # No pins: use native translate (original behavior)
+                print(f"  → Root bone ({ik_bone_name}): Using Blender's native translate")
+                try:
+                    bpy.ops.transform.translate('INVOKE_DEFAULT')
+                    print("  ✓ Invoked native translate")
+                except Exception as e:
+                    print(f"  ✗ Could not invoke translate: {e}")
+                self._drag_bone_name = None
+                self._drag_armature = None
+                return
 
         # Use the mapped bone for IK
         self._drag_bone_name = ik_bone_name
@@ -3898,6 +3939,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Clear debug trail for new drag
                 self._analytical_leg_debug_trail = []
 
+                # Mute pin constraints if dragging a pinned bone
+                # The analytical solver sets rotations directly — pin constraints
+                # (Copy Location/Rotation) would fight the solver causing jitter.
+                if self._temp_unpinned_bone:
+                    pose_bone = armature.pose.bones.get(self._temp_unpinned_bone)
+                    if pose_bone:
+                        for c in pose_bone.constraints:
+                            if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation") and not c.mute:
+                                c.mute = True
+                                print(f"  ✓ Muted pin constraint: {c.name} on {self._temp_unpinned_bone}")
+
                 context.area.header_text_set(f"ANALYTICAL LEG IK: {self._drag_bone_name} | Release to apply")
                 print("  ✓ Analytical leg IK mode activated")
                 return  # Skip normal IK chain creation
@@ -4072,6 +4124,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                 # Clear debug trail
                 self._analytical_arm_debug_trail = []
+
+                # Mute pin constraints if dragging a pinned bone
+                if self._temp_unpinned_bone:
+                    pose_bone = armature.pose.bones.get(self._temp_unpinned_bone)
+                    if pose_bone:
+                        for c in pose_bone.constraints:
+                            if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation") and not c.mute:
+                                c.mute = True
+                                print(f"  ✓ Muted pin constraint: {c.name} on {self._temp_unpinned_bone}")
 
                 context.area.header_text_set(f"ANALYTICAL ARM IK: {self._drag_bone_name} | Release to apply")
                 print("  ✓ Analytical arm IK mode activated")
@@ -5349,6 +5410,558 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             import traceback
             traceback.print_exc()
 
+    # ========================================================================
+    # HIP PIN-DRIVEN IK — Analytical solve on pinned limbs while dragging hip
+    # ========================================================================
+
+    def _find_pinned_limbs(self, armature):
+        """Find all pinned limb endpoints and build per-limb solver state.
+
+        Returns list of limb state dicts, or empty list if no pins found.
+        """
+        limbs = []
+        pose_bones = armature.pose.bones
+
+        # Force depsgraph update for accurate positions
+        bpy.context.view_layer.update()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        armature_eval = armature.evaluated_get(depsgraph)
+
+        # (endpoint, type, side, upper_patterns, twist_patterns, lower_patterns, collar_pattern)
+        limb_configs = [
+            ('lFoot', 'leg', 'l', ['lThigh', 'lThighBend'], ['lThighTwist'], ['lShin', 'lShinBend', 'lCalf'], None),
+            ('rFoot', 'leg', 'r', ['rThigh', 'rThighBend'], ['rThighTwist'], ['rShin', 'rShinBend', 'rCalf'], None),
+            ('lHand', 'arm', 'l', ['lShldrBend', 'lShldr', 'lShoulder'], ['lShldrTwist'], ['lForearmBend', 'lForeArm', 'lForearm'], 'lCollar'),
+            ('rHand', 'arm', 'r', ['rShldrBend', 'rShldr', 'rShoulder'], ['rShldrTwist'], ['rForearmBend', 'rForeArm', 'rForearm'], 'rCollar'),
+        ]
+
+        for endpoint_name, limb_type, side, upper_pats, twist_pats, lower_pats, collar_pat in limb_configs:
+            data_bone = armature.data.bones.get(endpoint_name)
+            if not data_bone or not is_bone_pinned_translation(data_bone):
+                continue
+
+            # Get pin Empty position
+            pin_empty_name = f"PIN_translation_{armature.name}_{endpoint_name}"
+            pin_empty = bpy.data.objects.get(pin_empty_name)
+            if not pin_empty:
+                continue
+            pin_target_pos = pin_empty.matrix_world.translation.copy()
+
+            # Find bones by pattern
+            upper_bone = next((pose_bones[p] for p in upper_pats if p in pose_bones), None)
+            twist_bone = next((pose_bones[p] for p in twist_pats if p in pose_bones), None)
+            lower_bone = next((pose_bones[p] for p in lower_pats if p in pose_bones), None)
+            endpoint_bone = pose_bones.get(endpoint_name)
+            collar_bone = pose_bones.get(collar_pat) if collar_pat else None
+
+            if not upper_bone or not lower_bone or not endpoint_bone:
+                continue
+
+            # Calculate bone lengths from evaluated armature
+            upper_eval = armature_eval.pose.bones[upper_bone.name]
+            lower_eval = armature_eval.pose.bones[lower_bone.name]
+
+            upper_head = armature.matrix_world @ Vector(upper_eval.head)
+            lower_head = armature.matrix_world @ Vector(lower_eval.head)
+            lower_tail = armature.matrix_world @ Vector(lower_eval.tail)
+
+            upper_length = (lower_head - upper_head).length
+            lower_length = (lower_tail - lower_head).length
+
+            # Ensure quaternion mode
+            for bone in [upper_bone, twist_bone, lower_bone, endpoint_bone, collar_bone]:
+                if bone:
+                    bone.rotation_mode = 'QUATERNION'
+
+            # Build per-limb state dict
+            if limb_type == 'leg':
+                bones = {
+                    'thigh': upper_bone, 'thigh_twist': twist_bone,
+                    'shin': lower_bone, 'foot': endpoint_bone,
+                }
+                lengths = {'thigh': upper_length, 'shin': lower_length}
+            else:
+                forearm_twist = pose_bones.get(f'{side}ForearmTwist')
+                if forearm_twist:
+                    forearm_twist.rotation_mode = 'QUATERNION'
+                bones = {
+                    'collar': collar_bone, 'shoulder': upper_bone,
+                    'shoulder_twist': twist_bone, 'forearm': lower_bone,
+                    'forearm_twist': forearm_twist, 'hand': endpoint_bone,
+                }
+                lengths = {'upper': upper_length, 'lower': lower_length}
+
+            limbs.append({
+                'type': limb_type, 'side': side,
+                'endpoint_name': endpoint_name,
+                'pin_target_pos': pin_target_pos,
+                'bones': bones, 'lengths': lengths,
+                'bend_plane_normal': None,  # Deferred to first frame
+            })
+            print(f"  Found pinned {limb_type}: {endpoint_name} → target={pin_target_pos}")
+
+        return limbs
+
+    def _start_hip_pin_drag(self, context, event, hip_bone, pinned_limbs):
+        """Start hip drag: native translate + depsgraph handler for pin IK.
+
+        Uses Blender's own translate operator for hip movement (supports G+X,
+        G+Y, G+Shift+Z, snapping, etc.) and installs a depsgraph handler that
+        runs the analytical IK solver on pinned limbs after each update.
+        """
+        armature = self._drag_armature
+
+        print(f"\n=== Starting Hip Pin-Driven IK Drag ===")
+        print(f"  Hip bone: {hip_bone.name}, Pinned limbs: {len(pinned_limbs)}")
+
+        # Store state for the depsgraph handler
+        self._hip_bone = hip_bone
+        self._hip_original_location = hip_bone.location.copy()
+        self._hip_pin_limbs = pinned_limbs
+        self._hip_debug_frame = 0
+
+        # Store original rotations for cancel/restore
+        self._hip_original_rotations = {}
+        self._hip_original_rotations[hip_bone.name] = {
+            'location': hip_bone.location.copy(),
+            'rotation': hip_bone.rotation_quaternion.copy(),
+        }
+        for limb in pinned_limbs:
+            for bone_key, bone in limb['bones'].items():
+                if bone and bone.name not in self._hip_original_rotations:
+                    self._hip_original_rotations[bone.name] = {
+                        'location': bone.location.copy(),
+                        'rotation': bone.rotation_quaternion.copy(),
+                    }
+
+        # Mute pin constraints on pinned endpoints (solver writes rotations directly)
+        self._hip_pin_muted_constraints = []
+        for limb in pinned_limbs:
+            endpoint_pose = armature.pose.bones.get(limb['endpoint_name'])
+            if endpoint_pose:
+                for c in endpoint_pose.constraints:
+                    if c.name == "DAZ_Pin_Translation" and not c.mute:
+                        c.mute = True
+                        self._hip_pin_muted_constraints.append((endpoint_pose, c))
+                        print(f"  Muted pin constraint on {limb['endpoint_name']}")
+
+        # Install depsgraph handler that solves pinned limbs after each hip update
+        self._use_hip_pin_ik = True
+        self._hip_pin_solving = False  # Guard against re-entrant calls
+
+        def hip_pin_depsgraph_handler(scene, depsgraph):
+            """Called after every depsgraph update while native translate runs."""
+            # Guard: skip if we're already solving (our own updates trigger depsgraph)
+            if not self._use_hip_pin_ik or self._hip_pin_solving:
+                return
+            self._hip_pin_solving = True
+            try:
+                # Reset limb bones and solve each pinned limb
+                for limb in self._hip_pin_limbs:
+                    for bone_key, bone in limb['bones'].items():
+                        if bone:
+                            bone.rotation_quaternion = Quaternion()
+                            bone.location = Vector((0, 0, 0))
+                            bone.scale = Vector((1, 1, 1))
+
+                bpy.context.view_layer.update()
+
+                for limb in self._hip_pin_limbs:
+                    self._solve_pinned_limb(bpy.context, armature, limb)
+
+                self._hip_debug_frame += 1
+                if self._hip_debug_frame <= 3 or self._hip_debug_frame % 30 == 0:
+                    hip_pos = armature.matrix_world @ hip_bone.head
+                    print(f"  [HIP PIN] Frame {self._hip_debug_frame}: hip=({hip_pos.x:.4f}, {hip_pos.y:.4f}, {hip_pos.z:.4f})")
+            except Exception as e:
+                print(f"  [HIP PIN] Handler error: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                self._hip_pin_solving = False
+
+        self._hip_pin_handler = hip_pin_depsgraph_handler
+        bpy.app.handlers.depsgraph_update_post.append(hip_pin_depsgraph_handler)
+        print("  ✓ Installed depsgraph handler")
+
+        # Launch Blender's native translate — this takes over hip movement
+        try:
+            bpy.ops.transform.translate('INVOKE_DEFAULT')
+            print("  ✓ Invoked native translate")
+        except Exception as e:
+            print(f"  ✗ Could not invoke translate: {e}")
+            self._remove_hip_pin_handler()
+            self._use_hip_pin_ik = False
+
+        # Clear drag state — native translate owns the modal now
+        # Our modal will detect translate finishing via the handler cleanup
+        self._drag_bone_name = None
+        self._drag_armature_for_pin = armature  # Keep ref for end handler
+        print("  ✓ Hip pin IK mode activated")
+
+    def _remove_hip_pin_handler(self):
+        """Remove the depsgraph handler if installed."""
+        handler = getattr(self, '_hip_pin_handler', None)
+        if handler and handler in bpy.app.handlers.depsgraph_update_post:
+            bpy.app.handlers.depsgraph_update_post.remove(handler)
+            print("  ✓ Removed depsgraph handler")
+        self._hip_pin_handler = None
+
+    def _end_hip_pin_ik(self, context, cancel=False):
+        """Clean up after native translate finishes (confirm or cancel)."""
+        if not self._use_hip_pin_ik:
+            return
+
+        self._remove_hip_pin_handler()
+        armature = getattr(self, '_drag_armature_for_pin', None) or self._drag_armature
+        hip_bone = self._hip_bone
+
+        if cancel:
+            print(f"\n=== Canceling Hip Pin IK ===")
+            # Native translate already reverted the hip location on cancel.
+            # Restore all limb bone rotations from originals.
+            if armature:
+                for bone_name, original_state in self._hip_original_rotations.items():
+                    pose_bone = armature.pose.bones.get(bone_name)
+                    if pose_bone:
+                        pose_bone.location = original_state['location']
+                        pose_bone.rotation_quaternion = original_state['rotation']
+                context.view_layer.update()
+        else:
+            print(f"\n=== Ending Hip Pin IK ===")
+            # Native translate already committed the hip location.
+            # Keyframe hip location + all limb bone rotations.
+            current_frame = context.scene.frame_current
+
+            if hip_bone:
+                hip_bone.keyframe_insert(
+                    data_path="location",
+                    frame=current_frame,
+                    options={'INSERTKEY_VISUAL'}
+                )
+                print(f"  ✓ Keyframed location: {hip_bone.name}")
+
+            for limb in self._hip_pin_limbs:
+                for bone_key, bone in limb['bones'].items():
+                    if bone:
+                        bone.keyframe_insert(
+                            data_path="rotation_quaternion",
+                            frame=current_frame,
+                            options={'INSERTKEY_VISUAL'}
+                        )
+                        print(f"  ✓ Keyframed rotation: {bone.name}")
+
+            # Update pin Empty positions to match final endpoint positions
+            if armature:
+                for limb in self._hip_pin_limbs:
+                    endpoint_name = limb['endpoint_name']
+                    endpoint_bone = armature.pose.bones.get(endpoint_name)
+                    if endpoint_bone:
+                        new_pos = armature.matrix_world @ endpoint_bone.head
+                        pin_empty_name = f"PIN_translation_{armature.name}_{endpoint_name}"
+                        pin_empty = bpy.data.objects.get(pin_empty_name)
+                        if pin_empty:
+                            pin_empty.location = new_pos
+                            print(f"  ✓ Updated pin Empty: {pin_empty_name}")
+                        data_bone = armature.data.bones.get(endpoint_name)
+                        if data_bone and "daz_pin_location" in data_bone:
+                            data_bone["daz_pin_location"] = tuple(new_pos)
+
+        # Unmute pin constraints (always)
+        for pose_bone, constraint in self._hip_pin_muted_constraints:
+            try:
+                constraint.mute = False
+                print(f"  ✓ Re-enabled pin constraint: {constraint.name} on {pose_bone.name}")
+            except Exception as e:
+                print(f"  ⚠️  Error re-enabling pin on {pose_bone.name}: {e}")
+
+        # Clean up state
+        self._use_hip_pin_ik = False
+        self._hip_pin_limbs = []
+        self._hip_bone = None
+        self._hip_original_location = None
+        self._hip_original_rotations = {}
+        self._hip_pin_muted_constraints = []
+        self._hip_debug_frame = 0
+        self._hip_pin_solving = False
+        self._drag_armature_for_pin = None
+
+        context.area.header_text_set("DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
+
+    def _solve_pinned_limb(self, context, armature, limb):
+        """Run analytical 2-bone IK solve for one pinned limb.
+
+        target_pos is the pin position (fixed).
+        Joint origin (hip/shoulder) is read fresh from the armature.
+        """
+        target_pos = limb['pin_target_pos']
+
+        if limb['type'] == 'leg':
+            thigh_bone = limb['bones']['thigh']
+            shin_bone = limb['bones']['shin']
+            thigh_length = limb['lengths']['thigh']
+            shin_length = limb['lengths']['shin']
+
+            # Read hip joint position FRESH (it moved this frame)
+            joint_pos = armature.matrix_world @ thigh_bone.head
+
+            # Geometry
+            joint_to_target = target_pos - joint_pos
+            distance = joint_to_target.length
+            max_reach = thigh_length + shin_length
+            min_reach = abs(thigh_length - shin_length) * 0.1
+
+            if distance <= min_reach:
+                return
+            if distance >= max_reach:
+                distance = max_reach * 0.995
+
+            # Bend plane normal (deferred to first frame, locked for legs)
+            bend_normal = limb['bend_plane_normal']
+            if bend_normal is None:
+                thigh_world_mat_rest = (armature.matrix_world @ thigh_bone.matrix).to_3x3().normalized()
+                bend_normal = Vector(thigh_world_mat_rest.col[0]).normalized()
+                thigh_y = Vector(thigh_world_mat_rest.col[1]).normalized()
+                bone_z = Vector(thigh_world_mat_rest.col[2]).normalized()
+                test_dir = Quaternion(bend_normal, 0.01) @ thigh_y
+                if test_dir.dot(bone_z) > thigh_y.dot(bone_z):
+                    bend_normal = -bend_normal
+                limb['bend_plane_normal'] = bend_normal
+
+            target_dir = joint_to_target.normalized()
+
+            # Law of cosines
+            cos_knee = (thigh_length**2 + shin_length**2 - distance**2) / (2 * thigh_length * shin_length)
+            cos_knee = max(-1, min(1, cos_knee))
+            cos_hip = (thigh_length**2 + distance**2 - shin_length**2) / (2 * thigh_length * distance)
+            cos_hip = max(-1, min(1, cos_hip))
+            hip_angle = math.acos(cos_hip)
+
+            rotation = Quaternion(bend_normal, hip_angle)
+            thigh_dir = rotation @ target_dir
+
+            # STEP 3: ThighBend rotation
+            thigh_world_mat = (armature.matrix_world @ thigh_bone.matrix).to_3x3().normalized()
+            rest_x = Vector(thigh_world_mat.col[0]).normalized()
+            rest_quat = thigh_world_mat.to_quaternion()
+
+            target_y = thigh_dir.normalized()
+            target_x = bend_normal - bend_normal.dot(target_y) * target_y
+            if target_x.length < 0.001:
+                target_x = rest_x - rest_x.dot(target_y) * target_y
+                if target_x.length < 0.001:
+                    target_x = Vector((1, 0, 0))
+                target_x.normalize()
+            else:
+                target_x.normalize()
+                if target_x.dot(rest_x) < 0:
+                    target_x = -target_x
+            target_z = target_x.cross(target_y).normalized()
+
+            target_mat_3x3 = Matrix((
+                (target_x[0], target_y[0], target_z[0]),
+                (target_x[1], target_y[1], target_z[1]),
+                (target_x[2], target_y[2], target_z[2]),
+            ))
+            thigh_rotation = rest_quat.inverted() @ target_mat_3x3.to_quaternion()
+
+            if any(math.isnan(v) for v in thigh_rotation):
+                thigh_rotation = Quaternion()
+            thigh_bone.rotation_quaternion = thigh_rotation
+            context.view_layer.update()
+
+            # STEP 4: Shin rotation
+            shin_world_rest = (armature.matrix_world @ shin_bone.matrix).to_3x3().normalized()
+            shin_rest_quat = shin_world_rest.to_quaternion()
+
+            actual_knee_world = armature.matrix_world @ shin_bone.head
+            shin_vec = target_pos - actual_knee_world
+            if shin_vec.length > 0.001:
+                shin_dir = shin_vec.normalized()
+            else:
+                shin_dir = thigh_dir
+
+            shin_target_y = shin_dir
+            shin_target_x = bend_normal - bend_normal.dot(shin_target_y) * shin_target_y
+            if shin_target_x.length < 0.001:
+                shin_target_x = target_x - target_x.dot(shin_target_y) * shin_target_y
+                if shin_target_x.length < 0.001:
+                    shin_target_x = Vector((1, 0, 0))
+                shin_target_x.normalize()
+            else:
+                shin_target_x.normalize()
+                if shin_target_x.dot(target_x) < 0:
+                    shin_target_x = -shin_target_x
+            shin_target_z = shin_target_x.cross(shin_target_y).normalized()
+
+            shin_target_mat = Matrix((
+                (shin_target_x[0], shin_target_y[0], shin_target_z[0]),
+                (shin_target_x[1], shin_target_y[1], shin_target_z[1]),
+                (shin_target_x[2], shin_target_y[2], shin_target_z[2]),
+            ))
+            shin_rotation = shin_rest_quat.inverted() @ shin_target_mat.to_quaternion()
+
+            if any(math.isnan(v) for v in shin_rotation):
+                shin_rotation = Quaternion()
+            shin_bone.rotation_quaternion = shin_rotation
+            context.view_layer.update()
+
+        elif limb['type'] == 'arm':
+            shoulder_bone = limb['bones']['shoulder']
+            forearm_bone = limb['bones']['forearm']
+            collar_bone = limb['bones'].get('collar')
+            upper_length = limb['lengths']['upper']
+            lower_length = limb['lengths']['lower']
+
+            # Read shoulder position FRESH
+            shoulder_pos = armature.matrix_world @ shoulder_bone.head
+
+            # Optional collar rotation (same as arm solver STEP 1.5)
+            if collar_bone:
+                collar_world_mat = (armature.matrix_world @ collar_bone.matrix).to_3x3().normalized()
+                collar_rest_quat = collar_world_mat.to_quaternion()
+                collar_rest_y = Vector(collar_world_mat.col[1]).normalized()
+                collar_world_pos = armature.matrix_world @ collar_bone.head
+
+                collar_to_target = target_pos - collar_world_pos
+                if collar_to_target.length > 0.001:
+                    max_reach_prelim = upper_length + lower_length
+                    prelim_distance = (target_pos - shoulder_pos).length
+                    reach_ratio = min(prelim_distance / max_reach_prelim, 1.0)
+                    collar_scale = max(0.0, min(1.0, (reach_ratio - 0.4) / 0.4))
+                    effective_influence = 0.45 * collar_scale
+
+                    if effective_influence > 0.001:
+                        collar_to_target_dir = collar_to_target.normalized()
+                        full_rotation = collar_rest_y.rotation_difference(collar_to_target_dir)
+                        partial_rotation = Quaternion().slerp(full_rotation, effective_influence)
+                        collar_local = collar_rest_quat.inverted() @ (partial_rotation @ collar_rest_quat)
+
+                        if not any(math.isnan(v) for v in collar_local):
+                            collar_bone.rotation_quaternion = collar_local
+
+                context.view_layer.update()
+                shoulder_pos = armature.matrix_world @ shoulder_bone.head
+
+            # Geometry
+            shoulder_to_target = target_pos - shoulder_pos
+            distance = shoulder_to_target.length
+            max_reach = upper_length + lower_length
+            min_reach = abs(upper_length - lower_length) * 0.1
+
+            if distance <= min_reach:
+                return
+            if distance >= max_reach:
+                distance = max_reach * 0.995
+
+            target_dir = shoulder_to_target.normalized()
+
+            # Dynamic bend_normal (same as arm solver — Gram-Schmidt + sign continuity + dampening)
+            shoulder_world_mat_rest = (armature.matrix_world @ shoulder_bone.matrix).to_3x3().normalized()
+            preferred_normal = Vector(shoulder_world_mat_rest.col[0]).normalized()
+
+            projected = preferred_normal - preferred_normal.dot(target_dir) * target_dir
+            if projected.length > 0.01:
+                bend_normal = projected.normalized()
+            else:
+                bone_z_fallback = Vector(shoulder_world_mat_rest.col[2]).normalized()
+                projected = bone_z_fallback - bone_z_fallback.dot(target_dir) * target_dir
+                if projected.length > 0.01:
+                    bend_normal = projected.normalized()
+                else:
+                    bend_normal = preferred_normal
+
+            if limb['bend_plane_normal'] is None:
+                # First frame: anatomical sign check
+                shoulder_y = Vector(shoulder_world_mat_rest.col[1]).normalized()
+                bone_z = Vector(shoulder_world_mat_rest.col[2]).normalized()
+                test_dir = Quaternion(bend_normal, 0.01) @ shoulder_y
+                if test_dir.dot(bone_z) > shoulder_y.dot(bone_z):
+                    bend_normal = -bend_normal
+            else:
+                # Subsequent: sign continuity + dampening
+                if bend_normal.dot(limb['bend_plane_normal']) < 0:
+                    bend_normal = -bend_normal
+                bend_normal = limb['bend_plane_normal'].lerp(bend_normal, 0.25).normalized()
+
+            limb['bend_plane_normal'] = bend_normal.copy()
+
+            # Law of cosines
+            cos_elbow = (upper_length**2 + lower_length**2 - distance**2) / (2 * upper_length * lower_length)
+            cos_elbow = max(-1, min(1, cos_elbow))
+            cos_shoulder = (upper_length**2 + distance**2 - lower_length**2) / (2 * upper_length * distance)
+            cos_shoulder = max(-1, min(1, cos_shoulder))
+            shoulder_angle = math.acos(cos_shoulder)
+
+            rotation = Quaternion(bend_normal, shoulder_angle)
+            upper_arm_dir = rotation @ target_dir
+
+            # STEP 3: ShldrBend rotation
+            shoulder_world_mat = (armature.matrix_world @ shoulder_bone.matrix).to_3x3().normalized()
+            rest_x = Vector(shoulder_world_mat.col[0]).normalized()
+            rest_quat = shoulder_world_mat.to_quaternion()
+
+            target_y = upper_arm_dir.normalized()
+            target_x = bend_normal - bend_normal.dot(target_y) * target_y
+            if target_x.length < 0.001:
+                target_x = rest_x - rest_x.dot(target_y) * target_y
+                if target_x.length < 0.001:
+                    target_x = Vector((1, 0, 0))
+                target_x.normalize()
+            else:
+                target_x.normalize()
+                if target_x.dot(rest_x) < 0:
+                    target_x = -target_x
+            target_z = target_x.cross(target_y).normalized()
+
+            target_mat_3x3 = Matrix((
+                (target_x[0], target_y[0], target_z[0]),
+                (target_x[1], target_y[1], target_z[1]),
+                (target_x[2], target_y[2], target_z[2]),
+            ))
+            shoulder_rotation = rest_quat.inverted() @ target_mat_3x3.to_quaternion()
+
+            if any(math.isnan(v) for v in shoulder_rotation):
+                shoulder_rotation = Quaternion()
+            shoulder_bone.rotation_quaternion = shoulder_rotation
+            context.view_layer.update()
+
+            # STEP 4: ForearmBend rotation
+            forearm_world_rest = (armature.matrix_world @ forearm_bone.matrix).to_3x3().normalized()
+            forearm_rest_quat = forearm_world_rest.to_quaternion()
+
+            actual_elbow_world = armature.matrix_world @ forearm_bone.head
+            forearm_vec = target_pos - actual_elbow_world
+            if forearm_vec.length > 0.001:
+                forearm_dir = forearm_vec.normalized()
+            else:
+                forearm_dir = upper_arm_dir
+
+            forearm_target_y = forearm_dir
+            forearm_target_x = bend_normal - bend_normal.dot(forearm_target_y) * forearm_target_y
+            if forearm_target_x.length < 0.001:
+                forearm_target_x = target_x - target_x.dot(forearm_target_y) * forearm_target_y
+                if forearm_target_x.length < 0.001:
+                    forearm_target_x = Vector((1, 0, 0))
+                forearm_target_x.normalize()
+            else:
+                forearm_target_x.normalize()
+                if forearm_target_x.dot(target_x) < 0:
+                    forearm_target_x = -forearm_target_x
+            forearm_target_z = forearm_target_x.cross(forearm_target_y).normalized()
+
+            forearm_target_mat = Matrix((
+                (forearm_target_x[0], forearm_target_y[0], forearm_target_z[0]),
+                (forearm_target_x[1], forearm_target_y[1], forearm_target_z[1]),
+                (forearm_target_x[2], forearm_target_y[2], forearm_target_z[2]),
+            ))
+            forearm_rotation = forearm_rest_quat.inverted() @ forearm_target_mat.to_quaternion()
+
+            if any(math.isnan(v) for v in forearm_rotation):
+                forearm_rotation = Quaternion()
+            forearm_bone.rotation_quaternion = forearm_rotation
+            context.view_layer.update()
+
     def end_ik_drag(self, context, cancel=False):
         """End IK drag (or FABRIK drag) and optionally bake pose to FK
 
@@ -5357,6 +5970,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         """
         if not self._is_dragging:
             return
+
+        # NOTE: Hip pin IK mode is handled separately by _end_hip_pin_ik()
+        # (triggered from LEFTMOUSE RELEASE / RIGHTMOUSE / ESC handlers)
 
         # Handle ANALYTICAL LEG IK mode
         if self._use_analytical_leg_ik:
@@ -5382,6 +5998,38 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         print(f"  ✓ Keyframed: {bone.name}")
 
                 # Undo is handled by the custom _undo_stack (pushed at drag start)
+
+            # Restore pin constraints if we muted them at drag start
+            if self._temp_unpinned_bone:
+                try:
+                    armature = self._drag_armature
+                    bone_name = self._temp_unpinned_bone
+                    pose_bone = armature.pose.bones.get(bone_name) if armature else None
+
+                    if pose_bone:
+                        if not cancel:
+                            # Update pin Empty location to new bone position BEFORE re-enabling
+                            new_position = armature.matrix_world @ pose_bone.head
+                            for c in pose_bone.constraints:
+                                if c.name == "DAZ_Pin_Translation" and c.target:
+                                    c.target.location = new_position
+                                    print(f"  ✓ Updated pin location to new position: {new_position}")
+
+                            # Update stored pin data
+                            data_bone = armature.data.bones.get(bone_name)
+                            if data_bone and "daz_pin_location" in data_bone:
+                                data_bone["daz_pin_location"] = tuple(new_position)
+
+                        # Unmute pin constraints (always — whether cancelled or applied)
+                        for c in pose_bone.constraints:
+                            if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation") and c.mute:
+                                c.mute = False
+                                print(f"  ✓ Re-enabled pin constraint: {c.name} on {bone_name}")
+
+                except Exception as e:
+                    print(f"  ⚠️  Error re-enabling pin: {e}")
+
+                self._temp_unpinned_bone = None
 
             # Clean up analytical leg IK state
             self._use_analytical_leg_ik = False
@@ -5431,6 +6079,38 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                             options={'INSERTKEY_VISUAL'}
                         )
                         print(f"  ✓ Keyframed: {bone.name}")
+
+            # Restore pin constraints if we muted them at drag start
+            if self._temp_unpinned_bone:
+                try:
+                    armature = self._drag_armature
+                    bone_name = self._temp_unpinned_bone
+                    pose_bone = armature.pose.bones.get(bone_name) if armature else None
+
+                    if pose_bone:
+                        if not cancel:
+                            # Update pin Empty location to new bone position BEFORE re-enabling
+                            new_position = armature.matrix_world @ pose_bone.head
+                            for c in pose_bone.constraints:
+                                if c.name == "DAZ_Pin_Translation" and c.target:
+                                    c.target.location = new_position
+                                    print(f"  ✓ Updated pin location to new position: {new_position}")
+
+                            # Update stored pin data
+                            data_bone = armature.data.bones.get(bone_name)
+                            if data_bone and "daz_pin_location" in data_bone:
+                                data_bone["daz_pin_location"] = tuple(new_position)
+
+                        # Unmute pin constraints (always — whether cancelled or applied)
+                        for c in pose_bone.constraints:
+                            if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation") and c.mute:
+                                c.mute = False
+                                print(f"  ✓ Re-enabled pin constraint: {c.name} on {bone_name}")
+
+                except Exception as e:
+                    print(f"  ⚠️  Error re-enabling pin: {e}")
+
+                self._temp_unpinned_bone = None
 
             # Clean up analytical arm IK state
             self._use_analytical_arm_ik = False
@@ -7704,6 +8384,227 @@ class POSE_OT_clear_ik_pose(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ============================================================================
+# RIGHT-CLICK CONTEXT MENU - Pin management and bone options
+# ============================================================================
+
+class DAZ_OT_pin_translation(bpy.types.Operator):
+    """Pin or unpin translation of the active bone"""
+    bl_idname = "daz.pin_translation"
+    bl_label = "Pin Translation"
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE' or not armature.data.bones.active:
+            return {'CANCELLED'}
+        bone_name = armature.data.bones.active.name
+        data_bone = armature.data.bones[bone_name]
+
+        if is_bone_pinned_translation(data_bone):
+            # Unpin — only remove translation, keep rotation if present
+            pose_bone = armature.pose.bones.get(bone_name)
+            if pose_bone:
+                for c in list(pose_bone.constraints):
+                    if c.name == "DAZ_Pin_Translation":
+                        pose_bone.constraints.remove(c)
+            if "daz_pin_translation" in data_bone:
+                del data_bone["daz_pin_translation"]
+            if "daz_pin_location" in data_bone:
+                del data_bone["daz_pin_location"]
+            remove_pin_helper_empty(armature, bone_name, 'translation')
+            self.report({'INFO'}, f"Unpinned Translation: {bone_name}")
+            print(f"  ✓ Unpinned Translation: {bone_name}")
+        else:
+            pin_bone_translation(armature, bone_name)
+            self.report({'INFO'}, f"Pinned Translation: {bone_name}")
+
+        # Redraw viewports to update pin spheres
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
+class DAZ_OT_pin_rotation(bpy.types.Operator):
+    """Pin or unpin rotation of the active bone"""
+    bl_idname = "daz.pin_rotation"
+    bl_label = "Pin Rotation"
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE' or not armature.data.bones.active:
+            return {'CANCELLED'}
+        bone_name = armature.data.bones.active.name
+        data_bone = armature.data.bones[bone_name]
+
+        if is_bone_pinned_rotation(data_bone):
+            # Unpin — only remove rotation, keep translation if present
+            pose_bone = armature.pose.bones.get(bone_name)
+            if pose_bone:
+                for c in list(pose_bone.constraints):
+                    if c.name == "DAZ_Pin_Rotation":
+                        pose_bone.constraints.remove(c)
+            if "daz_pin_rotation" in data_bone:
+                del data_bone["daz_pin_rotation"]
+            if "daz_pin_rotation_euler" in data_bone:
+                del data_bone["daz_pin_rotation_euler"]
+            remove_pin_helper_empty(armature, bone_name, 'rotation')
+            self.report({'INFO'}, f"Unpinned Rotation: {bone_name}")
+            print(f"  ✓ Unpinned Rotation: {bone_name}")
+        else:
+            pin_bone_rotation(armature, bone_name)
+            self.report({'INFO'}, f"Pinned Rotation: {bone_name}")
+
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
+class DAZ_OT_unpin_selected(bpy.types.Operator):
+    """Remove all pins from the active bone"""
+    bl_idname = "daz.unpin_selected"
+    bl_label = "Unpin Selected"
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE' or not armature.data.bones.active:
+            return {'CANCELLED'}
+        bone_name = armature.data.bones.active.name
+        if unpin_bone(armature, bone_name):
+            self.report({'INFO'}, f"Unpinned: {bone_name}")
+        else:
+            self.report({'INFO'}, f"{bone_name} was not pinned")
+
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
+class DAZ_OT_unpin_all(bpy.types.Operator):
+    """Remove all pins from all bones on the active armature"""
+    bl_idname = "daz.unpin_all"
+    bl_label = "Unpin All"
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            return {'CANCELLED'}
+        count = 0
+        for bone in armature.data.bones:
+            if is_bone_pinned_translation(bone) or is_bone_pinned_rotation(bone):
+                unpin_bone(armature, bone.name)
+                count += 1
+        self.report({'INFO'}, f"Unpinned {count} bone(s)")
+        print(f"  ✓ Unpinned all: {count} bones")
+
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
+class DAZ_OT_toggle_pins(bpy.types.Operator):
+    """Temporarily enable or disable all pin constraints (mute/unmute)"""
+    bl_idname = "daz.toggle_pins"
+    bl_label = "Enable Pins"
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            return {'CANCELLED'}
+
+        # Check current state — if any pin constraint is active, mute all; otherwise unmute all
+        any_active = False
+        pin_constraints = []
+        for pose_bone in armature.pose.bones:
+            for c in pose_bone.constraints:
+                if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation"):
+                    pin_constraints.append(c)
+                    if not c.mute:
+                        any_active = True
+
+        if not pin_constraints:
+            self.report({'INFO'}, "No pins to toggle")
+            return {'FINISHED'}
+
+        # Toggle: if any active → mute all, if all muted → unmute all
+        new_mute = any_active
+        for c in pin_constraints:
+            c.mute = new_mute
+
+        state = "Disabled" if new_mute else "Enabled"
+        self.report({'INFO'}, f"Pins {state} ({len(pin_constraints)} constraints)")
+        print(f"  ✓ Pins {state}: {len(pin_constraints)} constraints")
+
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
+class DAZ_MT_bone_context(bpy.types.Menu):
+    """Right-click context menu for DAZ bone operations"""
+    bl_label = "DAZ Bone Options"
+    bl_idname = "DAZ_MT_bone_context"
+
+    def draw(self, context):
+        layout = self.layout
+        armature = context.active_object
+
+        if not armature or armature.type != 'ARMATURE' or not armature.data.bones.active:
+            layout.label(text="No bone selected")
+            return
+
+        bone_name = armature.data.bones.active.name
+        data_bone = armature.data.bones[bone_name]
+
+        has_trans = is_bone_pinned_translation(data_bone)
+        has_rot = is_bone_pinned_rotation(data_bone)
+
+        # Pin/Unpin Translation (toggle label)
+        layout.operator("daz.pin_translation",
+                        text="Unpin Translation" if has_trans else "Pin Translation",
+                        icon='UNPINNED' if has_trans else 'PINNED')
+
+        # Pin/Unpin Rotation (toggle label)
+        layout.operator("daz.pin_rotation",
+                        text="Unpin Rotation" if has_rot else "Pin Rotation",
+                        icon='UNPINNED' if has_rot else 'PINNED')
+
+        layout.separator()
+
+        # Unpin Selected (only if bone has any pin)
+        row = layout.row()
+        row.enabled = has_trans or has_rot
+        row.operator("daz.unpin_selected", icon='X')
+
+        # Unpin All
+        layout.operator("daz.unpin_all", icon='CANCEL')
+
+        layout.separator()
+
+        # Enable/Disable Pins (toggle label based on current state)
+        any_active = False
+        has_pins = False
+        for pose_bone in armature.pose.bones:
+            for c in pose_bone.constraints:
+                if c.name in ("DAZ_Pin_Translation", "DAZ_Pin_Rotation"):
+                    has_pins = True
+                    if not c.mute:
+                        any_active = True
+                        break
+            if any_active:
+                break
+
+        row = layout.row()
+        row.enabled = has_pins
+        row.operator("daz.toggle_pins",
+                     text="Disable Pins" if any_active else "Enable Pins",
+                     icon='HIDE_ON' if any_active else 'HIDE_OFF')
+
+
 def register():
     # Register DAZ Bone Select operator
     bpy.utils.register_class(VIEW3D_OT_daz_bone_select)
@@ -7718,6 +8619,14 @@ def register():
 
     # Register Clear IK Pose operator
     bpy.utils.register_class(POSE_OT_clear_ik_pose)
+
+    # Register Pin context menu and operators
+    bpy.utils.register_class(DAZ_OT_pin_translation)
+    bpy.utils.register_class(DAZ_OT_pin_rotation)
+    bpy.utils.register_class(DAZ_OT_unpin_selected)
+    bpy.utils.register_class(DAZ_OT_unpin_all)
+    bpy.utils.register_class(DAZ_OT_toggle_pins)
+    bpy.utils.register_class(DAZ_MT_bone_context)
 
     # Keyboard shortcut: Ctrl+Shift+D for "DAZ select"
     wm = bpy.context.window_manager
@@ -7755,6 +8664,14 @@ def unregister():
 
     # Unregister Clear IK Pose operator
     bpy.utils.unregister_class(POSE_OT_clear_ik_pose)
+
+    # Unregister Pin context menu and operators
+    bpy.utils.unregister_class(DAZ_MT_bone_context)
+    bpy.utils.unregister_class(DAZ_OT_toggle_pins)
+    bpy.utils.unregister_class(DAZ_OT_unpin_all)
+    bpy.utils.unregister_class(DAZ_OT_unpin_selected)
+    bpy.utils.unregister_class(DAZ_OT_pin_rotation)
+    bpy.utils.unregister_class(DAZ_OT_pin_translation)
 
     # Unregister DAZ Bone Select operator
     bpy.utils.unregister_class(VIEW3D_OT_daz_bone_select)
