@@ -2,7 +2,7 @@
 
 Quick reference guide for what's in each file and where to find specific functionality.
 
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-02-24
 
 ---
 
@@ -356,6 +356,16 @@ Pose blending system for creating and blending between multiple character poses 
 #### [PROPOSAL_MODULE_REFACTOR.md](PROPOSAL_MODULE_REFACTOR.md)
 **Purpose**: Proposal for module refactoring
 
+#### [planning/CHARACTER_INIT_SYSTEM.md](planning/CHARACTER_INIT_SYSTEM.md)
+**Purpose**: Design document for the BlenDAZ character initialisation system
+- One-click init flow (import → mannequin snapshot → merge → remap → CP setup)
+- Face group remap algorithm (mannequin → live merged mesh via face center matching)
+- Three-tier workflow (one-click / manual prep / advanced)
+- UI design for Setup section in N-panel
+- Open questions and implementation order
+- **Manual notes**: Key points for user-facing documentation
+- **Status**: Planned — awaiting implementation
+
 ---
 
 ## 🧪 Testing & Development
@@ -390,6 +400,14 @@ Pose blending system for creating and blending between multiple character poses 
 ### "Where are control points defined?"
 → [daz_shared_utils.py](daz_shared_utils.py) - `get_genesis8_control_points()` function
 → [posebridge/control_points.py](posebridge/control_points.py) - PoseBridge-specific definitions
+
+### "How do I set up a new character with BlenDAZ?"
+→ [planning/CHARACTER_INIT_SYSTEM.md](planning/CHARACTER_INIT_SYSTEM.md) - Full design doc
+→ `projects/posebridge/init_character.py` - Operators (planned, not yet implemented)
+
+### "How does face group highlight survive a geograft merge?"
+→ [planning/CHARACTER_INIT_SYSTEM.md](planning/CHARACTER_INIT_SYSTEM.md) - Remap algorithm
+→ [dsf_face_groups.py](../dsf_face_groups.py) - `FaceGroupManager.build_from_reference_mesh()`
 
 ### "How do I generate the character outline?"
 → [posebridge/outline_generator_lineart.py](posebridge/outline_generator_lineart.py) - Run this script (primary method)

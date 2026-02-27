@@ -9,8 +9,10 @@ import bpy
 import math
 from mathutils import Vector
 
+from outline_generator_lineart import get_or_create_pb_collection
 
-def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.22):
+
+def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.22, stage_coll=None):
     """
     Create orthographic camera aimed at the character's face.
 
@@ -53,7 +55,8 @@ def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.22):
     camera_data.sensor_height = 36.0
 
     camera = bpy.data.objects.new(camera_name, camera_data)
-    bpy.context.scene.collection.objects.link(camera)
+    target = stage_coll if stage_coll else bpy.context.scene.collection
+    target.objects.link(camera)
 
     # Set camera to correct world position/rotation FIRST
     # DAZ characters face -Y, so camera is in front at -Y offset, looking along +Y
@@ -588,12 +591,13 @@ def store_face_control_points(face_cps):
     return len(face_cps)
 
 
-def setup_face_panel(armature=None):
+def setup_face_panel(armature=None, char_name=None):
     """
     Main orchestrator: set up the face panel camera and control points.
 
     Args:
         armature: Armature object (auto-detected if None)
+        char_name: Short character name (e.g. 'Fey') for PB_{char}_Stage collection
 
     Returns:
         Dict with 'camera' and 'control_points' count, or None on failure
@@ -618,8 +622,14 @@ def setup_face_panel(armature=None):
     print(f"Setting up Face Panel for: {armature.name}")
     print(f"{'='*60}")
 
+    # Resolve target collection
+    stage_coll = None
+    if char_name:
+        stage_coll = get_or_create_pb_collection(char_name, 'Stage')
+        print(f"  Collection: {stage_coll.name}")
+
     # Step 1: Create face camera
-    camera = create_face_camera(armature)
+    camera = create_face_camera(armature, stage_coll=stage_coll)
     if not camera:
         return None
 

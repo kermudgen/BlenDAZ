@@ -261,10 +261,55 @@ class PoseBridgeSettings(PropertyGroup):
         precision=4
     )
 
+    highlight_opacity: FloatProperty(
+        name="Highlight Opacity",
+        description="Opacity of hover highlight and selection brackets",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        step=0.1,
+        precision=2,
+        subtype='FACTOR'
+    )
+
     control_points_fixed: CollectionProperty(
         type=PoseBridgeControlPoint,
         name="Fixed Control Points",
         description="Control points with fixed T-pose positions"
+    )
+
+    # -------------------------------------------------------------------------
+    # Character Init / Geograft Remap State
+    # -------------------------------------------------------------------------
+
+    blendaz_init_status: EnumProperty(
+        name="Init Status",
+        description="BlenDAZ character initialisation state",
+        items=[
+            ('uninitialised', 'Uninitialised', 'Character not yet set up with BlenDAZ'),
+            ('snapshot_done', 'Snapshot Done', 'Pre-merge snapshot saved — ready to merge geografts'),
+            ('ready',         'Ready',         'Character fully initialised and face groups remapped'),
+            ('needs_remap',   'Needs Remap',   'Mesh has changed since last remap — remap recommended'),
+        ],
+        default='uninitialised'
+    )
+
+    blendaz_reference_mesh_name: StringProperty(
+        name="Reference Mesh",
+        description="Name of the pre-merge mannequin copy used as face group reference",
+        default=""
+    )
+
+    blendaz_live_mesh_name: StringProperty(
+        name="Live Mesh",
+        description="Name of the body mesh at time of last remap",
+        default=""
+    )
+
+    blendaz_live_mesh_poly_count: bpy.props.IntProperty(
+        name="Live Mesh Polygon Count",
+        description="Polygon count of body mesh at time of last remap (for stale detection)",
+        default=0
     )
 
 

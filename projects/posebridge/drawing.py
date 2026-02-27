@@ -115,15 +115,20 @@ class PoseBridgeDrawHandler:
         # Get active panel view
         active_panel = settings.active_panel
 
-        # Face CPs live on the actual character (not in offset space),
-        # so only draw them in a viewport that is in camera view through PB_Camera_Face.
-        if active_panel == 'face':
+        # Only draw CPs in the viewport that is looking through the correct PoseBridge camera.
+        # This prevents the overlay from drawing (and wasting GPU) in the main 3D viewport.
+        # Body panel uses a free viewport — no camera filter applies there.
+        panel_cameras = {
+            'hands': 'PB_Camera_Hands',
+            'face':  'PB_Camera_Face',
+        }
+        expected_camera = panel_cameras.get(active_panel)
+        if expected_camera:
             if rv3d.view_perspective != 'CAMERA':
                 return
             space = context.space_data
-            # Local camera override, or fall back to scene camera
             cam = space.camera if space.camera else context.scene.camera
-            if not cam or cam.name != 'PB_Camera_Face':
+            if not cam or cam.name != expected_camera:
                 return
 
         # For face CPs, precompute head bone's current world matrix (bone-local → world)

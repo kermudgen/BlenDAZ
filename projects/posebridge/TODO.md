@@ -1,6 +1,6 @@
 # PoseBridge - TODO
 
-**Last Updated**: 2026-02-22
+**Last Updated**: 2026-02-24
 
 Track current development tasks, future features, and improvements needed.
 
@@ -36,6 +36,13 @@ Track current development tasks, future features, and improvements needed.
 
 ## Recently Completed (Feb 2026)
 
+- [x] **Selection brackets** - DAZ-style bone-aligned OBB corner brackets. Mesh vertex bounds with 15% padding. Gold/amber hover, light gray select. Hip falls back to pelvis region.
+- [x] **Highlight opacity control** - `highlight_opacity` FloatProperty (0–1) on PoseBridgeSettings. Slider in Settings N-panel. Controls mesh highlight + bracket alpha.
+- [x] **Morph drag race condition** - `_drag_control_point_id` + `_drag_bone_names` locked at mouse-down. Survives hover state clearing during drag threshold.
+- [x] **FACS joint morph fix** - `_get_driven_rotation_bones()` detects bones with rotation_euler drivers; skips them during quaternion conversion so Diffeomorphic joint morphs work.
+- [x] **Mannequin cleanup** - Shape key stripping + non-Armature modifier removal on mannequin mesh copy (no more JCMs/flexions in control panel).
+- [x] **Hidden twist bone CPs** - `capture_fixed_control_points()` now checks `'hidden': True` flag.
+- [x] **Hip G-translate fix** - Clear locked drag state in G handler; single native translate pass-through gate at top of modal().
 - [x] **Face Panel** - Live camera (`PB_Camera_Face`), ~26 morph CPs, FACS drag (bilateral + asymmetric), morph undo stack
 - [x] **N-Panel overhaul** - Removed old PowerPose panel; added Body Controls (Reset Pose) + Face Controls (Reset Face + expression/viseme sliders)
 - [x] **Undo stack fix** - `self._undo_stack = []` in invoke() was shadowing class list; fixed to use `VIEW3D_OT_daz_bone_select._undo_stack.clear()`
@@ -72,6 +79,10 @@ Track current development tasks, future features, and improvements needed.
 - [x] Handle missing bones gracefully (control point skipped if bone not in rig)
 - [ ] Handle armature rename mid-session
 - [ ] Verify behavior with different Genesis 8 figures (not just Fey)
+- [ ] Test with a male character (different body proportions, bone positions)
+- [ ] Test with geografts (e.g., geographic genital grafts — extra mesh regions parented to armature)
+- [ ] Test with multiple characters in the scene (armature detection, CP assignment, viewport interaction)
+- [ ] Test finger IK (hand panel finger controls)
 
 ---
 
@@ -93,6 +104,7 @@ Track current development tasks, future features, and improvements needed.
 
 ### UI Controls (Control Panel Viewport or BlenDAZ N-Panel)
 - [x] Mouse sensitivity slider (adjust rotation speed during posing)
+- [x] Highlight opacity slider (adjusts mesh highlight + bracket alpha)
 - [ ] Mute pin toggle (on/off) -- only affects rotations made in PoseBridge control panel; pins are still respected when rotating on the 3D mesh or via Blender gizmo until "Enable Pins" is turned off in BlenDAZ main controls
 - [ ] Per-bone 3-axis sliders when bone is selected (X/Y/Z rotation like DAZ Studio's posing sliders)
 
@@ -112,6 +124,11 @@ Track current development tasks, future features, and improvements needed.
 ---
 
 ## Known Issues
+
+### Pin System Bugs (dedicated debugging session needed)
+- [ ] **Feet pull away from shins on pelvis rotate** — pin feet, rotate pelvis → feet separate from shin bones. IK solver not maintaining chain connectivity during spine rotation compensation.
+- [ ] **Arms snap on hip move with extreme shoulder pose** — pin hands + feet, pose shoulders to extreme position, then G-move hip → arms snap to a different IK solution. Likely the analytical 2-bone IK solver flipping to the alternate elbow solution when the starting configuration changes significantly.
+- [ ] **General pin solver audit needed** — test all pin combinations (head rot + feet trans, head trans + feet trans, all limbs) and verify chain connectivity, rotation accuracy, and cancel/restore behavior.
 
 ### Medium Priority
 - [ ] Minor bugginess at extreme thigh X rotation (gimbal singularity in swing-twist decomposition)

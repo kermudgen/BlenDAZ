@@ -19,6 +19,7 @@ from . import drawing
 from . import panel_ui
 from . import presets
 from . import outline_generator
+from . import init_character
 
 bl_info = {
     "name": "PoseBridge Editor",
@@ -34,12 +35,14 @@ def register():
     outline_generator.register()
     interaction.register()
     drawing.register()
+    init_character.register()
     panel_ui.register()
     print("PoseBridge Editor registered")
 
 def unregister():
     """Unregister PoseBridge addon"""
     panel_ui.unregister()
+    init_character.unregister()
     drawing.unregister()
     interaction.unregister()
     outline_generator.unregister()

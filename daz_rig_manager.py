@@ -195,21 +195,45 @@ class RigManager:
         return pairs
 
     @classmethod
+    def _get_driven_rotation_bones(cls, armature) -> set:
+        """Find bones with rotation_euler drivers (e.g. Diffeomorphic FACS joint morphs)."""
+        driven = set()
+        if not armature.animation_data or not armature.animation_data.drivers:
+            return driven
+        for driver in armature.animation_data.drivers:
+            dp = driver.data_path
+            if 'pose.bones[' in dp and 'rotation_euler' in dp:
+                try:
+                    bone_name = dp.split('"')[1]
+                    driven.add(bone_name)
+                except (IndexError, KeyError):
+                    pass
+        return driven
+
+    @classmethod
     def _convert_to_quaternion(cls, armature) -> Tuple[Dict[str, str], int]:
         """
-        Convert all bones to quaternion rotation mode.
+        Convert bones to quaternion rotation mode.
+
+        Skips bones that have rotation_euler drivers (Diffeomorphic FACS joint
+        morphs for jaw, tongue, eyes, etc.) to avoid breaking driver evaluation.
 
         Returns:
             Tuple of (original_modes_dict, count_converted)
         """
         original_modes = {}
         converted_count = 0
+        driven_bones = cls._get_driven_rotation_bones(armature)
 
         for pose_bone in armature.pose.bones:
             original_mode = pose_bone.rotation_mode
             original_modes[pose_bone.name] = original_mode
 
             if original_mode != 'QUATERNION':
+                # Skip bones with rotation_euler drivers
+                if pose_bone.name in driven_bones:
+                    continue
+
                 # Convert current rotation to quaternion BEFORE changing mode
                 if original_mode == 'AXIS_ANGLE':
                     axis = Vector(pose_bone.rotation_axis_angle[1:4])

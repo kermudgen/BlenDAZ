@@ -10,6 +10,7 @@ import json
 import gzip
 import os
 from urllib.parse import unquote
+from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 
@@ -410,6 +411,89 @@ class FaceGroupManager:
         if key not in cls._cache:
             cls._cache[key] = cls(mesh_obj, armature)
         return cls._cache[key]
+
+    @classmethod
+    def build_from_reference_mesh(cls, reference_mesh_obj, live_mesh_obj, armature):
+        """Build a FaceGroupManager for live_mesh_obj using reference_mesh_obj as source.
+
+        Used after a geograft merge: the reference mesh (mannequin copy, pre-merge)
+        has a polygon order that matches the DSF file. The live mesh has shifted
+        indices after merge. Body vertex positions are unchanged by merge, so face
+        centers are bit-for-bit identical — we match on those.
+
+        Args:
+            reference_mesh_obj: Pre-merge mesh copy (e.g. '{name}_LineArt_Copy')
+            live_mesh_obj:      Post-merge body mesh (shifted polygon indices)
+            armature:           Armature object (for bone name validation)
+
+        Returns:
+            FaceGroupManager instance cached under live_mesh_obj's key,
+            or None if reference mesh has no valid face group data.
+        """
+        # Build (or retrieve cached) FaceGroupManager on the reference mesh.
+        # Its polygon count should match the DSF file exactly.
+        ref_key = (reference_mesh_obj.data.name, len(reference_mesh_obj.data.polygons))
+        if ref_key in cls._cache:
+            ref_fgm = cls._cache[ref_key]
+        else:
+            ref_fgm = cls(reference_mesh_obj, armature)
+            cls._cache[ref_key] = ref_fgm
+
+        if not ref_fgm.valid:
+            print("  [FaceGroups] Reference mesh has no valid face group data — remap aborted")
+            return None
+
+        ref_mesh = reference_mesh_obj.data
+        live_mesh = live_mesh_obj.data
+
+        # Step 1: Build face_center → bone_name lookup from reference mesh
+        ref_center_map = {}
+        for poly_idx, bone_name in enumerate(ref_fgm.face_group_map):
+            if bone_name is None:
+                continue
+            poly = ref_mesh.polygons[poly_idx]
+            center = Vector()
+            for vi in poly.vertices:
+                center += ref_mesh.vertices[vi].co
+            center /= len(poly.vertices)
+            key = (round(center.x, 4), round(center.y, 4), round(center.z, 4))
+            ref_center_map[key] = bone_name
+
+        print(f"  [FaceGroups] Reference map built: {len(ref_center_map)} mapped face centers")
+
+        # Step 2: Build new face_group_map for live mesh by matching face centers
+        new_map = [None] * len(live_mesh.polygons)
+        matched = 0
+        for poly_idx, poly in enumerate(live_mesh.polygons):
+            center = Vector()
+            for vi in poly.vertices:
+                center += live_mesh.vertices[vi].co
+            center /= len(poly.vertices)
+            key = (round(center.x, 4), round(center.y, 4), round(center.z, 4))
+            bone_name = ref_center_map.get(key)
+            if bone_name:
+                new_map[poly_idx] = bone_name
+                matched += 1
+
+        total = len(live_mesh.polygons)
+        new_polys = total - len(ref_mesh.polygons)
+        print(f"  [FaceGroups] Remap complete: {matched}/{total} polygons mapped "
+              f"({new_polys} new geograft polygons left unmapped — expected)")
+
+        # Step 3: Construct a FaceGroupManager with the remapped data
+        instance = cls.__new__(cls)
+        instance.valid = True
+        instance.face_group_map = new_map
+        # Build BVH from live mesh for SubSurf fallback
+        vertices = [v.co.copy() for v in live_mesh.vertices]
+        polygons = [tuple(p.vertices) for p in live_mesh.polygons]
+        instance._bvh_tree = BVHTree.FromPolygons(vertices, polygons)
+
+        # Cache under live mesh key so rest of system uses it transparently
+        live_key = (live_mesh_obj.data.name, len(live_mesh.polygons))
+        cls._cache[live_key] = instance
+        print(f"  [FaceGroups] Cached remapped FaceGroupManager for '{live_mesh_obj.name}'")
+        return instance
 
     @classmethod
     def invalidate(cls, mesh_obj=None):

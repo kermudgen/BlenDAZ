@@ -16,6 +16,7 @@ class PoseBlendDrawHandler:
 
     _draw_handler = None
     _hovered_dot_id = None  # Track which dot is being hovered
+    _target_area_ptr = None  # Only draw in this viewport (set on activate)
 
     @classmethod
     def register_handler(cls):
@@ -39,6 +40,12 @@ class PoseBlendDrawHandler:
     def draw_poseblend_overlay():
         """Main draw callback"""
         context = bpy.context
+
+        # Only draw in the viewport where PoseBlend was activated
+        if (PoseBlendDrawHandler._target_area_ptr is not None and
+                context.area.as_pointer() != PoseBlendDrawHandler._target_area_ptr):
+            return
+
         settings = context.scene.poseblend_settings
 
         if not settings.is_active:

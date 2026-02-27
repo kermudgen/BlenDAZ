@@ -9,47 +9,46 @@
 
 ## ⚡ Current State
 
-**Phase**: Phase 1 complete, active feature development
-**Status**: All core features working + extrapolation + "Update with Current Pose" context menu. Tested with Diffeomorphic Genesis 8 character ("Fey", 185 bones).
+**Phase**: Phase 1 complete, UX overhaul complete, polishing
+**Status**: All core features working. Non-blocking modal, dot-space zoom/pan, extrapolation, RMB context menus, grid management (add/rename/delete/clear). Tested with Diffeomorphic Genesis 8 character ("Fey", 185 bones).
 
 ---
 
 ## What We Did Last Session
 
-- Fixed crash bugs: `default_mask_mode` → `bone_mask_mode` in `interaction.py`, `import_export.py`
-- Fixed `add_dot()` crash with `None` mask_preset
-- Added `BOTTOM_LEFT` grid position (default)
-- Created `test_poseblend.py` — automated + manual test setup
-- First Blender test: all core features working (blending, dot creation, Shift+click, ESC restore)
-- Added "Update with Current Pose" to right-click context menu (`interaction.py`)
-- Implemented **pose extrapolation**: drag past a dot to amplify its pose
-  - `extrapolation_max` setting in core.py (0.0-2.0, default off)
-  - Spatial algorithm in `blending.py` `_apply_extrapolation()` — detects cursor past dominant dot
-  - Custom `slerp_unclamped()` in `poses.py` — Blender's slerp clamps t to [0,1], ours doesn't
-  - UI slider in Settings > Blending > Extrapolation
+- **Viewport isolation** — grid overlay only draws in the viewport where PoseBlend was activated (won't appear in PoseBridge's control panel). Uses `area.as_pointer()` stored on activate, checked in draw callback.
+- **Simplified activate operator** — uses `context.area` directly instead of scanning for first VIEW_3D area
+- **Extrapolation default → 1.0** — was 0.0 (off)
+- Confirmed PoseBlend and PoseBridge coexist under same DAZ N-panel tab without conflicts
 
 ---
 
 ## Next Up
 
-1. **Dot labels** — `drawing.py` `draw_label()` is still a `pass` stub. Implement with `blf` module.
-2. **More pose variety testing** — test with 4+ dots, different body regions, preset masks
-3. **Phase 2 testing** — Shift+drag dot movement, right-click context menu, delete dot (X key)
-4. **Grid lock mode** — verify locked grid prevents dot creation/deletion/movement
-5. **Export/import file round-trip** — test actual JSON file save and load (not just dict)
+1. **Bone mask testing** — verify preset masks (HEAD, UPPER_BODY, ARMS, etc.) select correct DAZ bones
+2. **Multi-grid workflow** — multiple grids with different body regions, switching between them
+3. **Dot labels** — `drawing.py` `draw_label()` is still a `pass` stub. Implement with `blf` module.
+4. **Lock mode testing** — verify locked grid prevents dot creation/deletion/movement but allows blending
+5. **Auto-keyframe testing** — verify keyframes land on correct frame for correct bones
+6. **Import/export verification** — test JSON file save and load round-trip
+7. **Edit dot mask operator** — `interaction.py` stub, needs real UI
 
 ---
 
 ## Don't Forget
 
-- **No full restart needed** — `importlib.reload()` works fine
+- **Non-blocking modal** — events outside grid get PASS_THROUGH; mid-interaction (PREVIEWING, DRAGGING_DOT, PANNING) continues regardless of cursor position
+- **Zoom transform**: forward `view = (pos - pan_center) * zoom + 0.5`, inverse `pos = (view - 0.5) / zoom + pan_center`
+- **Dots live in 0–1 space** — zoom/pan changes what's visible, not where dots are stored
 - **Quaternion storage**: `[w, x, y, z]` lists. On retrieval: `Quaternion((q[0], q[1], q[2], q[3]))`
-- **Grid positions**: normalized 0–1, origin bottom-left
 - **Bone mask hierarchy**: Dot mask → inherits from Grid mask if `USE_GRID`; overrides if `ALL`/`PRESET`/`CUSTOM`
 - **Never use Euler mode** — quaternion only throughout
 - **Grid position default is BOTTOM_LEFT** — avoids N-panel overlap
-- **`add_dot()` guards `None` mask_preset** — import can pass `None` when mask_mode isn't PRESET
 - **Blender slerp clamps t** — use `slerp_unclamped()` from `poses.py` for extrapolation
+- **Extrapolation default is 1.0** — allows pushing past stored poses by default
+- **Context menus**: RMB on dot → dot menu, RMB on empty → grid menu
+- **Viewport isolation**: `_target_area_ptr` in `PoseBlendDrawHandler` — set on activate, cleared on deactivate. Grid only draws in that viewport.
+- **PoseBridge coexistence**: Both modules share the DAZ N-panel tab. Non-blocking modal passes events through to PoseBridge outside the grid square.
 - **Test script**: `test_poseblend.py` — run in Blender Text Editor with armature selected
 
 ---
@@ -58,11 +57,11 @@
 
 | File | Why |
 |------|-----|
-| `drawing.py` | `draw_label()` — dot name rendering (next priority) |
-| `interaction.py` | Modal operator, context menu |
-| `blending.py` | IDW weights + extrapolation |
-| `poses.py` | `slerp_unclamped()`, pose capture/apply |
-| `test_poseblend.py` | Test script |
+| `drawing.py` | `draw_label()` stub, dot rendering, grid lines |
+| `interaction.py` | Modal operator, context menus, all operators |
+| `core.py` | PropertyGroups, grid_zoom, grid_pan |
+| `poses.py` | Bone masks, pose capture/apply, slerp_unclamped |
+| `presets.py` | Bone mask preset definitions |
 
 ---
 

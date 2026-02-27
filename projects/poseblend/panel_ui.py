@@ -302,8 +302,9 @@ class POSEBLEND_OT_activate(Operator):
         settings = context.scene.poseblend_settings
         settings.is_active = True
 
-        # Register draw handler
+        # Register draw handler — only in this viewport
         from .drawing import PoseBlendDrawHandler
+        PoseBlendDrawHandler._target_area_ptr = context.area.as_pointer()
         PoseBlendDrawHandler.register_handler()
 
         # Setup viewport
@@ -318,19 +319,8 @@ class POSEBLEND_OT_activate(Operator):
         if len(settings.grids) == 0:
             settings.add_grid("Body Poses")
 
-        # Start the modal operator in the 3D viewport
-        view3d_area = None
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                view3d_area = area
-                break
-
-        if view3d_area:
-            override = context.copy()
-            override['area'] = view3d_area
-            override['region'] = view3d_area.regions[-1]
-            with context.temp_override(**override):
-                bpy.ops.poseblend.interact('INVOKE_DEFAULT')
+        # Start the modal operator in this viewport
+        bpy.ops.poseblend.interact('INVOKE_DEFAULT')
 
         self.report({'INFO'}, "PoseBlend activated")
         context.area.tag_redraw()
@@ -346,8 +336,9 @@ class POSEBLEND_OT_deactivate(Operator):
         settings = context.scene.poseblend_settings
         settings.is_active = False
 
-        # Unregister draw handler
+        # Unregister draw handler and clear target area
         from .drawing import PoseBlendDrawHandler
+        PoseBlendDrawHandler._target_area_ptr = None
         PoseBlendDrawHandler.unregister_handler()
 
         # Restore viewport

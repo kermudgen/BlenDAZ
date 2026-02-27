@@ -8,6 +8,8 @@ import bmesh
 from mathutils import Vector, Matrix, Euler
 import math
 
+from outline_generator_lineart import get_or_create_pb_collection
+
 
 # Finger bones for control points (excluding carpals, Hand bone)
 FINGER_BONES = [
@@ -18,7 +20,7 @@ FINGER_BONES = [
     'Pinky1', 'Pinky2', 'Pinky3',
 ]
 
-def extract_hand_geometry(source_mesh_name, hand_side='left'):
+def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None):
     """
     Extract hand geometry from a mesh using vertex groups.
 
@@ -139,7 +141,8 @@ def extract_hand_geometry(source_mesh_name, hand_side='left'):
 
     # Create object
     hand_obj = bpy.data.objects.new(hand_mesh_name, new_mesh)
-    bpy.context.scene.collection.objects.link(hand_obj)
+    target = hands_coll if hands_coll else bpy.context.scene.collection
+    target.objects.link(hand_obj)
 
     # Calculate bounds center BEFORE origin_set (needed for bone position mapping)
     # At this point, object is at world origin with no transforms
@@ -205,7 +208,7 @@ def position_hands_for_view(left_hand_obj, right_hand_obj, z_offset=-53.0):
     return True
 
 
-def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5):
+def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5, hands_coll=None):
     """
     Create orthographic camera for hand panel view.
 
@@ -213,6 +216,7 @@ def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5):
         z_offset: Z position of hands
         camera_distance: Distance from hands to camera
         ortho_scale: Orthographic scale (smaller = more zoomed in)
+        hands_coll: Collection to link camera into (falls back to scene root)
 
     Returns:
         The camera object
@@ -231,7 +235,8 @@ def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5):
     camera_data.ortho_scale = ortho_scale
 
     camera = bpy.data.objects.new(camera_name, camera_data)
-    bpy.context.scene.collection.objects.link(camera)
+    target = hands_coll if hands_coll else bpy.context.scene.collection
+    target.objects.link(camera)
 
     # Hands are positioned at Y ≈ -0.67, so camera needs to be further back
     hands_y = -0.67
@@ -335,7 +340,7 @@ def get_transformed_bone_positions(armature_name, hand_obj, geometry_center, han
     return bone_positions
 
 
-def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=None):
+def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=None, char_name=None):
     """
     Main function: Extract hands from standin and set up for hand panel.
 
@@ -343,6 +348,7 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
         standin_mesh_name: Name of the standin mesh (e.g., "Fey Mesh_Standin")
         z_offset: Z position for hand view
         armature_name: Optional armature name to calculate bone positions for control points
+        char_name: Short character name (e.g. 'Fey') for PB_{char}_Hands collection
 
     Returns:
         Dict with:
@@ -356,13 +362,19 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
     print("EXTRACTING HANDS FOR POSEBRIDGE HAND PANEL")
     print("="*60)
 
+    # Resolve target collection
+    hands_coll = None
+    if char_name:
+        hands_coll = get_or_create_pb_collection(char_name, 'Hands')
+        print(f"  Collection: {hands_coll.name}")
+
     # Extract left hand
     print("\n--- Extracting LEFT hand ---")
-    left_hand, left_center = extract_hand_geometry(standin_mesh_name, 'left')
+    left_hand, left_center = extract_hand_geometry(standin_mesh_name, 'left', hands_coll=hands_coll)
 
     # Extract right hand
     print("\n--- Extracting RIGHT hand ---")
-    right_hand, right_center = extract_hand_geometry(standin_mesh_name, 'right')
+    right_hand, right_center = extract_hand_geometry(standin_mesh_name, 'right', hands_coll=hands_coll)
 
     if not left_hand or not right_hand:
         print("\nERROR: Failed to extract one or both hands")
@@ -374,7 +386,7 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
 
     # Create camera
     print("\n--- Creating hand camera ---")
-    camera = create_hand_camera(z_offset=z_offset)
+    camera = create_hand_camera(z_offset=z_offset, hands_coll=hands_coll)
 
     # Get bone positions if armature provided
     left_bone_positions = {}

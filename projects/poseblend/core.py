@@ -48,11 +48,19 @@ class PoseBlendDot(PropertyGroup):
         max=1.0
     )
 
-    # Pose data - stored as JSON string
+    # Pose data - stored as JSON strings
     # Format: {"bone_name": [w, x, y, z], ...}
     bone_rotations: StringProperty(
         name="Bone Rotations",
         description="JSON-encoded bone rotation quaternions",
+        default="{}"
+    )
+
+    # Bone locations - only stored for bones with non-zero location (e.g., hip root bone)
+    # Format: {"bone_name": [x, y, z], ...}
+    bone_locations: StringProperty(
+        name="Bone Locations",
+        description="JSON-encoded bone locations (root/translated bones only)",
         default="{}"
     )
 
@@ -140,6 +148,24 @@ class PoseBlendDot(PropertyGroup):
         rotations = self.get_rotations_dict()
         if bone_name in rotations:
             return rotations[bone_name]  # [w, x, y, z]
+        return None
+
+    def get_locations_dict(self):
+        """Parse bone_locations JSON to dict"""
+        try:
+            return json.loads(self.bone_locations)
+        except json.JSONDecodeError:
+            return {}
+
+    def set_locations_dict(self, locations):
+        """Serialize locations dict to JSON"""
+        self.bone_locations = json.dumps(locations)
+
+    def get_location(self, bone_name):
+        """Get location for specific bone"""
+        locations = self.get_locations_dict()
+        if bone_name in locations:
+            return locations[bone_name]  # [x, y, z]
         return None
 
     def get_custom_mask_list(self):
@@ -273,7 +299,7 @@ class PoseBlendGrid(PropertyGroup):
         """Generate unique ID for this grid"""
         self.id = str(uuid.uuid4())[:8]
 
-    def add_dot(self, name, position, rotations_dict, mask_mode='ALL', mask_preset='HEAD'):
+    def add_dot(self, name, position, rotations_dict, mask_mode='ALL', mask_preset='HEAD', locations_dict=None):
         """Add a new dot to the grid"""
         dot = self.dots.add()
         dot.generate_id()
@@ -281,6 +307,8 @@ class PoseBlendGrid(PropertyGroup):
         dot.name = name
         dot.position = position
         dot.set_rotations_dict(rotations_dict)
+        if locations_dict:
+            dot.set_locations_dict(locations_dict)
         dot.bone_mask_mode = mask_mode
         if mask_preset is not None:
             dot.bone_mask_preset = mask_preset

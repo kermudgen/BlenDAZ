@@ -4,6 +4,86 @@ import bpy
 from mathutils import Vector
 
 
+# ============================================================================
+# Collection utilities (shared by outline_generator, extract_hands, extract_face)
+# ============================================================================
+
+def _find_layer_collection(layer_coll, name):
+    """Recursively find a layer collection by collection name."""
+    if layer_coll.collection.name == name:
+        return layer_coll
+    for child in layer_coll.children:
+        found = _find_layer_collection(child, name)
+        if found:
+            return found
+    return None
+
+
+def get_or_create_pb_collection(char_name, sub=None):
+    """Return (and create if needed) a PoseBridge collection for a character.
+
+    Args:
+        char_name: Short armature name, e.g. 'Fey'
+        sub:       Optional sub-collection suffix, e.g. 'Stage' or 'Hands'.
+                   If given, returns PB_{char}_{sub} nested inside PB_{char}.
+
+    Returns:
+        The target bpy.types.Collection, ensured to be visible in the view layer.
+    """
+    scene = bpy.context.scene
+
+    # --- root: PB_{char} ---
+    root_name = f"PB_{char_name}"
+    if root_name in bpy.data.collections:
+        root_coll = bpy.data.collections[root_name]
+    else:
+        root_coll = bpy.data.collections.new(root_name)
+        scene.collection.children.link(root_coll)
+
+    _ensure_collection_visible(root_name)
+
+    if sub is None:
+        return root_coll
+
+    # --- child: PB_{char}_{sub} ---
+    child_name = f"PB_{char_name}_{sub}"
+    if child_name in bpy.data.collections:
+        child_coll = bpy.data.collections[child_name]
+        # Ensure it's a child of root (not floating)
+        if child_name not in [c.name for c in root_coll.children]:
+            # Unlink from wherever it is, re-link under root
+            for parent in list(child_coll.users_collection if hasattr(child_coll, 'users_collection') else []):
+                try:
+                    parent.children.unlink(child_coll)
+                except Exception:
+                    pass
+            try:
+                root_coll.children.link(child_coll)
+            except Exception:
+                pass
+    else:
+        child_coll = bpy.data.collections.new(child_name)
+        root_coll.children.link(child_coll)
+
+    _ensure_collection_visible(child_name)
+    return child_coll
+
+
+def _ensure_collection_visible(coll_name):
+    """Make sure a collection is not excluded or hidden in the view layer."""
+    lc = _find_layer_collection(bpy.context.view_layer.layer_collection, coll_name)
+    if lc:
+        lc.exclude = False
+        lc.hide_viewport = False
+
+
+def move_object_to_collection(obj, target_coll):
+    """Move obj from all current collections into target_coll."""
+    for coll in list(obj.users_collection):
+        coll.objects.unlink(obj)
+    target_coll.objects.link(obj)
+
+
 def capture_fixed_control_points(armature, outline_name="PB_Outline_LineArt"):
     """Capture fixed 3D positions of control points from T-pose
 
@@ -51,6 +131,10 @@ def capture_fixed_control_points(armature, outline_name="PB_Outline_LineArt"):
     # Capture positions
     count = 0
     for cp_def in control_points_defs:
+        # Skip hidden/virtual entries (e.g. twist bones that are delegates of shoulder/forearm)
+        if cp_def.get('hidden'):
+            continue
+
         # Handle both single bone and multi-bone groups
         if 'bone_names' in cp_def:
             # Multi-bone group - use reference_bone if specified, otherwise first bone
@@ -210,6 +294,22 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
     mesh_copy.name = f"{mesh_obj.name}_LineArt_Copy"
     print(f"  Created mesh copy: {mesh_copy.name}")
 
+    # Strip shape keys (JCMs, flexions, FACS blendshapes) — mannequin is geometry-only
+    if mesh_copy.data.shape_keys:
+        sk_count = len(mesh_copy.data.shape_keys.key_blocks)
+        mesh_copy.shape_key_clear()
+        print(f"  Stripped {sk_count} shape keys from mannequin")
+
+    # Remove non-essential modifiers (keep only Armature so it follows the pose)
+    removed_mods = []
+    for mod in list(mesh_copy.modifiers):
+        if mod.type != 'ARMATURE':
+            removed_mods.append(f"{mod.name} ({mod.type})")
+            mesh_copy.modifiers.remove(mod)
+    if removed_mods:
+        print(f"  Removed {len(removed_mods)} modifiers: {', '.join(removed_mods[:5])}"
+              f"{'...' if len(removed_mods) > 5 else ''}")
+
     # STEP 2: Create temp collection and move copied mesh
     print("Step 2: Moving mesh to temp collection...")
     temp_collection_name = f"{outline_name}_TempCollection"
@@ -347,10 +447,22 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
 
     # Set camera to orthographic for flat 2D view (no perspective distortion)
     camera_data.type = 'ORTHO'
-    camera_data.ortho_scale = 5.0  # Lots of negative space around character for control points
+    # ortho_scale = visible width in scene units. Derive from character bounding box:
+    # use the wider of (character width × 1.4) or (character height × 0.9) so the
+    # figure fits with comfortable margin regardless of body proportions.
+    min_x = min(coord.x for coord in bbox_coords)
+    max_x = max(coord.x for coord in bbox_coords)
+    character_width = max_x - min_x
+    ortho_scale = max(character_width * 1.4, character_height * 0.9)
+    camera_data.ortho_scale = ortho_scale
+    print(f"  ortho_scale: {ortho_scale:.3f} (width={character_width:.2f}m, height={character_height:.2f}m)")
+
+    # Determine PB Stage collection for this character
+    char_name = armature.name if armature else mesh_obj.name.replace(' Mesh', '').replace('_Mesh', '')
+    stage_coll = get_or_create_pb_collection(char_name, 'Stage')
 
     camera = bpy.data.objects.new(camera_name, camera_data)
-    bpy.context.scene.collection.objects.link(camera)
+    stage_coll.objects.link(camera)
 
     # Position camera 12 units in front (negative Y), at calculated Z height
     camera.location = Vector((character_center_x, character_center_y - 12, camera_z))
@@ -367,7 +479,7 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
     light_data = bpy.data.lights.new(light_name, 'POINT')
     light_data.energy = 50  # Power 50 (not 1000!)
     light = bpy.data.objects.new(light_name, light_data)
-    bpy.context.scene.collection.objects.link(light)
+    stage_coll.objects.link(light)
     light.location = camera.location.copy()
     print(f"  Light power: {light_data.energy}W")
 
@@ -679,12 +791,21 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
         layer_coll.exclude = False
         print(f"  ✓ Re-enabled collection: {original_collection.name}")
 
+    # Move mannequin and GP outline into PB_{char}_Stage; delete TempCollection
+    move_object_to_collection(mesh_copy, stage_coll)
+    move_object_to_collection(gp_obj, stage_coll)
+    print(f"  ✓ Moved '{mesh_copy.name}' → {stage_coll.name}")
+    print(f"  ✓ Moved '{gp_obj.name}' → {stage_coll.name}")
+    if temp_collection_name in bpy.data.collections:
+        bpy.data.collections.remove(bpy.data.collections[temp_collection_name])
+        print(f"  ✓ Deleted temp collection '{temp_collection_name}'")
+
     print(f"\n{'='*70}")
     print(f"✨ SUCCESS! Line Art Outline Created: {outline_name}")
     print(f"{'='*70}")
     print(f"\n🎯 Workflow Applied:")
     print(f"  1. Copied mesh: {mesh_obj.name} → {mesh_copy.name}")
-    print(f"  2. Moved copy to temp collection: {temp_collection.name}")
+    print(f"  2. Moved copy to temp collection: {temp_collection_name}")
     print(f"  3. Excluded original collection from view layer")
     print(f"  4. Created camera: 12 units from character, Z = {camera_z:.2f}m (58% of height)")
     print(f"  5. Created light: Same position, 50W power")
@@ -706,7 +827,7 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
     print(f"\n📦 Objects Created:")
     print(f"  • GP Object: {gp_obj.name}")
     print(f"  • Mesh Copy: {mesh_copy.name}")
-    print(f"  • Temp Collection: {temp_collection.name}")
+    print(f"  • Temp Collection: {temp_collection_name} (deleted after use)")
     print(f"  • Camera: {camera.name}")
     print(f"  • Light: {light.name}")
     print(f"\n🎨 The outline is now static (modifier applied) and flattened for front view!")

@@ -14,7 +14,78 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 
 ---
 
-## Current Session: 2026-02-19
+## Current Session: 2026-02-24 (session 4)
+
+### Active Work: Pin System — Head Pins, Spine Compensation, UX Polish
+
+#### Features Implemented This Session
+
+1. **Head rotation pin + spine compensation** — `_solve_pinned_neck()` distributes counter-rotation through 6 spine bones when hip or any spine bone rotates. Uses `correction @ bone.rotation_quaternion` to compose with existing rotations (not replace). Partial chains: `_find_pinned_head(armature, rotated_bone_name=X)` only compensates with bones ABOVE the rotated bone.
+
+2. **Head translation pin + neck IK** — 2-bone analytical IK through neckLower/neckUpper via `_solve_pinned_limb()`. Fixed bend normal to use `cross(bone_Y, target_dir)` instead of fixed forward heuristic (leg solver copy was wrong for backward movement).
+
+3. **R/G key pass-through on pinned bones** — R on rotation-pinned bone mutes constraint, passes through to native rotate, updates pin Empty on confirm. G on translation-pinned bone uses existing `_temp_unpinned_bone` system.
+
+4. **Rotation pins active during IK drag** — Only `DAZ_Pin_Translation` muted during G-drag; `DAZ_Pin_Rotation` stays active so foot/hand orientation is maintained.
+
+5. **R key handler improvements** — Only intercepts R for hip + spine chain bones when head is rotation-pinned. Pin override allows R on pinned bones themselves.
+
+6. **Depsgraph handler reset to originals** — When rotating a spine bone, handler resets compensation bones to pre-drag originals (not identity), preserving prior user-set rotations on other spine bones.
+
+#### Bugs Fixed This Session
+
+1. **T18 test failure (backward hip translation)** — Bend normal using fixed "forward bend" heuristic from leg solver chose wrong direction for backward movement. Fixed with `cross(bone_Y, target_dir)`.
+
+2. **R key intercepting all rotations** — Handler checked if head was pinned but not which bone was selected. Fixed to only intercept hip + spine chain bones.
+
+3. **NoneType error in end_ik_drag** — `self._drag_armature` was None. Added null guard.
+
+4. **Spine bones snapping to rest** — Depsgraph handler reset all_bones to identity. Changed to reset to pre-drag originals.
+
+5. **Solver overwriting user rotations** — `bone.rotation_quaternion = local_rot` replaced instead of composing. Fixed with `correction @ bone.rotation_quaternion`.
+
+6. **Both pin types muted during IK drag** — Changed to only mute `DAZ_Pin_Translation`, keeping `DAZ_Pin_Rotation` active.
+
+#### Known Bug: Unpin Pose Preservation
+
+**Status**: OPEN — logged as known bug, moving on
+
+**Problem**: When unpinning a bone (removing rotation or translation pin), the bone snaps back to its rest pose instead of keeping its current visual position/rotation.
+
+**Root Cause**: Copy Rotation / Copy Location constraints provide visual transform but don't write to `rotation_quaternion` / `location`. When the constraint is removed, the bone reverts to its unconstrained local transform.
+
+**Three Approaches Tried, All Failed**:
+1. **Matrix decomposition** — Computed `pose_matrix = rest_local.inverted() @ local_matrix`, set `rotation_quaternion`. Didn't produce correct results.
+2. **matrix_basis computation** — `target_basis = rest_offset.inverted() @ parent_mat.inverted() @ constrained_matrix`. Same snap behavior.
+3. **World-space delta** — Snapshot world rotation with constraint, remove constraint, compute quaternion delta, conjugate to local space, compose. Still snaps.
+
+**Possible Next Approaches**:
+- Try Blender's built-in `bpy.ops.constraint.apply()` operator (applies constraint and removes it, might handle the math internally)
+- Try `pose_bone.matrix = constrained_matrix` directly (Blender might handle decomposition internally when setting `.matrix`)
+- Try keyframing the constrained pose before removing constraint
+- Investigate if the constraint needs to be evaluated on the depsgraph before reading the constrained matrix
+
+#### Test Suite
+
+`tests/test_pin_system.py` — 30 tests, 78 assertions:
+- Pin setup tests (6 tests)
+- Head rotation pin + spine compensation (8 tests)
+- Head translation pin + neck IK (8 tests)
+- Combined pin tests (4 tests)
+- Edge cases (4 tests)
+
+All 78/78 passing after bend normal fix and solver compose fix.
+
+#### Key Technical Insights
+
+- **Rotation composition vs replacement**: `correction @ existing` preserves user-set rotations. `= computed_rot` overwrites everything. Critical for multi-bone spine compensation.
+- **Bend normal for neck**: `cross(bone_Y, target_dir)` works for any target direction. The leg solver's fixed "forward bend" heuristic only works for leg geometry.
+- **Partial spine chains**: When user rotates a spine bone, only bones ABOVE it should compensate. `_find_pinned_head(rotated_bone_name=X)` builds the right chain.
+- **Reset to originals, not identity**: Depsgraph handlers must preserve prior user operations on bones not being actively rotated.
+
+---
+
+## Previous Session: 2026-02-19
 
 ### Active Work: Analytical Leg IK + DAZ Rig Manager Architecture
 

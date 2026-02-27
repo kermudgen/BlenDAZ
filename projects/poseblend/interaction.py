@@ -4,7 +4,7 @@ import bpy
 from bpy.types import Operator
 from .grid import pixel_to_grid, find_dot_at_position, snap_to_grid, clamp_to_grid
 from .blending import calculate_blend_weights
-from .poses import apply_blended_pose, capture_pose, keyframe_pose, get_bone_mask_for_dot
+from .poses import apply_blended_pose, capture_pose, capture_bone_locations, keyframe_pose, get_bone_mask_for_dot
 from .presets import get_dot_color
 
 
@@ -405,8 +405,9 @@ class POSEBLEND_OT_interact(Operator):
         if not grid or not armature:
             return
 
-        # Capture current pose
+        # Capture current pose (rotations + locations)
         rotations = capture_pose(armature)
+        locations = capture_bone_locations(armature)
 
         # Clamp to 0-1 (dots live in dot space) and snap if enabled
         position = clamp_to_grid(self._cursor_pos)
@@ -419,6 +420,7 @@ class POSEBLEND_OT_interact(Operator):
             name=name,
             position=position,
             rotations_dict=rotations,
+            locations_dict=locations,
             mask_mode=grid.bone_mask_mode,
             mask_preset=grid.bone_mask_preset
         )
@@ -574,6 +576,7 @@ class POSEBLEND_OT_duplicate_dot(Operator):
                     name=f"{dot.name} (copy)",
                     position=new_pos,
                     rotations_dict=dot.get_rotations_dict(),
+                    locations_dict=dot.get_locations_dict(),
                     mask_mode=dot.bone_mask_mode,
                     mask_preset=dot.bone_mask_preset
                 )
@@ -601,7 +604,9 @@ class POSEBLEND_OT_update_dot_pose(Operator):
             return {'CANCELLED'}
 
         rotations = capture_pose(armature)
+        locations = capture_bone_locations(armature)
         dot.set_rotations_dict(rotations)
+        dot.set_locations_dict(locations)
         self.report({'INFO'}, f"Updated dot: {dot.name}")
         return {'FINISHED'}
 

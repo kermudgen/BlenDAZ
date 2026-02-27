@@ -1,6 +1,6 @@
 # BlenDAZ - TODO
 
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-02-24
 
 Track current development tasks, future features, and improvements needed.
 
@@ -37,22 +37,30 @@ Track current development tasks, future features, and improvements needed.
 
 ---
 
-### Analytical Leg IK 🟡 In Progress
+### Analytical IK Solvers 🟢 Complete
 
-**Description**: Bypass Blender's IK solver for legs to fix knee straightening issues.
+**Description**: Bypass Blender's IK solver for legs and arms using direct law-of-cosines math.
 
-#### Key Insight
-- Knee is a hinge joint (only X axis rotation)
-- Law of cosines gives exact knee angle based on distance
-- No local minima, no solver fighting
+#### Leg Solver (57/57 tests passing)
+- [x] 2-bone analytical solve (thigh + shin)
+- [x] Bone X-axis bend plane (locked — legs have limited ROM)
+- [x] Works across all hip rotations including degenerate 90° cases
+- [x] Thigh twist preservation
+- [x] Debug overlay (`_DEBUG_DRAW_ANALYTICAL_LEG`)
+- [x] Full test suite: `tests/test_analytical_leg.py`
 
-#### Current Status
-- [x] `solve_two_bone_ik_analytical()` function
-- [x] `calculate_bone_rotation_from_direction()` helper
-- [x] `update_analytical_leg_drag()` drag handler
-- [ ] Debug quaternion rotation application
-- [ ] Test with various leg poses
-- [ ] Consider arm IK with similar approach
+#### Arm Solver (62/62 tests passing)
+- [x] 2-bone analytical solve (shoulder + forearm)
+- [x] Hand-only trigger (lHand/rHand)
+- [x] Collar integration: 45% damped-track with reach-distance scaling
+- [x] Dynamic bend plane: Gram-Schmidt projection + sign continuity + dampened blending
+- [x] Forearm twist preservation
+- [x] Debug overlay (`_DEBUG_DRAW_ANALYTICAL_ARM`)
+- [x] Full test suite: `tests/test_analytical_arm.py`
+
+#### Key Architecture Differences (Leg vs Arm)
+- **Legs**: Locked bend_normal (computed once on first frame). Sufficient because hip ROM is limited.
+- **Arms**: Dynamic bend_normal (recomputed each frame via Gram-Schmidt). Required because shoulder has full spherical ROM. Sign continuity tracking + 25% dampened blending prevents twist snapping during sweeps.
 
 ---
 
@@ -130,12 +138,62 @@ Track current development tasks, future features, and improvements needed.
 
 ---
 
-## ✅ Recently Completed (2026-02-16)
+## 🚧 Next Session — N-Panel Reorganisation
 
-- [x] **Documentation System Setup** - Established four-file documentation system (CLAUDE.md, INDEX.md, SCRATCHPAD.md, TODO.md)
-- [x] **INDEX.md Creation** - Comprehensive file reference with 30+ files cataloged
-- [x] **CLAUDE.md Enhancement** - Added documentation system guidelines for AI assistants
-- [x] **SCRATCHPAD.md Creation** - Development journal started
+**Goal**: Restructure all DAZ-tab N-panel sections into a clean, DAZ-like hierarchy before further feature work.
+
+### Agreed Structure (diagram finalised this session)
+
+```
+DAZ tab
+├── BlenDAZ          ← root: master Start/Stop button + Setup sub-panel (init/remap)
+├── Touch            ← click-drag posing settings (no own on/off — runs when BlenDAZ active)
+├── PoseBridge       ← visual control panel: Open in Viewport, Body/Hands/Face switcher,
+│                       Body Controls (Reset Pose), Face Controls (expressions + visemes),
+│                       Settings (sensitivity, outlines, keyframe, constraints)
+└── PoseBlend        ← dot grid puppeteer: keep existing structure as-is
+```
+
+### Open Questions (sleep on these before deciding)
+
+1. **Rotation Limits + IK Settings** (currently in "DAZ Bone Tools" root panel) — move into Touch > Settings, or drop from UI entirely since users don't touch them day-to-day?
+2. **Body Controls + Face Controls** — DEFAULT_CLOSED or open by default under PoseBridge?
+3. **"Open in Viewport" for PoseBridge** — needs to be built. Should clicking it lock the viewport to camera view immediately (current behavior when clicking Panel Views), or just register the draw handler and let the user switch manually?
+4. **BlenDAZ Start button** — does stopping BlenDAZ also stop PoseBridge/PoseBlend viewports, or just Touch?
+
+### Tasks (in order)
+
+- [ ] Create new `D:\Dev\BlenDAZ\projects\posebridge\panel_ui.py` structure:
+  - [ ] `VIEW3D_PT_blendaz_root` — master panel ("BlenDAZ"), Start/Stop Touch button, armature + status line
+  - [ ] `VIEW3D_PT_blendaz_setup` — move/keep as sub-panel of blendaz_root (currently parented to posebridge_main)
+  - [ ] `VIEW3D_PT_touch` — sensitivity, morph sensitivity, opacity, enforce constraints, auto keyframe
+  - [ ] `VIEW3D_PT_posebridge` — Open in Viewport button, Body/Hands/Face switcher, show outline/CPs
+  - [ ] `VIEW3D_PT_posebridge_body` — Reset Pose, Clear All Pins (sub of posebridge)
+  - [ ] `VIEW3D_PT_posebridge_face` — Reset Face, Expressions box, Visemes box (sub of posebridge)
+  - [ ] `VIEW3D_PT_posebridge_settings` — existing settings, collapsed (sub of posebridge)
+- [ ] Remove `D:\Dev\BlenDAZ\panel_ui.py` root panel ("DAZ Bone Tools") — contents redistributed above
+- [ ] Move `VIEW3D_PT_daz_body_controls` and `VIEW3D_PT_daz_face_controls` out of `daz_bone_select.py` into `posebridge/panel_ui.py`
+- [ ] Build `POSEBRIDGE_OT_open_in_viewport` operator — targets current viewport via `context.area.as_pointer()`
+- [ ] Update `daz_bone_select.py` register/unregister to stop registering the old root panel
+- [ ] Update `setup_all.py` summary printout for new panel names
+- [ ] Test: full session start → N-panel looks correct → Touch works → PoseBridge opens in viewport → PoseBlend opens in viewport
+
+---
+
+## ✅ Recently Completed (2026-02-24)
+
+- [x] **N-Panel reorganisation design** (2026-02-24) — Full diagram agreed, open questions documented in Next Session above. Structure: BlenDAZ root → Touch → PoseBridge (with Body/Face Controls) → PoseBlend.
+- [x] **Character Init System** (2026-02-24) — `register_only.py`, `init_character.py` (3 operators), `build_from_reference_mesh()` in `dsf_face_groups.py`, status properties in `core.py`, BlenDAZ Setup sub-panel in `panel_ui.py`. Auto-restores remapped FGM on module reload. Live hot-push of FGM into running modal via `_live_instance`.
+- [x] **Face group highlight fix post-merge** (2026-02-24) — `get_or_create` now falls back to `build_from_reference_mesh` when DSF polygon count mismatches and `blendaz_init_status == 'ready'`. `used_face_groups` only blocks vertex-weight fallback when polygons were actually found.
+- [x] **Head Rotation Pin + Spine Compensation** (2026-02-24) - `_solve_pinned_neck()` distributes counter-rotation through 6 spine bones. Partial chains, compose-not-replace, reset-to-originals.
+- [x] **Head Translation Pin + Neck IK** (2026-02-24) - 2-bone analytical IK through neckLower/neckUpper. Fixed bend normal with `cross(bone_Y, target_dir)`.
+- [x] **R/G Key Pass-Through on Pinned Bones** (2026-02-24) - Override pinned bone constraints, update pin on confirm.
+- [x] **Rotation Pins Active During IK Drag** (2026-02-24) - Only mute translation pins during G-drag; rotation pins stay active.
+- [x] **Pin System Test Suite** (2026-02-24) - `tests/test_pin_system.py` — 30 tests, 78 assertions, all passing.
+- [x] **Analytical Arm IK Solver** (2026-02-23) - 2-bone law-of-cosines solver with collar integration, dynamic bend plane, and 62 regression tests
+- [x] **Analytical Leg IK Solver** (2026-02-23) - 2-bone solver with bone X-axis bend plane, 57 regression tests, bulletproof across all hip rotations
+- [x] **Bone Selection Fix** (2026-02-23) - No more toggle-off on re-click, always selects reliably
+- [x] **Documentation System Setup** (2026-02-16) - Four-file documentation system (CLAUDE.md, INDEX.md, SCRATCHPAD.md, TODO.md)
 
 ---
 
@@ -200,6 +258,7 @@ Track current development tasks, future features, and improvements needed.
 ## 🐛 Known Issues
 
 ### High Priority
+- [ ] **Unpin Pose Preservation**: Bones snap to rest pose when unpinned instead of keeping current visual position/rotation. Three approaches failed (matrix decomposition, matrix_basis computation, world-space delta). Constraint visual transform doesn't write to `rotation_quaternion`. Possible fixes: try `bpy.ops.constraint.apply()`, try setting `pose_bone.matrix` directly, try keyframing before removing constraint.
 - [ ] **Diffeomorphic Import Issue**: Some bones don't get LIMIT_ROTATION constraints
   - Affects: head, shoulder twist, elbow, forearm twist bones
   - Workaround: Fallback to IK limits or defaults in `enforce_rotation_limits()`

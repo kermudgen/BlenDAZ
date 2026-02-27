@@ -2,7 +2,7 @@
 
 import bpy
 import math
-from mathutils import Quaternion
+from mathutils import Quaternion, Vector
 from .presets import get_bone_group, get_all_body_bones
 
 
@@ -57,17 +57,51 @@ def capture_pose_for_preset(armature, preset_name):
     return capture_pose(armature, bone_mask)
 
 
+def capture_bone_locations(armature, bone_mask=None):
+    """Capture bone locations for bones with non-zero translation (e.g., hip root bone).
+
+    Only stores bones where location is non-zero or the bone is a root bone (no parent),
+    to keep the data compact — most bones in a DAZ rig never use location.
+
+    Args:
+        armature: Armature object
+        bone_mask: List of bone names to capture, or None for all
+
+    Returns:
+        Dict of {bone_name: [x, y, z]} locations
+    """
+    if armature is None or armature.type != 'ARMATURE':
+        return {}
+
+    locations = {}
+
+    for pose_bone in armature.pose.bones:
+        if bone_mask is not None and pose_bone.name not in bone_mask:
+            continue
+
+        # Capture root bones always (hip), and any bone with non-zero location
+        is_root = pose_bone.bone.parent is None
+        has_location = pose_bone.location.length_squared > 1e-8
+
+        if is_root or has_location:
+            loc = pose_bone.location
+            locations[pose_bone.name] = [loc.x, loc.y, loc.z]
+
+    return locations
+
+
 # ============================================================================
 # Pose Application
 # ============================================================================
 
-def apply_pose(armature, rotations, bone_mask=None):
-    """Apply pose rotations to armature
+def apply_pose(armature, rotations, bone_mask=None, locations=None):
+    """Apply pose rotations (and optionally locations) to armature
 
     Args:
         armature: Armature object
         rotations: Dict of {bone_name: [w, x, y, z]}
         bone_mask: Optional mask to filter which bones to affect
+        locations: Optional dict of {bone_name: [x, y, z]}
     """
     if armature is None or armature.type != 'ARMATURE':
         return
@@ -90,6 +124,15 @@ def apply_pose(armature, rotations, bone_mask=None):
         else:
             pose_bone.rotation_euler = quat.to_euler(pose_bone.rotation_mode)
 
+    # Apply locations if provided
+    if locations:
+        for bone_name, loc_values in locations.items():
+            if bone_mask is not None and bone_name not in bone_mask:
+                continue
+            pose_bone = armature.pose.bones.get(bone_name)
+            if pose_bone:
+                pose_bone.location = Vector(loc_values)
+
 
 def apply_blended_pose(armature, weighted_poses):
     """Apply a blended pose from multiple weighted sources
@@ -101,13 +144,13 @@ def apply_blended_pose(armature, weighted_poses):
     if not weighted_poses:
         return
 
-    # Collect all affected bones
+    # Collect all affected bones (from rotations)
     all_bones = set()
     for dot, weight in weighted_poses:
         rotations = dot.get_rotations_dict()
         all_bones.update(rotations.keys())
 
-    # Blend each bone
+    # Blend each bone's rotation
     for bone_name in all_bones:
         # Collect rotations for this bone from dots that have it
         bone_rotations = []
@@ -130,6 +173,33 @@ def apply_blended_pose(armature, weighted_poses):
                 pose_bone.rotation_quaternion = blended_quat
             else:
                 pose_bone.rotation_euler = blended_quat.to_euler(pose_bone.rotation_mode)
+
+    # Blend bone locations (hip root bone, any translated bones)
+    all_loc_bones = set()
+    for dot, weight in weighted_poses:
+        locations = dot.get_locations_dict()
+        all_loc_bones.update(locations.keys())
+
+    for bone_name in all_loc_bones:
+        # Collect locations from all dots — missing means (0,0,0)
+        bone_locs = []
+        for dot, weight in weighted_poses:
+            loc_data = dot.get_location(bone_name)
+            if loc_data:
+                bone_locs.append((Vector(loc_data), weight))
+            else:
+                bone_locs.append((Vector((0, 0, 0)), weight))
+
+        # Weighted average (linear interpolation for locations)
+        total_weight = sum(w for _, w in bone_locs)
+        if total_weight > 0:
+            blended_loc = Vector((0, 0, 0))
+            for loc, w in bone_locs:
+                blended_loc += loc * (w / total_weight)
+
+            pose_bone = armature.pose.bones.get(bone_name)
+            if pose_bone:
+                pose_bone.location = blended_loc
 
 
 def slerp_unclamped(q1, q2, t):
@@ -233,7 +303,7 @@ def blend_quaternions(weighted_quats):
 # ============================================================================
 
 def keyframe_pose(armature, bone_mask=None, frame=None):
-    """Insert keyframes for current pose
+    """Insert keyframes for current pose (rotations and locations)
 
     Args:
         armature: Armature object
@@ -255,6 +325,10 @@ def keyframe_pose(armature, bone_mask=None, frame=None):
             pose_bone.keyframe_insert(data_path='rotation_quaternion', frame=frame)
         else:
             pose_bone.keyframe_insert(data_path='rotation_euler', frame=frame)
+
+        # Keyframe location for root bones or bones with non-zero location
+        if pose_bone.bone.parent is None or pose_bone.location.length_squared > 1e-8:
+            pose_bone.keyframe_insert(data_path='location', frame=frame)
 
 
 # ============================================================================
