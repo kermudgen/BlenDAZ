@@ -175,83 +175,10 @@ class BLENDAZ_OT_activate_tool(bpy.types.Operator):
 
 
 # ============================================================================
-# PANEL
-# ============================================================================
-
-class VIEW3D_PT_blendaz_main(bpy.types.Panel):
-    """Main BlenDAZ panel in 3D Viewport sidebar"""
-    bl_label = "DAZ Bone Tools"
-    bl_idname = "VIEW3D_PT_blendaz_main"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'DAZ'
-
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.blendaz_props
-
-        # Show active armature
-        if context.active_object and context.active_object.type == 'ARMATURE':
-            armature = context.active_object
-
-            # Header - Armature Info
-            box = layout.box()
-            row = box.row()
-            row.label(text=f"Target: {armature.name}", icon='ARMATURE_DATA')
-
-            # Rotation Limits Section
-            box = layout.box()
-            box.label(text="Rotation Limits", icon='CON_ROTLIMIT')
-
-            row = box.row()
-            row.prop(props, "enable_rotation_limits", text="Enable Limits")
-
-            row = box.row(align=True)
-            op = row.operator("blendaz.update_rotation_limits", text="Update Limits", icon='FILE_REFRESH')
-            op.force_update = False
-
-            row = box.row()
-            op = row.operator("blendaz.update_rotation_limits", text="Force Update", icon='RECOVER_LAST')
-            op.force_update = True
-
-            row = box.row()
-            row.operator("blendaz.clear_rotation_limits", text="Clear All Limits", icon='X')
-
-            # IK Settings Section
-            box = layout.box()
-            box.label(text="IK Settings", icon='CON_KINEMATIC')
-
-            row = box.row()
-            row.prop(props, "ik_chain_length", text="Chain Length")
-
-            row = box.row()
-            row.prop(props, "use_ik_templates", text="Use Templates")
-
-            row = box.row()
-            row.prop(props, "enable_prebend", text="Pre-bend")
-
-            # Quick Actions Section
-            box = layout.box()
-            box.label(text="Quick Actions", icon='PLAY')
-
-            row = box.row()
-            row.operator("blendaz.clear_all_pins", text="Clear All Pins", icon='UNPINNED')
-
-            row = box.row()
-            row.operator("blendaz.reset_pose", text="Reset Pose", icon='LOOP_BACK')
-
-            row = box.row()
-            row.operator("blendaz.activate_tool", text="Activate Tool", icon='HAND')
-
-        else:
-            # No armature selected
-            layout.label(text="No armature selected", icon='ERROR')
-            layout.label(text="Select an armature to use tools")
-
-
-# ============================================================================
 # REGISTRATION
 # ============================================================================
+# NOTE: VIEW3D_PT_blendaz_main removed — panels now live in posebridge/panel_ui.py
+# Properties and operators are still registered here; Touch panel references them.
 
 classes = (
     BlenDAZProperties,
@@ -260,7 +187,6 @@ classes = (
     BLENDAZ_OT_clear_all_pins,
     BLENDAZ_OT_reset_pose,
     BLENDAZ_OT_activate_tool,
-    VIEW3D_PT_blendaz_main,
 )
 
 
