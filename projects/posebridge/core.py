@@ -7,6 +7,7 @@ from bpy.types import PropertyGroup
 from bpy.props import (
     BoolProperty,
     FloatProperty,
+    IntProperty,
     StringProperty,
     EnumProperty,
     CollectionProperty,
@@ -191,6 +192,99 @@ class PoseBridgeCharacter(PropertyGroup):
     )
 
 
+class CharacterSlot(PropertyGroup):
+    """Per-character BlenDAZ registration data.
+
+    Each slot stores the names of all Blender objects created during setup
+    so that switching between characters can hide/show the correct objects
+    and point cameras/settings at the right character.
+    """
+
+    armature_name: StringProperty(
+        name="Armature",
+        description="Name of the DAZ armature object",
+        default=""
+    )
+
+    body_mesh_name: StringProperty(
+        name="Body Mesh",
+        description="Name of the main body mesh object",
+        default=""
+    )
+
+    mannequin_name: StringProperty(
+        name="Mannequin",
+        description="Name of the LineArt mannequin copy (geometry-only)",
+        default=""
+    )
+
+    outline_gp_name: StringProperty(
+        name="Outline GP",
+        description="Name of the Grease Pencil outline object",
+        default=""
+    )
+
+    camera_body: StringProperty(
+        name="Body Camera",
+        description="Name of the body panel camera",
+        default=""
+    )
+
+    camera_hands: StringProperty(
+        name="Hands Camera",
+        description="Name of the hands panel camera",
+        default=""
+    )
+
+    camera_face: StringProperty(
+        name="Face Camera",
+        description="Name of the face panel camera",
+        default=""
+    )
+
+    light_name: StringProperty(
+        name="Light",
+        description="Name of the outline light",
+        default=""
+    )
+
+    stage_collection: StringProperty(
+        name="Stage Collection",
+        description="Name of the Blender collection holding mannequin + stage objects",
+        default=""
+    )
+
+    reference_mesh_name: StringProperty(
+        name="Reference Mesh",
+        description="Name of the pre-merge mannequin copy used for face group remap",
+        default=""
+    )
+
+    init_status: EnumProperty(
+        name="Init Status",
+        description="BlenDAZ character initialisation state",
+        items=[
+            ('uninitialised', 'Uninitialised', 'Character not yet set up'),
+            ('snapshot_done', 'Snapshot Done', 'Pre-merge snapshot saved'),
+            ('ready',         'Ready',         'Fully initialised'),
+            ('needs_remap',   'Needs Remap',   'Mesh changed since last remap'),
+        ],
+        default='uninitialised'
+    )
+
+    z_offset: FloatProperty(
+        name="Z Offset",
+        description="Vertical offset for this character's mannequin/cameras (meters)",
+        default=-50.0
+    )
+
+    char_tag: StringProperty(
+        name="Character Tag",
+        description="Sanitized short name used as suffix for object naming",
+        default=""
+    )
+
+
 class PoseBridgeSettings(PropertyGroup):
     """Scene-level PoseBridge settings"""
 
@@ -310,6 +404,22 @@ class PoseBridgeSettings(PropertyGroup):
         name="Live Mesh Polygon Count",
         description="Polygon count of body mesh at time of last remap (for stale detection)",
         default=0
+    )
+
+    # -------------------------------------------------------------------------
+    # Multi-Character Registry
+    # -------------------------------------------------------------------------
+
+    blendaz_characters: CollectionProperty(
+        type=CharacterSlot,
+        name="Registered Characters",
+        description="All DAZ characters set up with BlenDAZ in this scene"
+    )
+
+    blendaz_active_index: IntProperty(
+        name="Active Character Index",
+        description="Index into blendaz_characters for the currently active character",
+        default=-1
     )
 
 
@@ -435,12 +545,59 @@ def initialize_control_points_for_character(armature, panel_view='body'):
     return initialized_points
 
 # ============================================================================
+# Character Registry Helpers
+# ============================================================================
+
+def get_active_slot(context):
+    """Return the active CharacterSlot, or None."""
+    settings = getattr(context.scene, 'posebridge_settings', None)
+    if not settings:
+        return None
+    idx = settings.blendaz_active_index
+    chars = settings.blendaz_characters
+    if 0 <= idx < len(chars):
+        return chars[idx]
+    return None
+
+
+def find_slot_by_armature(context, armature_name):
+    """Return (index, CharacterSlot) for the given armature name, or (-1, None)."""
+    settings = getattr(context.scene, 'posebridge_settings', None)
+    if not settings:
+        return -1, None
+    for i, slot in enumerate(settings.blendaz_characters):
+        if slot.armature_name == armature_name:
+            return i, slot
+    return -1, None
+
+
+def make_char_tag(armature_name):
+    """Derive a sanitized tag from the armature name for object naming."""
+    import re
+    tag = re.sub(r'[^A-Za-z0-9_]', '_', armature_name)
+    # Collapse runs of underscores
+    tag = re.sub(r'_+', '_', tag).strip('_')
+    return tag
+
+
+def next_z_offset(context):
+    """Return the next available Z offset for a new character slot."""
+    settings = getattr(context.scene, 'posebridge_settings', None)
+    if not settings or len(settings.blendaz_characters) == 0:
+        return -50.0
+    # Each character spaced 5m apart
+    min_z = min(slot.z_offset for slot in settings.blendaz_characters)
+    return min_z - 5.0
+
+
+# ============================================================================
 # Registration
 # ============================================================================
 
 classes = (
     PoseBridgeControlPoint,  # Must be registered first (used in CollectionProperty below)
     PoseBridgeCharacter,
+    CharacterSlot,           # Must come before PoseBridgeSettings (used in CollectionProperty)
     PoseBridgeSettings,
 )
 

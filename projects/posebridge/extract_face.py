@@ -12,7 +12,7 @@ from mathutils import Vector
 from outline_generator_lineart import get_or_create_pb_collection
 
 
-def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.22, stage_coll=None):
+def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.22, stage_coll=None, char_tag=None):
     """
     Create orthographic camera aimed at the character's face.
 
@@ -27,7 +27,7 @@ def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.22, stage_co
     Returns:
         The camera object, or None on failure
     """
-    camera_name = "PB_Camera_Face"
+    camera_name = f"PB_Camera_Face_{char_tag}" if char_tag else "PB_Camera_Face"
 
     # Find head bone for positioning
     head_bone = armature.data.bones.get('head')
@@ -591,13 +591,14 @@ def store_face_control_points(face_cps):
     return len(face_cps)
 
 
-def setup_face_panel(armature=None, char_name=None):
+def setup_face_panel(armature=None, char_name=None, char_tag=None):
     """
     Main orchestrator: set up the face panel camera and control points.
 
     Args:
         armature: Armature object (auto-detected if None)
         char_name: Short character name (e.g. 'Fey') for PB_{char}_Stage collection
+        char_tag: Optional tag for multi-character naming (camera becomes PB_Camera_Face_{char_tag})
 
     Returns:
         Dict with 'camera' and 'control_points' count, or None on failure
@@ -629,7 +630,7 @@ def setup_face_panel(armature=None, char_name=None):
         print(f"  Collection: {stage_coll.name}")
 
     # Step 1: Create face camera
-    camera = create_face_camera(armature, stage_coll=stage_coll)
+    camera = create_face_camera(armature, stage_coll=stage_coll, char_tag=char_tag)
     if not camera:
         return None
 

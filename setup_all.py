@@ -193,6 +193,12 @@ if not armature_name:
 armature_obj = bpy.data.objects.get(armature_name)
 print(f"\nArmature: {armature_name}")
 
+# Generate character tag for multi-character object naming
+import re
+char_tag = re.sub(r'[^A-Za-z0-9_]', '_', armature_name)
+char_tag = re.sub(r'_+', '_', char_tag).strip('_')
+print(f"Character tag: {char_tag}")
+
 # --- Ensure pose mode ---
 if armature_obj:
     bpy.context.view_layer.objects.active = armature_obj
@@ -320,9 +326,9 @@ if not SKIP_POSEBRIDGE:
 
     # --- Generate outline if needed, then capture body control points ---
     if pb_settings and armature_obj:
-        outline_name = "PB_Outline_LineArt"
-        camera_name = f"{outline_name}_Camera"
-        light_name = f"{outline_name}_Light"
+        outline_name = f"PB_Outline_{char_tag}"
+        camera_name = f"PB_Camera_Body_{char_tag}"
+        light_name = f"PB_Light_{char_tag}"
 
         # Reload outline generator module
         if RELOAD_MODULES:
@@ -396,7 +402,7 @@ if not SKIP_POSEBRIDGE:
 
                 try:
                     from posebridge.outline_generator_lineart import create_genesis8_lineart_outline
-                    gp_obj = create_genesis8_lineart_outline(mesh_obj, outline_name)
+                    gp_obj = create_genesis8_lineart_outline(mesh_obj, outline_name, char_tag=char_tag)
                     if gp_obj:
                         print(f"  OK — Outline generated: {outline_name}")
                         outline_exists = True
@@ -503,6 +509,7 @@ if not SKIP_POSEBRIDGE:
                     z_offset=HAND_Z_OFFSET,
                     armature_name=armature_name if armature_name in bpy.data.objects else None,
                     char_name=armature_name,
+                    char_tag=char_tag,
                 )
                 if hand_result:
                     count = extract_hands.store_hand_control_points(hand_result)
@@ -520,7 +527,7 @@ if not SKIP_POSEBRIDGE:
             import extract_face
             if RELOAD_MODULES:
                 importlib.reload(extract_face)
-            face_result = extract_face.setup_face_panel(armature_obj, char_name=armature_name)
+            face_result = extract_face.setup_face_panel(armature_obj, char_name=armature_name, char_tag=char_tag)
             if face_result:
                 print(f"  OK — Face panel: {face_result['control_points']} control points")
             else:
@@ -661,3 +668,67 @@ N-Panel (DAZ tab):
   PoseBlend        — grid-based pose blending
 """)
 print("=" * 70 + "\n")
+
+# ============================================================================
+# Step 5: Register character in CharacterSlot registry
+# ============================================================================
+
+# Ensure naming vars exist even if PoseBridge was skipped
+if 'outline_name' not in dir():
+    outline_name = f"PB_Outline_{char_tag}"
+if 'camera_name' not in dir():
+    camera_name = f"PB_Camera_Body_{char_tag}"
+if 'light_name' not in dir():
+    light_name = f"PB_Light_{char_tag}"
+
+if pb_settings and hasattr(pb_settings, 'blendaz_characters'):
+    # Upsert: find existing slot for this armature, or create new one
+    slot = None
+    slot_idx = -1
+    for i, s in enumerate(pb_settings.blendaz_characters):
+        if s.armature_name == armature_name:
+            slot = s
+            slot_idx = i
+            break
+
+    if slot is None:
+        slot = pb_settings.blendaz_characters.add()
+        slot_idx = len(pb_settings.blendaz_characters) - 1
+        # Assign Z offset based on number of existing characters
+        if slot_idx == 0:
+            slot.z_offset = OUTLINE_Z_OFFSET
+        else:
+            # Stack below previous characters
+            min_z = min(s.z_offset for s in pb_settings.blendaz_characters if s != slot)
+            slot.z_offset = min_z - 5.0
+        print(f"  Registered NEW character slot [{slot_idx}]: {armature_name}")
+    else:
+        print(f"  Updated EXISTING character slot [{slot_idx}]: {armature_name}")
+
+    # Fill slot fields
+    slot.armature_name = armature_name
+    slot.char_tag = char_tag
+    slot.body_mesh_name = find_character_mesh(armature_name) or ""
+    slot.outline_gp_name = outline_name if not SKIP_POSEBRIDGE else ""
+    slot.camera_body = camera_name if not SKIP_POSEBRIDGE else ""
+    slot.light_name = light_name if not SKIP_POSEBRIDGE else ""
+    slot.mannequin_name = f"{slot.body_mesh_name}_LineArt_Copy" if slot.body_mesh_name else ""
+
+    # Camera names for hands/face (may or may not have been created)
+    slot.camera_hands = f"PB_Camera_Hands_{char_tag}"
+    slot.camera_face = f"PB_Camera_Face_{char_tag}"
+
+    # Stage collection
+    slot.stage_collection = f"PB_{armature_name}_Stage"
+
+    # Copy init status from posebridge_settings (for backward compat)
+    slot.init_status = pb_settings.blendaz_init_status
+    slot.reference_mesh_name = pb_settings.blendaz_reference_mesh_name
+
+    # Set as active
+    pb_settings.blendaz_active_index = slot_idx
+
+    print(f"  Active character: [{slot_idx}] {armature_name} (tag: {char_tag})")
+    print(f"  Objects: outline={slot.outline_gp_name}, camera={slot.camera_body}, "
+          f"mannequin={slot.mannequin_name}")
+

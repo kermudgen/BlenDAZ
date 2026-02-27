@@ -208,7 +208,7 @@ def position_hands_for_view(left_hand_obj, right_hand_obj, z_offset=-53.0):
     return True
 
 
-def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5, hands_coll=None):
+def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5, hands_coll=None, char_tag=None):
     """
     Create orthographic camera for hand panel view.
 
@@ -217,12 +217,13 @@ def create_hand_camera(z_offset=-53.0, camera_distance=2.0, ortho_scale=0.5, han
         camera_distance: Distance from hands to camera
         ortho_scale: Orthographic scale (smaller = more zoomed in)
         hands_coll: Collection to link camera into (falls back to scene root)
+        char_tag: Optional tag for multi-character naming
 
     Returns:
         The camera object
     """
 
-    camera_name = "PB_Camera_Hands"
+    camera_name = f"PB_Camera_Hands_{char_tag}" if char_tag else "PB_Camera_Hands"
 
     # Remove existing
     if camera_name in bpy.data.objects:
@@ -340,7 +341,7 @@ def get_transformed_bone_positions(armature_name, hand_obj, geometry_center, han
     return bone_positions
 
 
-def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=None, char_name=None):
+def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=None, char_name=None, char_tag=None):
     """
     Main function: Extract hands from standin and set up for hand panel.
 
@@ -349,6 +350,7 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
         z_offset: Z position for hand view
         armature_name: Optional armature name to calculate bone positions for control points
         char_name: Short character name (e.g. 'Fey') for PB_{char}_Hands collection
+        char_tag: Optional tag for multi-character naming (camera becomes PB_Camera_Hands_{char_tag})
 
     Returns:
         Dict with:
@@ -386,7 +388,7 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
 
     # Create camera
     print("\n--- Creating hand camera ---")
-    camera = create_hand_camera(z_offset=z_offset, hands_coll=hands_coll)
+    camera = create_hand_camera(z_offset=z_offset, hands_coll=hands_coll, char_tag=char_tag)
 
     # Get bone positions if armature provided
     left_bone_positions = {}

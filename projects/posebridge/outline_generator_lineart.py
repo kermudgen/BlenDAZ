@@ -251,16 +251,22 @@ def move_posebridge_setup(outline_name="PB_Outline_LineArt", offset_z=-30.0):
     return camera, outline
 
 
-def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt"):
+def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt", char_tag=None):
     """Generate a Grease Pencil outline using Line Art modifier
 
     Args:
         mesh_obj: Genesis 8 mesh object
-        outline_name: Name for the GP object
+        outline_name: Name for the GP object (overridden by char_tag if provided)
+        char_tag: Optional character tag for multi-character naming.
+                  When set, outline_name becomes PB_Outline_{char_tag},
+                  camera becomes PB_Camera_Body_{char_tag}, etc.
 
     Returns:
         Grease Pencil object or None if failed
     """
+    # Multi-character naming: derive all names from char_tag
+    if char_tag:
+        outline_name = f"PB_Outline_{char_tag}"
     if not mesh_obj or mesh_obj.type != 'MESH':
         print("Error: Invalid mesh object")
         return None
@@ -439,7 +445,7 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
 
     # STEP 4: Create camera 12 units in front at calculated height, rotated 90° on X
     print("Step 4: Creating camera...")
-    camera_name = f"{outline_name}_Camera"
+    camera_name = f"PB_Camera_Body_{char_tag}" if char_tag else f"{outline_name}_Camera"
     if camera_name in bpy.data.objects:
         bpy.data.objects.remove(bpy.data.objects[camera_name], do_unlink=True)
 
@@ -472,7 +478,7 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
 
     # STEP 5: Create light at same location, power 50
     print("Step 5: Creating light...")
-    light_name = f"{outline_name}_Light"
+    light_name = f"PB_Light_{char_tag}" if char_tag else f"{outline_name}_Light"
     if light_name in bpy.data.objects:
         bpy.data.objects.remove(bpy.data.objects[light_name], do_unlink=True)
 
@@ -854,6 +860,15 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt")
     if armature:
         capture_fixed_control_points(armature, outline_name)
     print(f"{'='*70}\n")
+
+    # Return GP object and a dict of created object names for CharacterSlot registration
+    gp_obj._blendaz_created_names = {
+        'outline_gp_name': outline_name,
+        'camera_body': camera_name,
+        'light_name': light_name,
+        'mannequin_name': mesh_copy.name,
+        'stage_collection': stage_coll.name,
+    }
 
     return gp_obj
 

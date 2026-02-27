@@ -2187,6 +2187,16 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         self._last_detection_mouse_pos = None
                         return {'PASS_THROUGH'}
 
+            # CHARACTER SWITCH: If get_bone_from_hit flagged a switch during hover,
+            # perform the switch now on click.
+            if self._switch_to_character:
+                target = self._switch_to_character
+                self._switch_to_character = None
+                if self._switch_active_character(context, target):
+                    if context.area:
+                        context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+
             # DOUBLE-CLICK DETECTION: Switch to object mode and select armature (DAZ-style)
             import time
             current_time = time.time()
@@ -2862,6 +2872,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._last_click_time = 0.0
         self._last_click_pos = None
         self._just_selected_armature = False  # Track if we just switched to object mode
+        self._switch_to_character = None  # Armature name to switch to (set by get_bone_from_hit)
 
         # Initialize rotation state (for pectoral bones)
         self._is_rotating = False
@@ -3032,8 +3043,139 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         print("=== DAZ Bone Select & Pin Stopped ===\n")
 
+    def _switch_active_character(self, context, target_armature_name):
+        """Switch BlenDAZ to a different registered character.
+
+        Hides old character's mannequin/outline, shows new character's,
+        updates posebridge_settings, switches active armature to pose mode,
+        and reloads modal state (body mesh, face groups).
+        """
+        settings = context.scene.posebridge_settings
+
+        # Find old and new slots
+        old_idx = settings.blendaz_active_index
+        old_slot = settings.blendaz_characters[old_idx] if 0 <= old_idx < len(settings.blendaz_characters) else None
+        new_idx = -1
+        new_slot = None
+        for i, slot in enumerate(settings.blendaz_characters):
+            if slot.armature_name == target_armature_name:
+                new_idx = i
+                new_slot = slot
+                break
+
+        if not new_slot:
+            print(f"[BlenDAZ] Cannot switch: '{target_armature_name}' not in registry")
+            return False
+
+        print(f"\n=== Switching character: {settings.active_armature_name} → {target_armature_name} ===")
+
+        # 1. Cancel any active drag/morph state
+        self._is_dragging = False
+        self._is_rotating = False
+        self._is_morphing = False
+        self._drag_bone_name = None
+        self._drag_armature = None
+
+        # 2. Hide old character's PoseBridge objects
+        if old_slot:
+            for obj_name in [old_slot.mannequin_name, old_slot.outline_gp_name]:
+                obj = bpy.data.objects.get(obj_name)
+                if obj:
+                    obj.hide_viewport = True
+
+        # 3. Show new character's PoseBridge objects
+        for obj_name in [new_slot.mannequin_name, new_slot.outline_gp_name]:
+            obj = bpy.data.objects.get(obj_name)
+            if obj:
+                obj.hide_viewport = False
+
+        # 4. Update settings
+        settings.blendaz_active_index = new_idx
+        settings.active_armature_name = target_armature_name
+
+        # 5. Switch active object to new armature, enter pose mode
+        new_armature = bpy.data.objects.get(target_armature_name)
+        if new_armature:
+            # Build context override for mode_set (same approach as select_bone)
+            _ov = None
+            for _area in context.screen.areas:
+                if _area.type == 'VIEW_3D':
+                    for _reg in _area.regions:
+                        if _reg.type == 'WINDOW':
+                            _sp = None
+                            for _s in _area.spaces:
+                                if _s.type == 'VIEW_3D':
+                                    _sp = _s
+                                    break
+                            _ov = {'area': _area, 'region': _reg, 'space_data': _sp,
+                                   'screen': context.screen, 'window': context.window}
+                            break
+                    if _ov:
+                        break
+
+            if context.mode != 'OBJECT':
+                if _ov:
+                    with bpy.context.temp_override(**_ov):
+                        bpy.ops.object.mode_set(mode='OBJECT')
+                else:
+                    bpy.ops.object.mode_set(mode='OBJECT')
+
+            bpy.ops.object.select_all(action='DESELECT')
+            new_armature.select_set(True)
+            context.view_layer.objects.active = new_armature
+
+            # Unhide if hidden
+            if new_armature.hide_viewport:
+                new_armature.hide_viewport = False
+
+            if _ov:
+                with bpy.context.temp_override(**_ov):
+                    bpy.ops.object.mode_set(mode='POSE')
+            else:
+                bpy.ops.object.mode_set(mode='POSE')
+
+            # Convert to quaternion if needed
+            prepare_rig_for_ik(new_armature)
+
+        # 6. Reload modal state for new character
+        self._base_body_mesh = find_base_body_mesh(context, new_armature) if new_armature else None
+        self._face_group_mgr = None
+        if self._base_body_mesh and new_armature:
+            self._face_group_mgr = dsf_face_groups.FaceGroupManager.get_or_create(
+                self._base_body_mesh, new_armature)
+            # Fallback to reference mesh if DSF lookup fails
+            if not self._face_group_mgr.valid:
+                if new_slot.reference_mesh_name:
+                    ref_obj = bpy.data.objects.get(new_slot.reference_mesh_name)
+                    if ref_obj:
+                        fgm = dsf_face_groups.FaceGroupManager.build_from_reference_mesh(
+                            ref_obj, self._base_body_mesh, new_armature)
+                        if fgm:
+                            self._face_group_mgr = fgm
+
+        # 7. Clear hover state
+        self._hover_mesh = None
+        self._hover_bone_name = None
+        self._hover_armature = None
+        self._highlight_cache.clear()
+        self._last_highlighted_bone = None
+
+        # 8. Switch viewport camera to new character's body camera
+        space = context.space_data
+        if space and space.type == 'VIEW_3D':
+            cam = bpy.data.objects.get(new_slot.camera_body)
+            if cam:
+                space.camera = cam
+
+        print(f"=== Switched to {target_armature_name} ===\n")
+        return True
+
     def check_hover(self, context, event):
         """Check what's under mouse using dual raycast (prioritizes body mesh)"""
+
+        # Clear character switch flag at the start of each hover check.
+        # get_bone_from_hit() will re-set it if the mouse is over a registered non-active character.
+        self._switch_to_character = None
 
         # POSEBRIDGE MODE: Use 2D control point hit detection instead of 3D raycast
         # Check this BEFORE bounds checking, since PoseBridge handles multi-viewport detection
@@ -3413,13 +3555,22 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Only run CP hit-testing in PoseBridge camera viewports.
         # Non-camera viewports (perspective/orbit) are handled by _crossviewport_raycast.
-        PANEL_CAMERAS = {
-            'body':  'PB_Outline_LineArt_Camera',
-            'hands': 'PB_Camera_Hands',
-            'face':  'PB_Camera_Face',
-        }
+        # Look up camera from active CharacterSlot; fall back to legacy names
         active_panel = settings.active_panel
-        expected_cam = PANEL_CAMERAS.get(active_panel)
+        expected_cam = None
+        if hasattr(settings, 'blendaz_characters'):
+            idx = settings.blendaz_active_index
+            if 0 <= idx < len(settings.blendaz_characters):
+                slot = settings.blendaz_characters[idx]
+                expected_cam = {'body': slot.camera_body, 'hands': slot.camera_hands,
+                                'face': slot.camera_face}.get(active_panel)
+        if not expected_cam or expected_cam not in bpy.data.objects:
+            PANEL_CAMERAS_LEGACY = {
+                'body':  'PB_Outline_LineArt_Camera',
+                'hands': 'PB_Camera_Hands',
+                'face':  'PB_Camera_Face',
+            }
+            expected_cam = PANEL_CAMERAS_LEGACY.get(active_panel)
         if expected_cam:
             if rv3d.view_perspective != 'CAMERA':
                 return  # Not in camera view — let _crossviewport_raycast handle it
@@ -3632,11 +3783,25 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not armature:
             return None
 
-        # Only interact with the BlenDAZ-registered armature — ignore all other rigs
-        # (prevents BlenDAZ intercepting clicks on non-DAZ characters, e.g. when SimplySwitch
-        # has switched the active rig to a different character)
+        # Only interact with BlenDAZ-registered armatures.
+        # If the hit armature is registered but not the active one, flag for switching.
+        # If it's not registered at all, return None (pass through to Blender).
         settings = getattr(bpy.context.scene, 'posebridge_settings', None)
-        if settings and settings.active_armature_name:
+        if settings and hasattr(settings, 'blendaz_characters') and len(settings.blendaz_characters) > 0:
+            # Multi-character registry exists — check against all registered armatures
+            registered = False
+            for slot in settings.blendaz_characters:
+                if slot.armature_name == armature.name:
+                    registered = True
+                    break
+            if not registered:
+                return None  # Unregistered rig — pass through
+            if armature.name != settings.active_armature_name:
+                # Registered but not active — flag for character switch
+                self._switch_to_character = armature.name
+                return None
+        elif settings and settings.active_armature_name:
+            # Legacy single-character mode (no registry)
             if armature.name != settings.active_armature_name:
                 return None
 

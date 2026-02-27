@@ -307,17 +307,22 @@ after geograft merge. Run this BEFORE merging geografts."""
             import importlib
             importlib.reload(outline_generator_lineart)
 
+            # Derive char_tag from armature name for multi-character naming
+            import re
+            _char_tag = re.sub(r'[^A-Za-z0-9_]', '_', armature.name)
+            _char_tag = re.sub(r'_+', '_', _char_tag).strip('_')
+
             ov = _get_or_build_override(context)
             if ov:
                 with bpy.context.temp_override(**ov):
                     outline_generator_lineart.create_genesis8_lineart_outline(
                         body_mesh,
-                        outline_name="PB_Outline_LineArt"
+                        char_tag=_char_tag
                     )
             else:
                 outline_generator_lineart.create_genesis8_lineart_outline(
                     body_mesh,
-                    outline_name="PB_Outline_LineArt"
+                    char_tag=_char_tag
                 )
 
         except Exception as e:

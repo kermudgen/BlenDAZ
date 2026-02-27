@@ -67,8 +67,17 @@ class PoseBridgeDrawHandler:
         if not armature or armature.type != 'ARMATURE':
             return
 
-        # Find associated GP outline object
-        outline_name = f"PB_Outline_LineArt_{armature.name}"
+        # Find associated GP outline object from active CharacterSlot
+        outline_name = None
+        if hasattr(settings, 'blendaz_characters'):
+            idx = settings.blendaz_active_index
+            if 0 <= idx < len(settings.blendaz_characters):
+                outline_name = settings.blendaz_characters[idx].outline_gp_name
+        # Fallback: try old naming patterns
+        if not outline_name:
+            import re
+            _tag = re.sub(r'[^A-Za-z0-9_]', '_', armature.name).strip('_')
+            outline_name = f"PB_Outline_{_tag}"
         gp_obj = bpy.data.objects.get(outline_name)
 
         if gp_obj and gp_obj.type == 'GREASEPENCIL':

@@ -13,9 +13,68 @@ Panel hierarchy (all in bl_category='DAZ'):
 import bpy
 from bpy.types import Panel, Operator
 
+# DAZ marker bones used to identify DAZ rigs
+_DAZ_MARKER_BONES = {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'}
+
+
 # ============================================================================
 # Operators
 # ============================================================================
+
+class BLENDAZ_OT_switch_character(Operator):
+    """Switch BlenDAZ to a different registered character"""
+    bl_idname = "blendaz.switch_character"
+    bl_label = "Switch Character"
+
+    armature_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        import daz_bone_select as _dbs
+        live = getattr(_dbs.VIEW3D_OT_daz_bone_select, '_live_instance', None)
+        if live:
+            if live._switch_active_character(context, self.armature_name):
+                context.area.tag_redraw()
+                return {'FINISHED'}
+        # Fallback: just update settings (modal not running)
+        settings = getattr(context.scene, 'posebridge_settings', None)
+        if settings:
+            for i, slot in enumerate(settings.blendaz_characters):
+                if slot.armature_name == self.armature_name:
+                    settings.blendaz_active_index = i
+                    settings.active_armature_name = self.armature_name
+                    break
+            context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class BLENDAZ_OT_scan_characters(Operator):
+    """Scan scene for DAZ armatures"""
+    bl_idname = "blendaz.scan_characters"
+    bl_label = "Scan for Characters"
+
+    def execute(self, context):
+        found = []
+        settings = getattr(context.scene, 'posebridge_settings', None)
+        registered = set()
+        if settings and hasattr(settings, 'blendaz_characters'):
+            registered = {s.armature_name for s in settings.blendaz_characters}
+
+        for obj in context.scene.objects:
+            if obj.type == 'ARMATURE':
+                bone_names = {b.name for b in obj.data.bones}
+                if _DAZ_MARKER_BONES & bone_names:
+                    tag = "registered" if obj.name in registered else "unregistered"
+                    found.append((obj.name, tag))
+
+        if found:
+            msg = ", ".join(f"{name} ({tag})" for name, tag in found)
+            self.report({'INFO'}, f"Found {len(found)} DAZ rig(s): {msg}")
+        else:
+            self.report({'WARNING'}, "No DAZ armatures found in scene")
+
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
 
 class POSEBRIDGE_OT_set_panel_view(Operator):
     """Switch PoseBridge panel view"""
@@ -33,8 +92,8 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         default='body'
     )
 
-    # Camera names for each panel view
-    CAMERAS = {
+    # Fallback camera names (legacy single-character mode)
+    CAMERAS_LEGACY = {
         'body':  'PB_Outline_LineArt_Camera',
         'hands': 'PB_Camera_Hands',
         'face':  'PB_Camera_Face',
@@ -46,6 +105,20 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
 
     # Saved camera state per view: {view_name: (offset, zoom)}
     _saved_state = {}
+
+    def _get_camera_name(self, context, view):
+        """Get camera name from active CharacterSlot, or fall back to legacy names."""
+        settings = getattr(context.scene, 'posebridge_settings', None)
+        if settings and hasattr(settings, 'blendaz_characters'):
+            idx = settings.blendaz_active_index
+            if 0 <= idx < len(settings.blendaz_characters):
+                slot = settings.blendaz_characters[idx]
+                cam_map = {'body': slot.camera_body, 'hands': slot.camera_hands, 'face': slot.camera_face}
+                name = cam_map.get(view, '')
+                if name and name in bpy.data.objects:
+                    return name
+        # Fallback to legacy
+        return self.CAMERAS_LEGACY.get(view)
 
     def execute(self, context):
         settings = context.scene.posebridge_settings
@@ -63,7 +136,7 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
                 r3d.view_camera_zoom,
             )
 
-            camera_name = self.CAMERAS.get(self.view)
+            camera_name = self._get_camera_name(context, self.view)
             camera = bpy.data.objects.get(camera_name) if camera_name else None
             if camera:
                 space.camera = camera
@@ -188,22 +261,6 @@ class VIEW3D_PT_blendaz_root(Panel):
         layout = self.layout
         settings = getattr(context.scene, 'posebridge_settings', None)
 
-        # Armature info
-        armature = context.active_object if (
-            context.active_object and context.active_object.type == 'ARMATURE'
-        ) else None
-        arm_name = (
-            settings.active_armature_name if (settings and settings.active_armature_name)
-            else (armature.name if armature else "")
-        )
-
-        if arm_name:
-            layout.label(text=f"Figure: {arm_name}", icon='ARMATURE_DATA')
-        else:
-            layout.label(text="No armature selected", icon='ERROR')
-
-        layout.separator()
-
         # Touch is active when the daz_bone_select modal is running
         import daz_bone_select as _dbs
         touch_active = getattr(_dbs.VIEW3D_OT_daz_bone_select, '_live_instance', None) is not None
@@ -215,6 +272,42 @@ class VIEW3D_PT_blendaz_root(Panel):
             row.operator("blendaz.stop_blendaz", text="BlenDAZ", icon='PAUSE', depress=True)
         else:
             row.operator("blendaz.start_touch", text="BlenDAZ", icon='POSE_HLT')
+
+        # --- Registered Characters ---
+        if settings and hasattr(settings, 'blendaz_characters') and len(settings.blendaz_characters) > 0:
+            layout.separator()
+            layout.label(text="Characters:", icon='COMMUNITY')
+            active_idx = settings.blendaz_active_index
+
+            for i, slot in enumerate(settings.blendaz_characters):
+                is_active = (i == active_idx)
+                row = layout.row(align=True)
+                if is_active:
+                    row.label(text=slot.armature_name, icon='RADIOBUT_ON')
+                else:
+                    op = row.operator("blendaz.switch_character",
+                                      text=slot.armature_name, icon='RADIOBUT_OFF')
+                    op.armature_name = slot.armature_name
+
+            layout.separator()
+            layout.operator("blendaz.scan_characters", text="Scan for Characters", icon='VIEWZOOM')
+        else:
+            # No characters registered — show single armature info (legacy)
+            armature = context.active_object if (
+                context.active_object and context.active_object.type == 'ARMATURE'
+            ) else None
+            arm_name = (
+                settings.active_armature_name if (settings and settings.active_armature_name)
+                else (armature.name if armature else "")
+            )
+
+            if arm_name:
+                layout.label(text=f"Figure: {arm_name}", icon='ARMATURE_DATA')
+            else:
+                layout.label(text="No armature selected", icon='ERROR')
+
+            layout.separator()
+            layout.operator("blendaz.scan_characters", text="Scan for Characters", icon='VIEWZOOM')
 
 
 # ----------------------------------------------------------------------------
@@ -532,6 +625,8 @@ class VIEW3D_PT_posebridge_settings(Panel):
 # ============================================================================
 
 classes = (
+    BLENDAZ_OT_switch_character,
+    BLENDAZ_OT_scan_characters,
     POSEBRIDGE_OT_set_panel_view,
     BLENDAZ_OT_start_touch,
     BLENDAZ_OT_stop_blendaz,
