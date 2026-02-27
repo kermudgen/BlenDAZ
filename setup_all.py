@@ -372,6 +372,18 @@ if not SKIP_POSEBRIDGE:
             if not all_meshes:
                 print(f"    (none found — armature has {len(list(armature_ref.children))} children)")
 
+        # Migrate legacy object names to new char_tag convention if needed.
+        # Old names: PB_Outline_LineArt, PB_Outline_LineArt_Camera, PB_Outline_LineArt_Light
+        _legacy_names = {
+            'PB_Outline_LineArt':        outline_name,
+            'PB_Outline_LineArt_Camera': camera_name,
+            'PB_Outline_LineArt_Light':  light_name,
+        }
+        for old_name, new_name in _legacy_names.items():
+            if old_name != new_name and old_name in bpy.data.objects and new_name not in bpy.data.objects:
+                bpy.data.objects[old_name].name = new_name
+                print(f"  Migrated '{old_name}' → '{new_name}'")
+
         # Check if outline already exists
         outline_exists = outline_name in bpy.data.objects
 
