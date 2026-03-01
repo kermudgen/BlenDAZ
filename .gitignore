@@ -35,6 +35,7 @@ desktop.ini
 # Logs
 *.log
 app.log
+logs/
 
 # Environment variables
 .env

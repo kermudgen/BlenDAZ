@@ -422,6 +422,12 @@ class PoseBridgeSettings(PropertyGroup):
         default=-1
     )
 
+    blendaz_scanned_unregistered: StringProperty(
+        name="Scanned Unregistered",
+        description="Comma-separated list of unregistered DAZ armature names from last scan",
+        default=""
+    )
+
 
 # Add expression/viseme slider properties dynamically
 # Each is a 0-1 FloatProperty with an update callback that scales the preset
@@ -580,6 +586,59 @@ def make_char_tag(armature_name):
     return tag
 
 
+# ============================================================================
+# Per-character control-point cache (module-level, survives reloads within a
+# Blender session).  CP data is serialised to/from the shared
+# control_points_fixed CollectionProperty when switching characters.
+# ============================================================================
+_cp_cache = {}  # {char_tag: [dict, ...]}
+
+
+def save_control_points(char_tag):
+    """Snapshot the current control_points_fixed into _cp_cache[char_tag]."""
+    settings = getattr(bpy.context.scene, 'posebridge_settings', None)
+    if not settings:
+        return
+    entries = []
+    for cp in settings.control_points_fixed:
+        entries.append({
+            'id': cp.id,
+            'bone_name': cp.bone_name,
+            'label': cp.label,
+            'group': cp.group,
+            'panel_view': cp.panel_view,
+            'control_type': cp.control_type,
+            'interaction_mode': cp.interaction_mode,
+            'shape': cp.shape,
+            'position_3d_fixed': tuple(cp.position_3d_fixed),
+        })
+    _cp_cache[char_tag] = entries
+
+
+def restore_control_points(char_tag):
+    """Replace control_points_fixed with the snapshot stored for char_tag.
+    Returns True if CPs were restored, False if no cache exists."""
+    settings = getattr(bpy.context.scene, 'posebridge_settings', None)
+    if not settings:
+        return False
+    entries = _cp_cache.get(char_tag)
+    if entries is None:
+        return False
+    settings.control_points_fixed.clear()
+    for e in entries:
+        cp = settings.control_points_fixed.add()
+        cp.id = e['id']
+        cp.bone_name = e['bone_name']
+        cp.label = e['label']
+        cp.group = e['group']
+        cp.panel_view = e.get('panel_view', 'body')
+        cp.control_type = e.get('control_type', '')
+        cp.interaction_mode = e.get('interaction_mode', 'rotation')
+        cp.shape = e.get('shape', '')
+        cp.position_3d_fixed = e['position_3d_fixed']
+    return True
+
+
 def next_z_offset(context):
     """Return the next available Z offset for a new character slot."""
     settings = getattr(context.scene, 'posebridge_settings', None)
@@ -588,6 +647,65 @@ def next_z_offset(context):
     # Each character spaced 5m apart
     min_z = min(slot.z_offset for slot in settings.blendaz_characters)
     return min_z - 5.0
+
+
+def find_character_mesh(armature_name):
+    """Find the main character body mesh for the armature.
+
+    Selection priority:
+      1. Mesh named exactly '{armature_name} Mesh' (DAZ convention)
+      2. Mesh whose name starts with armature name (e.g. 'Fey Body')
+      3. Largest mesh by vertex count (fallback)
+    """
+    armature = bpy.data.objects.get(armature_name)
+    if not armature:
+        return None
+
+    skip_suffixes = ('_Standin', '_LineArt_Copy', '_LineArt')
+    candidates = []
+
+    for child in armature.children:
+        if child.type == 'MESH' and not child.name.endswith(skip_suffixes):
+            candidates.append(child)
+
+    if not candidates:
+        for obj in bpy.data.objects:
+            if obj.type == 'MESH' and not obj.name.endswith(skip_suffixes):
+                for mod in obj.modifiers:
+                    if mod.type == 'ARMATURE' and mod.object and mod.object.name == armature_name:
+                        candidates.append(obj)
+                        break
+
+    if not candidates:
+        return None
+
+    exact_name = f"{armature_name} Mesh"
+    for obj in candidates:
+        if obj.name == exact_name:
+            return obj.name
+
+    for obj in candidates:
+        if obj.name.startswith(armature_name):
+            return obj.name
+
+    best = max(candidates, key=lambda obj: len(obj.data.vertices))
+    return best.name
+
+
+def find_standin_mesh(armature_name):
+    """Try to find a standin mesh for the armature."""
+    candidates = []
+    if armature_name:
+        for obj in bpy.data.objects:
+            if obj.type == 'MESH':
+                name = obj.name
+                if '_Standin' in name or '_LineArt_Copy' in name:
+                    candidates.append(name)
+    for name in [f"{armature_name} Mesh_Standin", f"{armature_name} Mesh_LineArt_Copy"]:
+        if name in bpy.data.objects:
+            candidates.append(name)
+
+    return candidates[0] if candidates else None
 
 
 # ============================================================================

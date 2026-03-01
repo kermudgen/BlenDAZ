@@ -22,6 +22,7 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 import blf
 import math
+import time
 
 # Import shared utilities from daz_shared_utils
 import daz_shared_utils
@@ -50,6 +51,9 @@ from bone_utils import (
 # Import DSF face groups for clean zone detection
 import dsf_face_groups
 
+# Import diagnostic logger (dev-only, zero overhead when DIAG_ENABLED = False)
+import diag_logger
+
 # Force reload of imported modules when script is reloaded (Alt+R in Blender)
 # Without this, Python caches old versions of imported modules
 import importlib
@@ -57,6 +61,7 @@ importlib.reload(daz_shared_utils)
 importlib.reload(ik_templates)
 importlib.reload(bone_utils)
 importlib.reload(dsf_face_groups)
+importlib.reload(diag_logger)
 
 # Re-import after reload to get fresh versions
 from daz_shared_utils import apply_rotation_from_delta, decompose_swing_twist
@@ -1999,7 +2004,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     _hover_bone_name = None
     _hover_armature = None
     _base_body_mesh = None  # The main figure mesh (detected automatically)
-    _face_group_mgr = None  # DSF face group manager for clean zone detection
+    _base_body_armature_name = ''  # Armature name that _base_body_mesh belongs to
+    _face_group_mgr = None  # DSF face group manager for clean zone detection (active character)
+    _face_group_mgrs = {}   # {armature_name: FaceGroupManager} — per-character cache
+    _base_body_meshes = {}  # {armature_name: mesh_obj} — per-character base body mesh cache
     _hover_control_point_id = None  # For multi-bone controls
     _hover_bone_names = None  # List of bone names for multi-bone controls
     _hover_from_posebridge = False  # True when hover came from PoseBridge control point (not 3D raycast)
@@ -2070,9 +2078,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
     @staticmethod
     def _set_header(context, text):
-        """Set header text safely — guards against None area (e.g. after workspace switch)."""
-        if context.area:
-            context.area.header_text_set(text)
+        """Set header text on ALL VIEW_3D areas for seamless multi-viewport feedback."""
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.header_text_set(text)
 
     def modal(self, context, event):
         """Handle mouse events"""
@@ -2099,6 +2108,100 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             elif event.value == 'PRESS' and event.type in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER'}:
                 # Translate confirmed
                 self._use_native_translate = False
+            return {'PASS_THROUGH'}
+
+        # NON-BLENDAZ OBJECT SELECTED: Pass through all events so the user can
+        # interact with non-registered objects natively (pose bones, move, etc.).
+        # Single-click on non-registered rig/mesh → selects rig, enters POSE mode.
+        # Double-click on non-registered rig/mesh → drops to OBJECT mode.
+        # Click on registered DAZ character → re-acquire and resume BlenDAZ control.
+        if self._just_selected_armature:
+            if event.type == 'MOUSEMOVE':
+                # Still run hover check so we detect when mouse is over a registered character
+                self.check_hover(context, event)
+                return {'PASS_THROUGH'}
+            if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+                if self._hover_armature:
+                    # Clicked back on a registered DAZ character — re-acquire it
+                    print(f"  Re-acquiring DAZ character: {self._hover_armature.name}")
+                    if context.mode != 'POSE' or context.active_object != self._hover_armature:
+                        if context.mode != 'OBJECT':
+                            self._mode_set_safe(context, 'OBJECT')
+                        bpy.ops.object.select_all(action='DESELECT')
+                        self._hover_armature.select_set(True)
+                        context.view_layer.objects.active = self._hover_armature
+                        active = context.active_object
+                        if active and active.hide_viewport:
+                            active.hide_viewport = False
+                        self._mode_set_safe(context, 'POSE')
+                    self._just_selected_armature = False
+                    return {'RUNNING_MODAL'}
+
+                # Double-click detection on non-registered objects
+                current_time = time.time()
+                current_pos = (event.mouse_region_x, event.mouse_region_y)
+                is_double_click = False
+                if self._nonreg_click_time > 0:
+                    time_delta = current_time - self._nonreg_click_time
+                    if time_delta < 0.3 and self._nonreg_click_pos:
+                        pos_delta = ((current_pos[0] - self._nonreg_click_pos[0])**2 +
+                                    (current_pos[1] - self._nonreg_click_pos[1])**2)**0.5
+                        if pos_delta < 5:
+                            is_double_click = True
+                self._nonreg_click_time = current_time
+                self._nonreg_click_pos = current_pos
+
+                if is_double_click:
+                    # Double-click: switch to OBJECT mode on the active object
+                    active = context.active_object
+                    if active:
+                        if context.mode != 'OBJECT':
+                            self._mode_set_safe(context, 'OBJECT')
+                        bpy.ops.object.select_all(action='DESELECT')
+                        active.select_set(True)
+                        context.view_layer.objects.active = active
+                        print(f"[BlenDAZ] Double-click → object mode: {active.name}")
+                    self._nonreg_click_time = 0
+                    self._nonreg_click_pos = None
+                    return {'RUNNING_MODAL'}
+
+                # Single-click: raycast to find what was clicked (use resolved viewport)
+                ct_area, ct_region, ct_rv3d, _ct_sp, ct_local = \
+                    self._resolve_event_viewport(context, event)
+                if ct_region and ct_rv3d:
+                    coord = ct_local
+                    ray_origin = view3d_utils.region_2d_to_origin_3d(ct_region, ct_rv3d, coord)
+                    ray_vector = view3d_utils.region_2d_to_vector_3d(ct_region, ct_rv3d, coord)
+                    ok, _loc, _nor, _idx, hit_obj, _mat = context.scene.ray_cast(
+                        context.view_layer.depsgraph, ray_origin, ray_vector
+                    )
+                    if ok and hit_obj:
+                        # Resolve armature from mesh
+                        select_target = hit_obj
+                        if hit_obj.type == 'MESH':
+                            for mod in hit_obj.modifiers:
+                                if mod.type == 'ARMATURE' and mod.object:
+                                    select_target = mod.object
+                                    break
+                            else:
+                                if hit_obj.parent and hit_obj.parent.type == 'ARMATURE':
+                                    select_target = hit_obj.parent
+                        # Switch to the clicked rig/object
+                        if context.mode != 'OBJECT':
+                            self._mode_set_safe(context, 'OBJECT')
+                        bpy.ops.object.select_all(action='DESELECT')
+                        select_target.select_set(True)
+                        context.view_layer.objects.active = select_target
+                        if select_target.type == 'ARMATURE':
+                            self._mode_set_safe(context, 'POSE')
+                            print(f"[BlenDAZ] Switched to non-registered rig (pose mode): {select_target.name}")
+                        else:
+                            print(f"[BlenDAZ] Switched to non-registered object: {select_target.name}")
+                        return {'RUNNING_MODAL'}
+
+                # Not on a registered character — pass through
+                return {'PASS_THROUGH'}
+            # All other events: pass through
             return {'PASS_THROUGH'}
 
         # Consume ALL RMB events during active RMB interaction to prevent context menu
@@ -2172,35 +2275,38 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            # Pass through if clicking on UI regions (header, toolbar, etc.)
-            # Skip bounds check for cross-viewport clicks (already verified by _crossviewport_raycast)
+            # Resolve which viewport the click is in (may differ from modal's context.area)
+            evt_area, evt_region, evt_rv3d, evt_space, evt_local = \
+                self._resolve_event_viewport(context, event)
+
+            # Pass through if clicking on UI regions (header, toolbar, N-panel, etc.)
+            # Check against the RESOLVED area's non-WINDOW regions, not the modal's.
             if not getattr(self, '_hover_from_crossviewport', False):
-                region = context.region
-                if region:
-                    mouse_y = event.mouse_region_y
-                    mouse_x = event.mouse_region_x
+                abs_mx, abs_my = event.mouse_x, event.mouse_y
+                over_ui = False
+                check_area = evt_area if evt_area else context.area
+                if check_area:
+                    for rgn in check_area.regions:
+                        if rgn.type == 'WINDOW':
+                            continue
+                        if (rgn.x <= abs_mx < rgn.x + rgn.width and
+                                rgn.y <= abs_my < rgn.y + rgn.height):
+                            over_ui = True
+                            break
+                if not over_ui and not evt_region:
+                    # Mouse isn't over any 3D viewport WINDOW region at all
+                    over_ui = True
+                if over_ui:
+                    self._mouse_down_pos = None
+                    self._accumulated_drag_distance = 0.0
+                    self._last_detection_mouse_pos = None
+                    return {'PASS_THROUGH'}
 
-                    # If clicking in header area or outside bounds, pass through
-                    if mouse_y > region.height - 40 or mouse_y < 0 or mouse_x < 0 or mouse_x > region.width:
-                        self._mouse_down_pos = None
-                        self._accumulated_drag_distance = 0.0
-                        self._last_detection_mouse_pos = None
-                        return {'PASS_THROUGH'}
-
-            # CHARACTER SWITCH: If get_bone_from_hit flagged a switch during hover,
-            # perform the switch now on click.
-            if self._switch_to_character:
-                target = self._switch_to_character
-                self._switch_to_character = None
-                if self._switch_active_character(context, target):
-                    if context.area:
-                        context.area.tag_redraw()
-                    return {'RUNNING_MODAL'}
-
-            # DOUBLE-CLICK DETECTION: Switch to object mode and select armature (DAZ-style)
-            import time
+            # DOUBLE-CLICK DETECTION: Must run before gizmo check, because the first
+            # click selects a bone and the second click would be near that bone's gizmo.
+            # Use window-relative coords for stable cross-viewport comparison.
             current_time = time.time()
-            current_pos = (event.mouse_region_x, event.mouse_region_y)
+            current_pos = (event.mouse_x, event.mouse_y)
 
             is_double_click = False
             if self._last_click_time > 0:
@@ -2215,6 +2321,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Update click tracking
             self._last_click_time = current_time
             self._last_click_pos = current_pos
+
+            # Diagnostic: log click event
+            diag_logger.log_click(
+                mouse_abs=current_pos,
+                hover_bone=self._hover_bone_name,
+                hover_armature=self._hover_armature.name if self._hover_armature else None,
+                hover_from_posebridge=getattr(self, '_hover_from_posebridge', False),
+                switch_to_character=getattr(self, '_switch_to_character', None),
+                is_double_click=is_double_click,
+                active_character=self._base_body_armature_name,
+            )
 
             # Handle double-click: select armature in object mode
             if is_double_click and not self._is_dragging:
@@ -2231,13 +2348,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 mesh_obj = self._hover_mesh
 
                 if not mesh_obj:
-                    # Fresh raycast
-                    region = context.region
-                    rv3d = context.space_data.region_3d if context.space_data else None
-                    if region and rv3d:
-                        coord = (event.mouse_region_x, event.mouse_region_y)
-                        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
-                        ray_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+                    # Fresh raycast using resolved viewport
+                    if evt_region and evt_rv3d:
+                        coord = evt_local
+                        ray_origin = view3d_utils.region_2d_to_origin_3d(evt_region, evt_rv3d, coord)
+                        ray_vector = view3d_utils.region_2d_to_vector_3d(evt_region, evt_rv3d, coord)
                         ok, _loc, _nor, _idx, hit_obj, _mat = context.scene.ray_cast(
                             context.view_layer.depsgraph, ray_origin, ray_vector
                         )
@@ -2256,7 +2371,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if armature_to_select:
                     # Switch to object mode
                     if context.mode != 'OBJECT':
-                        bpy.ops.object.mode_set(mode='OBJECT')
+                        self._mode_set_safe(context, 'OBJECT')
 
                     # Deselect all
                     bpy.ops.object.select_all(action='DESELECT')
@@ -2277,33 +2392,93 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._last_click_time = 0
                 self._last_click_pos = None
 
-            # If we just selected armature (previous double-click), decide what to do:
-            # - Hovering over the DAZ character → re-acquire: return to pose mode, then handle click
-            # - Hovering over anything else → stay in object mode and pass through so the user
-            #   can select non-BlenDAZ objects normally; _just_selected_armature stays True
-            #   until the user clicks back on the character
-            if self._just_selected_armature and not is_double_click:
-                if self._hover_armature:
-                    # Clicked back on the DAZ character — re-acquire it
-                    print("  Re-acquiring DAZ character — returning to pose mode")
-                    if context.mode != 'POSE':
-                        # Ensure the active object is visible before mode_set (hidden objects fail poll)
-                        active = context.active_object
-                        if active and active.hide_viewport:
-                            active.hide_viewport = False
-                        bpy.ops.object.mode_set(mode='POSE')
-                    self._just_selected_armature = False
-                    # Continue with normal click handling below...
-                else:
-                    # Clicked on something else — let Blender handle it normally
-                    self._mouse_down_pos = None
-                    self._accumulated_drag_distance = 0.0
-                    self._last_detection_mouse_pos = None
-                    return {'PASS_THROUGH'}
+            # Pass through if clicking near the active bone's gizmo — let Blender handle it
+            if not is_double_click and context.active_bone and context.mode == 'POSE':
+                gizmo_region = evt_region if evt_region else context.region
+                gizmo_rv3d = evt_rv3d if evt_rv3d else (
+                    context.space_data.region_3d if context.space_data and context.space_data.type == 'VIEW_3D' else None)
+                armature = context.active_object
+                if gizmo_region and gizmo_rv3d and armature and armature.type == 'ARMATURE':
+                    bone_world_pos = armature.matrix_world @ context.active_bone.head
+                    bone_screen = view3d_utils.location_3d_to_region_2d(gizmo_region, gizmo_rv3d, bone_world_pos)
+                    if bone_screen:
+                        lx, ly = evt_local if evt_region else (event.mouse_region_x, event.mouse_region_y)
+                        dx = lx - bone_screen.x
+                        dy = ly - bone_screen.y
+                        if (dx*dx + dy*dy) < 75*75:
+                            self._mouse_down_pos = None
+                            return {'PASS_THROUGH'}
+
+            # CHARACTER SWITCH: If get_bone_from_hit flagged a switch during hover,
+            # perform the switch now on click, then re-detect hover so the click
+            # falls through to normal drag initiation (seamless one-click-drag).
+            if self._switch_to_character:
+                target = self._switch_to_character
+                self._switch_to_character = None
+                if self._switch_active_character(context, target):
+                    if context.area:
+                        context.area.tag_redraw()
+                    # Re-run hover so _hover_bone_name/_hover_armature are set
+                    # for the now-active character — lets the click continue into drag.
+                    self.check_hover(context, event)
 
             # Only handle click if we're hovering over a bone or a PoseBridge morph CP
             # (morph CPs have _hover_bone_name=None to suppress mesh highlighting)
             if not self._hover_armature or (not self._hover_bone_name and not self._hover_from_posebridge):
+                # We're not hovering over a BlenDAZ bone. If we're in POSE mode,
+                # Blender won't handle mesh/object clicks via PASS_THROUGH, so we
+                # need to do it ourselves: raycast, switch to OBJECT mode, select
+                # whatever was hit (mesh or its armature parent).
+                if context.mode == 'POSE':
+                    click_region = evt_region if evt_region else context.region
+                    click_rv3d = evt_rv3d if evt_rv3d else (
+                        context.space_data.region_3d if context.space_data and context.space_data.type == 'VIEW_3D' else None)
+                    if click_region and click_rv3d:
+                        coord = evt_local if evt_region else (event.mouse_region_x, event.mouse_region_y)
+                        ray_origin = view3d_utils.region_2d_to_origin_3d(click_region, click_rv3d, coord)
+                        ray_vector = view3d_utils.region_2d_to_vector_3d(click_region, click_rv3d, coord)
+                        ok, _loc, _nor, _idx, hit_obj, _mat = context.scene.ray_cast(
+                            context.view_layer.depsgraph, ray_origin, ray_vector
+                        )
+                        if ok and hit_obj:
+                            # Determine what to select: armature parent if it has one, otherwise the object itself
+                            select_target = hit_obj
+                            if hit_obj.type == 'MESH':
+                                for mod in hit_obj.modifiers:
+                                    if mod.type == 'ARMATURE' and mod.object:
+                                        select_target = mod.object
+                                        break
+                                else:
+                                    if hit_obj.parent and hit_obj.parent.type == 'ARMATURE':
+                                        select_target = hit_obj.parent
+
+                            # Skip if target is the currently active BlenDAZ armature
+                            settings = getattr(context.scene, 'posebridge_settings', None)
+                            active_arm = settings.active_armature_name if settings else ''
+                            if select_target.name != active_arm:
+                                self._mode_set_safe(context, 'OBJECT')
+                                bpy.ops.object.select_all(action='DESELECT')
+                                select_target.select_set(True)
+                                context.view_layer.objects.active = select_target
+                                # If target is an armature, enter POSE mode for seamless posing
+                                if select_target.type == 'ARMATURE':
+                                    self._mode_set_safe(context, 'POSE')
+                                    print(f"[BlenDAZ] Selected non-registered rig (pose mode): {select_target.name}")
+                                else:
+                                    print(f"[BlenDAZ] Selected non-registered object: {select_target.name}")
+                                self._just_selected_armature = True
+                                diag_logger.log_click_through(
+                                    hit_object=select_target.name,
+                                    hit_type=select_target.type,
+                                    reason="unregistered",
+                                )
+                                self._nonreg_click_time = time.time()
+                                self._nonreg_click_pos = (event.mouse_region_x, event.mouse_region_y)
+                                self._mouse_down_pos = None
+                                self._accumulated_drag_distance = 0.0
+                                self._last_detection_mouse_pos = None
+                                return {'RUNNING_MODAL'}
+
                 self._mouse_down_pos = None
                 self._accumulated_drag_distance = 0.0
                 self._last_detection_mouse_pos = None
@@ -2327,24 +2502,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
                 ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
 
-                # Try to hit mesh
-                hit_mesh = False
-                for obj in context.scene.objects:
-                    if obj.type == 'MESH':
-                        # Skip LineArt copy meshes (hidden, no valid mesh data)
-                        if 'LineArt_Copy' in obj.name:
-                            continue
-                        # Skip hidden objects
-                        if obj.hide_viewport or obj.hide_get():
-                            continue
-
-                        result, location, normal, index = obj.ray_cast(
-                            obj.matrix_world.inverted() @ ray_origin,
-                            obj.matrix_world.inverted().to_3x3() @ view_vector
-                        )
-                        if result:
-                            hit_mesh = True
-                            break
+                # Verify click hits mesh using scene raycast (depsgraph-aware,
+                # sees deformed/posed geometry — individual obj.ray_cast uses
+                # rest-pose BVH and misses posed limbs).
+                hit_mesh, _loc, _nor, _idx, _obj, _mat = context.scene.ray_cast(
+                    context.view_layer.depsgraph, ray_origin, view_vector
+                )
 
                 # If we didn't hit any mesh, pass through (clicking empty space)
                 if not hit_mesh:
@@ -2776,6 +2939,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self.report({'WARNING'}, "Must be in 3D View")
             return {'CANCELLED'}
 
+        # Stop any existing live instance to prevent double-running modals
+        prev = VIEW3D_OT_daz_bone_select._live_instance
+        if prev is not None:
+            try:
+                prev._should_stop = True
+            except ReferenceError:
+                pass
+            VIEW3D_OT_daz_bone_select._live_instance = None
+
         # Remove any draw handlers left by a previous instance (prevents stuck highlights)
         stale = set(VIEW3D_OT_daz_bone_select._active_draw_handlers)
         for h in stale:
@@ -2791,6 +2963,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._hover_bone_name = None
         self._hover_armature = None
         self._base_body_mesh = None
+        self._base_body_armature_name = ''
         self._mouse_down_pos = None
         self._accumulated_drag_distance = 0.0
         self._last_detection_mouse_pos = None
@@ -2871,7 +3044,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Double-click detection for armature selection (DAZ-style)
         self._last_click_time = 0.0
         self._last_click_pos = None
-        self._just_selected_armature = False  # Track if we just switched to object mode
+        self._just_selected_armature = False  # Track if we just switched to non-registered object
+        self._nonreg_click_time = 0.0   # For double-click detection on non-registered objects
+        self._nonreg_click_pos = None
         self._switch_to_character = None  # Armature name to switch to (set by get_bone_from_hit)
 
         # Initialize rotation state (for pectoral bones)
@@ -2918,7 +3093,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             prepare_rig_for_ik(armature)
 
             self._base_body_mesh = find_base_body_mesh(context, armature)
+            self._base_body_armature_name = armature.name if armature else ''
             if self._base_body_mesh:
+                self._base_body_meshes[armature.name] = self._base_body_mesh
                 print(f"  Using base mesh: {self._base_body_mesh.name}")
                 # Initialize DSF face groups for clean zone detection
                 self._face_group_mgr = dsf_face_groups.FaceGroupManager.get_or_create(
@@ -2941,9 +3118,42 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     except Exception as _fgm_e:
                         print(f"  [FaceGroups] Auto-remap failed (non-fatal): {_fgm_e}")
 
+                # Cache FGM for this character (used when hovering non-active characters)
+                if self._face_group_mgr and self._face_group_mgr.valid:
+                    self._face_group_mgrs[armature.name] = self._face_group_mgr
+
+        # Pre-build FGMs and cache base body meshes for all registered characters (not just active)
+        pb_settings = getattr(context.scene, 'posebridge_settings', None)
+        if pb_settings and hasattr(pb_settings, 'blendaz_characters'):
+            for slot in pb_settings.blendaz_characters:
+                other_arm = bpy.data.objects.get(slot.armature_name)
+                if not other_arm or other_arm.type != 'ARMATURE':
+                    continue
+                # Cache base body mesh for this character
+                if slot.armature_name not in self._base_body_meshes:
+                    other_mesh = find_base_body_mesh(context, other_arm)
+                    if other_mesh:
+                        self._base_body_meshes[slot.armature_name] = other_mesh
+                        print(f"  Cached base body mesh for: {slot.armature_name} → {other_mesh.name}")
+                else:
+                    other_mesh = self._base_body_meshes[slot.armature_name]
+                # Build FGM if needed
+                if slot.armature_name not in self._face_group_mgrs and other_mesh:
+                    fgm = dsf_face_groups.FaceGroupManager.get_or_create(other_mesh, other_arm)
+                    if fgm and fgm.valid:
+                        self._face_group_mgrs[slot.armature_name] = fgm
+                        print(f"  Pre-built FGM for: {slot.armature_name}")
+
         # Start modal
         context.window_manager.modal_handler_add(self)
         VIEW3D_OT_daz_bone_select._live_instance = self  # Used by init_character remap to push FGM updates
+
+        # Diagnostic logger session start
+        diag_logger.log_session_start(
+            active_character=self._base_body_armature_name,
+            body_meshes={k: v.name for k, v in self._base_body_meshes.items()},
+            fgm_keys=list(self._face_group_mgrs.keys()),
+        )
         self._set_header(context,"DAZ Bone Select Active - P to pin | Alt+Shift+R to clear pose | ESC to exit")
 
         # Register draw handler for highlighting
@@ -3013,6 +3223,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
     def finish(self, context):
         """Cleanup and exit"""
+        # Diagnostic: end logging session
+        diag_logger.log_session_end()
+
         # Signal the modal to self-terminate on next event
         self._should_stop = True
 
@@ -3069,6 +3282,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         print(f"\n=== Switching character: {settings.active_armature_name} → {target_armature_name} ===")
 
+        # Diagnostic: log character switch
+        diag_logger.log_character_switch(
+            from_character=settings.active_armature_name,
+            to_character=target_armature_name,
+            body_meshes=list(self._base_body_meshes.keys()),
+            fgm_keys=list(self._face_group_mgrs.keys()),
+        )
+
         # 1. Cancel any active drag/morph state
         self._is_dragging = False
         self._is_rotating = False
@@ -3083,42 +3304,62 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if obj:
                     obj.hide_viewport = True
 
-        # 3. Show new character's PoseBridge objects
-        for obj_name in [new_slot.mannequin_name, new_slot.outline_gp_name]:
-            obj = bpy.data.objects.get(obj_name)
-            if obj:
-                obj.hide_viewport = False
+        # 3. Show new character's PoseBridge objects (only if in body view)
+        pb_settings = getattr(bpy.context.scene, 'posebridge_settings', None)
+        active_panel = pb_settings.active_panel if pb_settings else 'body'
+        if active_panel == 'body':
+            for obj_name in [new_slot.mannequin_name, new_slot.outline_gp_name]:
+                obj = bpy.data.objects.get(obj_name)
+                if obj:
+                    obj.hide_viewport = False
 
-        # 4. Update settings
+        # 3b. Switch PoseBridge panel view objects (hands standins) if not in body view.
+        # Also switch the PB viewport's camera to the new character's camera.
+        if active_panel in ('hands', 'face'):
+            # Hide old character's hand standins
+            if old_slot:
+                for side in ('Left', 'Right'):
+                    for suffix in (f'_{old_slot.char_tag}', ''):
+                        obj = bpy.data.objects.get(f'PB_Hand_{side}{suffix}')
+                        if obj:
+                            obj.hide_viewport = True
+            # Show new character's hand standins (only if in hands view)
+            if active_panel == 'hands':
+                for side in ('Left', 'Right'):
+                    for suffix in (f'_{new_slot.char_tag}', ''):
+                        obj = bpy.data.objects.get(f'PB_Hand_{side}{suffix}')
+                        if obj:
+                            obj.hide_viewport = False
+                            break  # Found the right one, don't check fallback
+
+            # Switch PB viewport camera to new character's camera
+            pb_area, pb_space = self._find_pb_viewport(context)
+            if pb_area and pb_space:
+                cam_name = new_slot.camera_hands if active_panel == 'hands' else new_slot.camera_face
+                cam_obj = bpy.data.objects.get(cam_name) if cam_name else None
+                if cam_obj:
+                    pb_space.camera = cam_obj
+                    pb_area.tag_redraw()
+
+        # 4. Save old character's control points, restore new character's
+        if old_slot:
+            try:
+                from posebridge.core import save_control_points, restore_control_points
+                save_control_points(old_slot.char_tag)
+                restore_control_points(new_slot.char_tag)
+            except Exception as e:
+                print(f"  Warning: CP switch failed: {e}")
+
+        # 5. Update settings
         settings.blendaz_active_index = new_idx
         settings.active_armature_name = target_armature_name
 
-        # 5. Switch active object to new armature, enter pose mode
+        # 6. Switch active object to new armature, enter pose mode.
+        # Uses _mode_set_safe to route through the main viewport, protecting PB viewport.
         new_armature = bpy.data.objects.get(target_armature_name)
         if new_armature:
-            # Build context override for mode_set (same approach as select_bone)
-            _ov = None
-            for _area in context.screen.areas:
-                if _area.type == 'VIEW_3D':
-                    for _reg in _area.regions:
-                        if _reg.type == 'WINDOW':
-                            _sp = None
-                            for _s in _area.spaces:
-                                if _s.type == 'VIEW_3D':
-                                    _sp = _s
-                                    break
-                            _ov = {'area': _area, 'region': _reg, 'space_data': _sp,
-                                   'screen': context.screen, 'window': context.window}
-                            break
-                    if _ov:
-                        break
-
             if context.mode != 'OBJECT':
-                if _ov:
-                    with bpy.context.temp_override(**_ov):
-                        bpy.ops.object.mode_set(mode='OBJECT')
-                else:
-                    bpy.ops.object.mode_set(mode='OBJECT')
+                self._mode_set_safe(context, 'OBJECT')
 
             bpy.ops.object.select_all(action='DESELECT')
             new_armature.select_set(True)
@@ -3128,19 +3369,24 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if new_armature.hide_viewport:
                 new_armature.hide_viewport = False
 
-            if _ov:
-                with bpy.context.temp_override(**_ov):
-                    bpy.ops.object.mode_set(mode='POSE')
-            else:
-                bpy.ops.object.mode_set(mode='POSE')
+            self._mode_set_safe(context, 'POSE')
 
             # Convert to quaternion if needed
             prepare_rig_for_ik(new_armature)
 
-        # 6. Reload modal state for new character
-        self._base_body_mesh = find_base_body_mesh(context, new_armature) if new_armature else None
-        self._face_group_mgr = None
-        if self._base_body_mesh and new_armature:
+        # 6b. Restore PB viewport camera view if mode_set knocked it out.
+        # 7. Reload modal state for new character
+        # Use cached base body mesh if available, otherwise find fresh
+        if new_armature and new_armature.name in self._base_body_meshes:
+            self._base_body_mesh = self._base_body_meshes[new_armature.name]
+        else:
+            self._base_body_mesh = find_base_body_mesh(context, new_armature) if new_armature else None
+            if self._base_body_mesh and new_armature:
+                self._base_body_meshes[new_armature.name] = self._base_body_mesh
+        self._base_body_armature_name = new_armature.name if new_armature else ''
+        # Use cached FGM if available, otherwise build fresh
+        self._face_group_mgr = self._face_group_mgrs.get(new_armature.name) if new_armature else None
+        if not self._face_group_mgr and self._base_body_mesh and new_armature:
             self._face_group_mgr = dsf_face_groups.FaceGroupManager.get_or_create(
                 self._base_body_mesh, new_armature)
             # Fallback to reference mesh if DSF lookup fails
@@ -3152,20 +3398,34 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                             ref_obj, self._base_body_mesh, new_armature)
                         if fgm:
                             self._face_group_mgr = fgm
+            if self._face_group_mgr and self._face_group_mgr.valid:
+                self._face_group_mgrs[new_armature.name] = self._face_group_mgr
 
-        # 7. Clear hover state
+        # 8. Clear hover state
         self._hover_mesh = None
         self._hover_bone_name = None
         self._hover_armature = None
         self._highlight_cache.clear()
         self._last_highlighted_bone = None
 
-        # 8. Switch viewport camera to new character's body camera
-        space = context.space_data
-        if space and space.type == 'VIEW_3D':
-            cam = bpy.data.objects.get(new_slot.camera_body)
+        # 9. Switch PB viewport camera to new character's camera for the current panel
+        pb_cam_name = {'body': new_slot.camera_body,
+                       'hands': new_slot.camera_hands,
+                       'face': new_slot.camera_face}.get(active_panel, new_slot.camera_body)
+        pb_area_sw, pb_space_sw = self._find_pb_viewport(context)
+        if pb_space_sw:
+            cam = bpy.data.objects.get(pb_cam_name)
             if cam:
-                space.camera = cam
+                pb_space_sw.camera = cam
+                if pb_area_sw:
+                    pb_area_sw.tag_redraw()
+        else:
+            # Fallback: set on context.space_data (may be main viewport)
+            space = context.space_data
+            if space and space.type == 'VIEW_3D':
+                cam = bpy.data.objects.get(pb_cam_name)
+                if cam:
+                    space.camera = cam
 
         print(f"=== Switched to {target_armature_name} ===\n")
         return True
@@ -3190,66 +3450,45 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._crossviewport_raycast(context, event)
             return
 
-        # Skip hover check if mouse is over UI regions (header, toolbar, etc.)
-        # This prevents interference with UI elements like transform orientation dropdown
-        region = context.region
-        if region:
-            # Check if mouse is in viewport area (not over UI)
-            mouse_x = event.mouse_region_x
-            mouse_y = event.mouse_region_y
+        # Resolve the actual viewport the mouse is over (may differ from modal's context.area)
+        hover_area, hover_region, hover_rv3d, _hover_sp, hover_local = \
+            self._resolve_event_viewport(context, event)
 
-            # If mouse Y is at top (header area) or negative, skip
-            if mouse_y > region.height - 40 or mouse_y < 0:
-                return
-
-            # If mouse X is at edges (sidebars), skip
-            if mouse_x < 0 or mouse_x > region.width:
-                return
+        # Skip hover check if mouse is over UI regions (header, toolbar, N-panel, etc.)
+        check_area = hover_area if hover_area else context.area
+        if check_area:
+            abs_mx, abs_my = event.mouse_x, event.mouse_y
+            for rgn in check_area.regions:
+                if rgn.type == 'WINDOW':
+                    continue
+                if (rgn.x <= abs_mx < rgn.x + rgn.width and
+                        rgn.y <= abs_my < rgn.y + rgn.height):
+                    return
+        if not hover_region:
+            return  # Mouse not over any 3D viewport
 
         # Skip hover check if mouse is near active bone's gizmo
         # This prevents selection changes when manipulating gizmos
         if context.active_bone and context.mode == 'POSE':
-            region = context.region
-
-            # Safety check: ensure we're in a 3D viewport with a valid region
-            if not region or not context.space_data or context.space_data.type != 'VIEW_3D':
-                return
-
-            rv3d = context.space_data.region_3d
-            if not rv3d:
-                return
-
-            # Get 2D screen position of active bone
             armature = context.active_object
             if armature and armature.type == 'ARMATURE':
                 bone_world_pos = armature.matrix_world @ context.active_bone.head
                 bone_screen_pos = view3d_utils.location_3d_to_region_2d(
-                    region, rv3d, bone_world_pos
+                    hover_region, hover_rv3d, bone_world_pos
                 )
 
                 if bone_screen_pos:
-                    # Check if mouse is within gizmo radius (approximately 75 pixels)
-                    mouse_x = event.mouse_region_x
-                    mouse_y = event.mouse_region_y
-                    distance = ((mouse_x - bone_screen_pos.x)**2 +
-                               (mouse_y - bone_screen_pos.y)**2)**0.5
+                    lx, ly = hover_local
+                    distance = ((lx - bone_screen_pos.x)**2 +
+                               (ly - bone_screen_pos.y)**2)**0.5
 
                     if distance < 75:  # Within gizmo interaction area
-                        # Don't update hover - let gizmo handle events
                         return
 
-        # Get viewport and mouse coords
-        region = context.region
-
-        # Safety check: ensure we're in a 3D viewport with a valid region
-        if not region or not context.space_data or context.space_data.type != 'VIEW_3D':
-            return
-
-        rv3d = context.space_data.region_3d
-        if not rv3d:
-            return
-
-        coord = (event.mouse_region_x, event.mouse_region_y)
+        # Raycast from the resolved viewport
+        region = hover_region
+        rv3d = hover_rv3d
+        coord = hover_local
 
         # Get ray from mouse
         view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
@@ -3268,21 +3507,57 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         closest_location = location
         closest_distance = (location - ray_origin).length if success and location else float('inf')
 
-        # RAYCAST 2: Check base body mesh specifically (if available and not already hit)
+        # RAYCAST 2: Check base body mesh specifically (if available and not already hit).
+        # For multi-character: determine which character's body mesh to check based on
+        # which armature the closest hit belongs to.
         body_mesh = None
         body_location = None
         body_distance = float('inf')
 
-        if self._base_body_mesh and closest_mesh != self._base_body_mesh:
+        # Determine the correct body mesh to check against.
+        # Start with the active character's mesh, but if the closest hit belongs to a
+        # different registered character, use that character's cached body mesh instead.
+        target_body_mesh = self._base_body_mesh
+        if closest_mesh and closest_mesh.type == 'MESH':
+            hit_arm = None
+            for mod in closest_mesh.modifiers:
+                if mod.type == 'ARMATURE' and mod.object:
+                    hit_arm = mod.object
+                    break
+            if not hit_arm and closest_mesh.parent and closest_mesh.parent.type == 'ARMATURE':
+                hit_arm = closest_mesh.parent
+            if hit_arm and hit_arm.name in self._base_body_meshes:
+                target_body_mesh = self._base_body_meshes[hit_arm.name]
+
+        if target_body_mesh and closest_mesh != target_body_mesh:
             body_location, body_distance = raycast_specific_mesh(
-                self._base_body_mesh,
+                target_body_mesh,
                 ray_origin,
                 view_vector,
                 context
             )
             if body_location:
-                body_mesh = self._base_body_mesh
+                body_mesh = target_body_mesh
                 body_distance = (body_location - ray_origin).length
+
+        # Diagnostic: log both raycasts before priority decision
+        diag_logger.log_hover(
+            mouse=coord,
+            mouse_abs=(event.mouse_x, event.mouse_y),
+            viewport="main",
+            raycast1_hit=success,
+            raycast1_mesh=closest_mesh.name if closest_mesh else None,
+            raycast1_location=tuple(closest_location) if success and closest_location else None,
+            raycast1_distance=closest_distance if success else None,
+            raycast1_face_index=index if success else None,
+            raycast2_hit=body_location is not None,
+            raycast2_mesh=target_body_mesh.name if target_body_mesh else None,
+            raycast2_location=tuple(body_location) if body_location else None,
+            raycast2_distance=body_distance if body_location else None,
+            raycast2_is_evaluated=False,
+            active_character=self._base_body_armature_name,
+            mode=context.mode,
+        )
 
         # PRIORITY LOGIC: Choose which hit to use
         # Prioritize body if it's behind clothing (increased threshold for poofy dresses)
@@ -3320,6 +3595,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if bone_info:
                 mesh_name, bone_name, armature = bone_info
 
+                # Pose-bone proximity override: when a limb is posed in front of the
+                # torso, DSF face lookup resolves to the torso bone behind it. Check
+                # if the hit location is actually closest to a different IK-draggable
+                # bone's posed world position and override if so.
+                bone_name = self._proximity_bone_override(
+                    armature, bone_name, final_location)
+
                 # Apply IK target bone mapping (metatarsals → foot, carpals → hand)
                 # This makes hover show the actual IK target, not the small bone
                 mapped_bone = get_ik_target_bone(armature, bone_name, silent=True)
@@ -3335,6 +3617,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._hover_armature = armature
                 self._hover_from_posebridge = False
 
+                # Diagnostic: amend hover entry with bone resolution + priority
+                diag_logger.amend_last_hover(
+                    final_mesh=final_mesh.name,
+                    priority_winner="body" if final_mesh == body_mesh else "closest",
+                    distance_diff=(body_distance - closest_distance) if body_mesh and body_location else None,
+                    raw_bone=bone_info[1],
+                    mapped_bone=bone_name,
+                    resolution_method="dsf" if (self._face_group_mgrs.get(armature.name)) else "vertex_weights",
+                    armature=armature.name,
+                )
+
                 # Update header (only if changed to reduce flicker)
                 if bone_name != self._last_bone:
                     # Check pin status for header display
@@ -3343,30 +3636,35 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     pin_text = f" | {pin_status}" if pin_status else ""
 
                     text = f"Hover: {bone_name}{pin_text} | Mesh: {mesh_name} | CLICK to select | P to pin"
-                    self._set_header(context,text)
+                    self._set_header(context, text)
                     self._last_bone = bone_name
-                    if context.area: context.area.tag_redraw()  # Redraw to update highlight
+                    for _a in context.screen.areas:
+                        if _a.type == 'VIEW_3D':
+                            _a.tag_redraw()
             else:
                 # Hit mesh but no bone found
+                diag_logger.flush_pending_hover()
                 self.clear_hover(context)
         else:
             # No hit
+            diag_logger.flush_pending_hover()
             self.clear_hover(context)
 
-    def _crossviewport_raycast(self, context, event):
-        """Raycast in whichever viewport the mouse is actually in.
+    # ── Viewport resolution helpers ──────────────────────────────────────
+    # Consolidate the repeated "find viewport under mouse" pattern used by
+    # _crossviewport_raycast, _get_region_rv3d, and check_posebridge_hover.
 
-        Modal operators receive context.region for their invoke area,
-        which may differ from the viewport the mouse is currently in.
-        This detects the correct viewport and raycasts from there.
+    @staticmethod
+    def _resolve_event_viewport(context, event):
+        """Return (area, region, rv3d, space, local_xy) for the VIEW_3D under the mouse.
+
+        Scans all VIEW_3D areas in context.screen and matches the WINDOW region
+        that contains event.mouse_x/y (window-relative coords).
+        Returns (None, None, None, None, (0, 0)) if not over any 3D viewport.
         """
         mouse_x = event.mouse_x
         mouse_y = event.mouse_y
 
-        # Find the VIEW_3D region the mouse is in
-        target_region = None
-        target_rv3d = None
-        target_area = None
         for area in context.screen.areas:
             if area.type != 'VIEW_3D':
                 continue
@@ -3375,15 +3673,92 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     continue
                 if (reg.x <= mouse_x < reg.x + reg.width and
                         reg.y <= mouse_y < reg.y + reg.height):
-                    target_region = reg
-                    target_area = area
                     for sp in area.spaces:
                         if sp.type == 'VIEW_3D':
-                            target_rv3d = sp.region_3d
-                            break
-                    break
-            if target_region:
-                break
+                            rv3d = sp.region_3d
+                            if rv3d:
+                                local_x = mouse_x - reg.x
+                                local_y = mouse_y - reg.y
+                                return area, reg, rv3d, sp, (local_x, local_y)
+        return None, None, None, None, (0, 0)
+
+    @staticmethod
+    def _find_pb_viewport(context):
+        """Find the PoseBridge viewport — the VIEW_3D in CAMERA mode with a PB camera.
+
+        Returns (area, space) or (None, None).
+        """
+        for area in context.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for sp in area.spaces:
+                if sp.type == 'VIEW_3D':
+                    rv3d = sp.region_3d
+                    if rv3d and rv3d.view_perspective == 'CAMERA':
+                        cam = sp.camera
+                        if cam and cam.name.startswith('PB_Camera_'):
+                            return area, sp
+        return None, None
+
+    @staticmethod
+    def _find_main_viewport(context):
+        """Find the main 3D viewport — the VIEW_3D that is NOT the PB viewport.
+
+        If there's only one VIEW_3D, returns it.  With multiple, returns the one
+        that is NOT in CAMERA mode with a PB camera (i.e. the non-PB viewport).
+        Returns (area, space) or (None, None).
+        """
+        candidates = []
+        for area in context.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for sp in area.spaces:
+                if sp.type == 'VIEW_3D':
+                    rv3d = sp.region_3d
+                    is_pb = (rv3d and rv3d.view_perspective == 'CAMERA'
+                             and sp.camera and sp.camera.name.startswith('PB_Camera_'))
+                    candidates.append((area, sp, is_pb))
+                    break  # one space per area
+
+        if not candidates:
+            return None, None
+
+        # Prefer non-PB viewport
+        for area, sp, is_pb in candidates:
+            if not is_pb:
+                return area, sp
+
+        # All viewports are PB viewports (unusual) — return the first
+        return candidates[0][0], candidates[0][1]
+
+    def _mode_set_safe(self, context, mode):
+        """Execute mode_set routed through the main viewport to avoid corrupting PB viewport.
+
+        Blender's mode_set can disrupt the camera/perspective state of the viewport
+        used in its context override. By always routing through the main (non-PB)
+        viewport, we protect the PB viewport's CAMERA mode.
+        """
+        main_area, main_space = self._find_main_viewport(context)
+        if main_area:
+            for _reg in main_area.regions:
+                if _reg.type == 'WINDOW':
+                    with bpy.context.temp_override(
+                            area=main_area, region=_reg, space_data=main_space,
+                            screen=context.screen, window=context.window):
+                        bpy.ops.object.mode_set(mode=mode)
+                    return
+        # Fallback: no main viewport found
+        bpy.ops.object.mode_set(mode=mode)
+
+    def _crossviewport_raycast(self, context, event):
+        """Raycast in whichever viewport the mouse is actually in.
+
+        Modal operators receive context.region for their invoke area,
+        which may differ from the viewport the mouse is currently in.
+        This detects the correct viewport and raycasts from there.
+        """
+        target_area, target_region, target_rv3d, _space, local_xy = \
+            self._resolve_event_viewport(context, event)
 
         if not target_region or not target_rv3d:
             self.clear_hover(context)
@@ -3394,9 +3769,8 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._crossviewport_rv3d = target_rv3d
         self._crossviewport_area = target_area
 
-        # Mouse position relative to the target region
-        local_x = mouse_x - target_region.x
-        local_y = mouse_y - target_region.y
+        # Mouse position relative to the target region (from helper)
+        local_x, local_y = local_xy
 
         # Bounds check (header/sidebar)
         if local_y > target_region.height - 40 or local_y < 0:
@@ -3417,29 +3791,68 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         )
         success, location, normal, index, obj, matrix = result
 
-        # Also check base body mesh
+        # Also check base body mesh (resolve through clothing for any character)
         final_mesh = None
         final_location = None
 
-        if self._base_body_mesh and obj != self._base_body_mesh:
+        # Determine the correct body mesh to check against
+        target_body_mesh = self._base_body_mesh
+        if success and obj and obj.type == 'MESH':
+            hit_arm = None
+            for mod in obj.modifiers:
+                if mod.type == 'ARMATURE' and mod.object:
+                    hit_arm = mod.object
+                    break
+            if not hit_arm and obj.parent and obj.parent.type == 'ARMATURE':
+                hit_arm = obj.parent
+            if hit_arm and hit_arm.name in self._base_body_meshes:
+                target_body_mesh = self._base_body_meshes[hit_arm.name]
+
+        if target_body_mesh and obj != target_body_mesh:
             body_loc, body_dist = raycast_specific_mesh(
-                self._base_body_mesh, ray_origin, view_vector, context
+                target_body_mesh, ray_origin, view_vector, context
             )
             if body_loc:
                 body_distance = (body_loc - ray_origin).length
                 scene_distance = (location - ray_origin).length if success else float('inf')
                 if body_distance - scene_distance < 1.0:
-                    final_mesh = self._base_body_mesh
+                    final_mesh = target_body_mesh
                     final_location = body_loc
         if not final_mesh and success and obj and obj.type == 'MESH':
             final_mesh = obj
             final_location = location
+
+        # Diagnostic: log crossviewport raycasts
+        _cv_scene_dist = (location - ray_origin).length if success and location else None
+        _cv_body_dist = (body_loc - ray_origin).length if 'body_loc' in dir() and body_loc else None
+        diag_logger.log_hover(
+            mouse=coord,
+            mouse_abs=(event.mouse_x, event.mouse_y),
+            viewport="crossviewport",
+            raycast1_hit=success,
+            raycast1_mesh=obj.name if success and obj else None,
+            raycast1_location=tuple(location) if success and location else None,
+            raycast1_distance=_cv_scene_dist,
+            raycast1_face_index=index if success else None,
+            raycast2_hit=body_loc is not None if 'body_loc' in dir() else False,
+            raycast2_mesh=target_body_mesh.name if target_body_mesh else None,
+            raycast2_location=tuple(body_loc) if 'body_loc' in dir() and body_loc else None,
+            raycast2_distance=_cv_body_dist,
+            raycast2_is_evaluated=False,
+            active_character=self._base_body_armature_name,
+            mode=context.mode,
+        )
 
         if final_mesh and final_location:
             face_index = index if success and obj == final_mesh else None
             bone_info = self.get_bone_from_hit(final_mesh, final_location, face_index)
             if bone_info:
                 mesh_name, bone_name, armature = bone_info
+
+                # Pose-bone proximity override (same as check_hover)
+                bone_name = self._proximity_bone_override(
+                    armature, bone_name, final_location)
+
                 mapped_bone = get_ik_target_bone(armature, bone_name, silent=True)
                 if mapped_bone:
                     bone_name = mapped_bone
@@ -3450,18 +3863,30 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 self._hover_from_posebridge = False
                 self._hover_from_crossviewport = True  # Skip fresh raycast on click (already verified)
 
+                # Diagnostic: amend crossviewport hover with bone resolution
+                diag_logger.amend_last_hover(
+                    final_mesh=final_mesh.name,
+                    priority_winner="body" if final_mesh == target_body_mesh else "closest",
+                    distance_diff=(_cv_body_dist - _cv_scene_dist) if _cv_body_dist and _cv_scene_dist else None,
+                    raw_bone=bone_info[1],
+                    mapped_bone=bone_name,
+                    resolution_method="dsf" if (self._face_group_mgrs.get(armature.name)) else "vertex_weights",
+                    armature=armature.name,
+                )
+
                 if bone_name != self._last_bone:
                     data_bone = armature.data.bones.get(bone_name)
                     pin_status = get_pin_status_text(data_bone) if data_bone else ""
                     pin_text = f" | {pin_status}" if pin_status else ""
                     text = f"Hover: {bone_name}{pin_text} | Mesh: {mesh_name} | CLICK to select | P to pin"
-                    if target_area:
-                        target_area.header_text_set(text)
+                    self._set_header(context, text)
                     self._last_bone = bone_name
-                    if target_area:
-                        target_area.tag_redraw()
+                    for _a in context.screen.areas:
+                        if _a.type == 'VIEW_3D':
+                            _a.tag_redraw()
                 return
 
+        diag_logger.flush_pending_hover()
         self.clear_hover(context)
 
     def _get_region_rv3d(self, context, event):
@@ -3473,25 +3898,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         main 3D viewport (e.g. G key drag after selecting via CP).
         mouse_local is (x, y) relative to the returned region.
         """
-        mouse_x = event.mouse_x
-        mouse_y = event.mouse_y
+        _area, region, rv3d, _space, local_xy = \
+            self._resolve_event_viewport(context, event)
 
-        # Scan all VIEW_3D areas and find the one the mouse is actually in
-        for area in context.screen.areas:
-            if area.type != 'VIEW_3D':
-                continue
-            for reg in area.regions:
-                if reg.type != 'WINDOW':
-                    continue
-                if (reg.x <= mouse_x < reg.x + reg.width and
-                        reg.y <= mouse_y < reg.y + reg.height):
-                    for sp in area.spaces:
-                        if sp.type == 'VIEW_3D':
-                            rv3d = sp.region_3d
-                            if rv3d:
-                                local_x = mouse_x - reg.x
-                                local_y = mouse_y - reg.y
-                                return reg, rv3d, (local_x, local_y)
+        if region and rv3d:
+            return region, rv3d, local_xy
 
         # Fall back to context.region (modal's own viewport)
         region = context.region
@@ -3501,6 +3912,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 return region, rv3d, (event.mouse_region_x, event.mouse_region_y)
 
         return None, None, (0, 0)
+
 
     def check_posebridge_hover(self, context, event):
         """Check for control point hits in PoseBridge mode (2D hit detection)"""
@@ -3516,41 +3928,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             armature = bpy.data.objects.get(settings.active_armature_name)
 
         if not armature or armature.type != 'ARMATURE':
+            diag_logger.log_pb_hover_bail(
+                reason='no_armature',
+                armature_name=settings.active_armature_name if settings else None,
+                has_armature=False)
             self.clear_hover(context)
             return
 
         # Find which 3D viewport region the mouse is currently in
-        region = None
-        rv3d = None
-        viewport_space = None
-        mouse_x = event.mouse_x
-        mouse_y = event.mouse_y
-
-        for area in context.screen.areas:
-            if area.type != 'VIEW_3D':
-                continue
-
-            # Check all regions in this area
-            for reg in area.regions:
-                if reg.type != 'WINDOW':
-                    continue
-
-                # Check if mouse is within this region's bounds
-                if (reg.x <= mouse_x < reg.x + reg.width and
-                    reg.y <= mouse_y < reg.y + reg.height):
-                    # Found the region! Get its space's region_3d
-                    region = reg
-                    for space in area.spaces:
-                        if space.type == 'VIEW_3D':
-                            rv3d = space.region_3d
-                            viewport_space = space
-                            break
-                    break
-
-            if region:
-                break
+        pb_hover_area, region, rv3d, viewport_space, _local_xy = \
+            self._resolve_event_viewport(context, event)
 
         if not region or not rv3d:
+            diag_logger.log_pb_hover_bail(reason='no_region_rv3d')
             return
 
         # Only run CP hit-testing in PoseBridge camera viewports.
@@ -3558,10 +3948,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Look up camera from active CharacterSlot; fall back to legacy names
         active_panel = settings.active_panel
         expected_cam = None
+        _num_slots = 0
+        _active_idx = -1
         if hasattr(settings, 'blendaz_characters'):
-            idx = settings.blendaz_active_index
-            if 0 <= idx < len(settings.blendaz_characters):
-                slot = settings.blendaz_characters[idx]
+            _active_idx = settings.blendaz_active_index
+            _num_slots = len(settings.blendaz_characters)
+            if 0 <= _active_idx < _num_slots:
+                slot = settings.blendaz_characters[_active_idx]
                 expected_cam = {'body': slot.camera_body, 'hands': slot.camera_hands,
                                 'face': slot.camera_face}.get(active_panel)
         if not expected_cam or expected_cam not in bpy.data.objects:
@@ -3572,11 +3965,20 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             }
             expected_cam = PANEL_CAMERAS_LEGACY.get(active_panel)
         if expected_cam:
-            if rv3d.view_perspective != 'CAMERA':
-                return  # Not in camera view — let _crossviewport_raycast handle it
-            viewport_cam = viewport_space.camera if viewport_space.camera else context.scene.camera
+            # Identify PB viewport by its assigned camera, not by view mode.
+            # User may scroll/orbit (exits CAMERA mode) but the viewport still
+            # has the PB camera assigned — CP hit detection works in any view mode.
+            viewport_cam = viewport_space.camera if viewport_space else None
             if not viewport_cam or viewport_cam.name != expected_cam:
-                return  # Wrong camera — let _crossviewport_raycast handle it
+                diag_logger.log_pb_hover_bail(
+                    reason='camera_mismatch',
+                    active_panel=active_panel,
+                    expected_cam=expected_cam,
+                    viewport_cam=viewport_cam.name if viewport_cam else None,
+                    view_perspective=rv3d.view_perspective if rv3d else None,
+                    active_index=_active_idx,
+                    num_slots=_num_slots)
+                return  # Not the PB viewport — let _crossviewport_raycast handle it
 
         # Import PoseBridge utilities
         addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3590,12 +3992,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             from posebridge.drawing import PoseBridgeDrawHandler
         except ImportError:
             # PoseBridge not available, fallback to normal mode
+            diag_logger.log_pb_hover_bail(reason='import_failed')
             return
 
         # USE FIXED CONTROL POINT POSITIONS (from T-pose)
         fixed_control_points = settings.control_points_fixed
 
         if not fixed_control_points or len(fixed_control_points) == 0:
+            diag_logger.log_pb_hover_bail(
+                reason='no_fixed_cps',
+                active_panel=active_panel,
+                num_fixed_cps=0,
+                armature_name=armature.name,
+                has_armature=True)
             # No fixed positions stored yet - clear hover and return
             self.clear_hover(context)
             return
@@ -3618,6 +4027,38 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         closest_distance = 20.0  # Hit threshold in pixels
 
         from mathutils import Vector
+
+        # Diagnostic: one-time dump of CP projection data
+        if diag_logger.DIAG_ENABLED:
+            _diag_key = getattr(self, '_pb_cp_diag_done', None)
+            if _diag_key != active_panel:
+                self._pb_cp_diag_done = active_panel
+                _sample_cps = []
+                for _cp in fixed_control_points:
+                    _cp_panel = _cp.panel_view if _cp.panel_view else 'body'
+                    if _cp_panel != active_panel:
+                        continue
+                    _fpos = Vector(_cp.position_3d_fixed)
+                    if _cp_panel == 'face' and face_head_matrix:
+                        _fpos = face_head_matrix @ _fpos
+                    _p2d = view3d_utils.location_3d_to_region_2d(region, rv3d, _fpos)
+                    _sample_cps.append({
+                        'bone': _cp.bone_name,
+                        'pos3d': [round(x, 3) for x in _fpos],
+                        'pos2d': [round(x, 1) for x in _p2d] if _p2d else None,
+                    })
+                    if len(_sample_cps) >= 6:
+                        break
+                diag_logger.log_state_dump(
+                    trigger='pb_cp_projection',
+                    active_panel=active_panel,
+                    mouse_region=[mouse_region_x, mouse_region_y],
+                    region_size=[region.width, region.height],
+                    view_perspective=rv3d.view_perspective,
+                    viewport_cam=viewport_space.camera.name if viewport_space and viewport_space.camera else None,
+                    sample_cps=_sample_cps,
+                    total_cps_for_panel=sum(1 for _c in fixed_control_points if (_c.panel_view or 'body') == active_panel),
+                )
 
         for cp in fixed_control_points:
             # Only test control points that belong to the active panel
@@ -3656,16 +4097,18 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Update hover state
         if closest_bone and closest_cp:
-            # Find mesh associated with armature for highlighting
-            mesh_obj = None
-            for obj in context.scene.objects:
-                if obj.type == 'MESH':
-                    for mod in obj.modifiers:
-                        if mod.type == 'ARMATURE' and mod.object == armature:
-                            mesh_obj = obj
+            # Find mesh associated with armature for highlighting.
+            # Use cached base body mesh to avoid picking up clothing.
+            mesh_obj = self._base_body_meshes.get(armature.name) if armature else None
+            if not mesh_obj:
+                for obj in context.scene.objects:
+                    if obj.type == 'MESH':
+                        for mod in obj.modifiers:
+                            if mod.type == 'ARMATURE' and mod.object == armature:
+                                mesh_obj = obj
+                                break
+                        if mesh_obj:
                             break
-                    if mesh_obj:
-                        break
 
             # Update hover state (for mesh highlighting)
             # Skip mesh highlight for morph CPs — they all reference 'head'
@@ -3731,7 +4174,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 text = f"PoseBridge: {display_name} | Click+Drag to rotate | ESC to exit"
                 self._set_header(context,text)
                 self._last_bone = display_name
-                if context.area: context.area.tag_redraw()  # Trigger immediate highlight update
+                # Redraw the PB viewport (where CPs are drawn), not just the modal's invoke area
+                if pb_hover_area: pb_hover_area.tag_redraw()
+                if context.area and context.area != pb_hover_area: context.area.tag_redraw()
 
             # Set tooltip text for GPU drawing (appears after 1 second hover)
             # Tooltip persists while hovering same control point.
@@ -3740,7 +4185,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 tooltip_text = closest_cp.label
                 self._tooltip_text = tooltip_text
                 self._tooltip_mouse_pos = (event.mouse_region_x, event.mouse_region_y)
-                if context.area: context.area.tag_redraw()
+                if pb_hover_area: pb_hover_area.tag_redraw()
         else:
             # No control point under mouse
             self.clear_hover(context)
@@ -3764,7 +4209,59 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._tooltip_text = None
             self._tooltip_mouse_pos = None
 
-            if context.area: context.area.tag_redraw()  # Redraw to clear highlight
+            # Redraw all 3D viewports to clear highlight
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+
+    # Bones that users drag via IK — these are the ones that move far from
+    # their rest position and can overlap other body regions.
+    _PROXIMITY_CHECK_BONES = (
+        'lHand', 'rHand', 'lFoot', 'rFoot',
+        'lForearmBend', 'rForearmBend', 'lShin', 'rShin',
+        'lForearmTwist', 'rForearmTwist',
+    )
+    # Bones that are commonly resolved incorrectly when a limb is posed in
+    # front of them.  Only override when DSF resolves to one of these.
+    _OVERRIDE_CANDIDATES = {
+        'abdomenUpper', 'abdomenLower', 'chestUpper', 'chestLower',
+        'pelvis', 'lPectoral', 'rPectoral', 'navel',
+        'lThighBend', 'rThighBend', 'lThighTwist', 'rThighTwist',
+        'lShin', 'rShin',
+    }
+
+    def _proximity_bone_override(self, armature, dsf_bone, hit_location_world):
+        """Override DSF bone resolution when a posed limb overlaps the torso.
+
+        Only activates when DSF resolved to a torso bone AND a draggable limb
+        bone's posed position is very close to the hit.  Cost: ~10 distance
+        checks per hover (only when DSF says torso).
+        """
+        # Only override these bones — if DSF says hand/foot, trust it
+        if dsf_bone not in self._OVERRIDE_CANDIDATES:
+            return dsf_bone
+
+        # Check distance from hit to each IK-target bone's posed world position
+        best_bone = dsf_bone
+        best_dist = float('inf')
+        mw = armature.matrix_world
+
+        for bone_name in self._PROXIMITY_CHECK_BONES:
+            pb = armature.pose.bones.get(bone_name)
+            if not pb:
+                continue
+            bone_head_world = mw @ pb.head
+            dist = (hit_location_world - bone_head_world).length
+            if dist < best_dist:
+                best_dist = dist
+                best_bone = bone_name
+
+        # Only override if a limb bone is within 0.15m of the hit
+        # (hand/forearm bones are ~0.1m from their mesh surface)
+        if best_bone != dsf_bone and best_dist < 0.15:
+            return best_bone
+
+        return dsf_bone
 
     def get_bone_from_hit(self, mesh_obj, hit_location, face_index=None):
         """Find the bone at hit location using hit polygon for better accuracy"""
@@ -3797,9 +4294,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if not registered:
                 return None  # Unregistered rig — pass through
             if armature.name != settings.active_armature_name:
-                # Registered but not active — flag for character switch
+                # Registered but not active — flag for character switch on click.
+                # Don't return None: let the bone lookup proceed so hover highlights work.
                 self._switch_to_character = armature.name
-                return None
         elif settings and settings.active_armature_name:
             # Legacy single-character mode (no registry)
             if armature.name != settings.active_armature_name:
@@ -3808,10 +4305,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         mesh = mesh_obj.data
 
         # METHOD 0: DSF Face Group lookup (clean, hard-edged zone boundaries)
-        if self._face_group_mgr and self._face_group_mgr.valid:
+        # Use the per-character FGM cache so hovering non-active characters also gets
+        # clean zone detection instead of falling through to vertex weights.
+        fgm = self._face_group_mgrs.get(armature.name, None)
+        if fgm and fgm.valid:
             matrix_inv = mesh_obj.matrix_world.inverted()
             hit_local = matrix_inv @ hit_location
-            bone_name = self._face_group_mgr.lookup_bone(face_index, hit_local)
+            bone_name = fgm.lookup_bone(face_index, hit_local)
             if bone_name and bone_name in armature.data.bones:
                 return (mesh_obj.name, bone_name, armature)
 
@@ -4100,6 +4600,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         mouse_pos = (event.mouse_x, event.mouse_y)  # Absolute coords for debug
         print(f"\n=== Starting IK Drag: {self._drag_bone_name} | Mouse: {mouse_pos} ===")
+
+        # Diagnostic: log drag start
+        diag_logger.log_drag_start(
+            bone=self._drag_bone_name,
+            armature=self._drag_armature.name if self._drag_armature else None,
+            from_posebridge=getattr(self, '_drag_from_posebridge', False),
+            accumulated_px=getattr(self, '_accumulated_drag_distance', None),
+        )
 
         # POSEBRIDGE MODE: Use rotation mode for control point drags (not 3D mesh drags)
         # Use _drag_from_posebridge (locked at mouse-down) instead of _hover_from_posebridge
@@ -7051,6 +7559,59 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         remainder_bone.rotation_quaternion = correction @ remainder_bone.rotation_quaternion
         context.view_layer.update()
 
+    def _log_post_drag_state(self, context, bone_name, armature_override=None):
+        """Diagnostic: log bone world position + evaluated mesh verts after drag-end."""
+        if not diag_logger.DIAG_ENABLED:
+            return
+        try:
+            armature = armature_override or self._drag_armature or (
+                context.active_object if context.active_object and context.active_object.type == 'ARMATURE'
+                else None)
+            if not armature:
+                return
+
+            # Get bone world position from pose bone
+            pose_bone = armature.pose.bones.get(bone_name)
+            bone_head_world = None
+            bone_tail_world = None
+            if pose_bone:
+                bone_head_world = armature.matrix_world @ pose_bone.head
+                bone_tail_world = armature.matrix_world @ pose_bone.tail
+
+            # Get evaluated mesh to check if deformed verts match posed position
+            mesh_name = None
+            sample_verts = None
+            body_mesh = self._base_body_meshes.get(armature.name)
+            if body_mesh and bone_head_world:
+                mesh_name = body_mesh.name
+                depsgraph = context.evaluated_depsgraph_get()
+                eval_mesh = body_mesh.evaluated_get(depsgraph)
+                eval_mesh_data = eval_mesh.to_mesh()
+                # Sample 5 verts closest to bone head (world space)
+                bh = bone_head_world
+                verts_with_dist = []
+                mw = eval_mesh.matrix_world
+                for v in eval_mesh_data.vertices:
+                    vw = mw @ v.co
+                    dist = (vw - bh).length
+                    verts_with_dist.append((dist, vw))
+                verts_with_dist.sort(key=lambda x: x[0])
+                sample_verts = [list(vw) for _, vw in verts_with_dist[:5]]
+                eval_mesh.to_mesh_clear()
+
+            diag_logger.log_drag_end_state(
+                bone_name=bone_name,
+                armature=armature.name,
+                bone_head_world=bone_head_world,
+                bone_tail_world=bone_tail_world,
+                mesh_name=mesh_name,
+                mesh_sample_verts=sample_verts,
+                depsgraph_method='evaluated_depsgraph_get',
+            )
+        except Exception as e:
+            print(f"[DIAG] _log_post_drag_state error: {e}")
+            import traceback; traceback.print_exc()
+
     def end_ik_drag(self, context, cancel=False):
         """End IK drag (or FABRIK drag) and optionally bake pose to FK
 
@@ -7059,6 +7620,16 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         """
         if not self._is_dragging:
             return
+
+        # Diagnostic: save bone/armature for post-drag state logging (cleared before update)
+        drag_bone_name = self._drag_bone_name
+        drag_armature = self._drag_armature
+
+        # Diagnostic: log drag end
+        diag_logger.log_drag_end(
+            bone=self._drag_bone_name,
+            cancel=cancel,
+        )
 
         if not self._drag_armature:
             print("  ⚠ end_ik_drag: armature is None, clearing drag state")
@@ -7159,6 +7730,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._is_dragging = False
             self._drag_bone_name = None
 
+            # Force depsgraph update so scene.ray_cast() sees the new posed mesh
+            context.view_layer.update()
+
+            # Diagnostic: log bone/mesh world state after depsgraph update
+            self._log_post_drag_state(context, drag_bone_name, drag_armature)
+
             # Update header
             self._set_header(context,"DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
             return  # Exit early for analytical leg IK mode
@@ -7240,6 +7817,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Clear drag state
             self._is_dragging = False
             self._drag_bone_name = None
+
+            # Force depsgraph update so scene.ray_cast() sees the new posed mesh
+            context.view_layer.update()
+
+            # Diagnostic: log bone/mesh world state after depsgraph update
+            self._log_post_drag_state(context, drag_bone_name, drag_armature)
 
             self._set_header(context,"DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
             return  # Exit early for analytical arm IK mode
@@ -7329,6 +7912,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Clear drag state
             self._is_dragging = False
             self._drag_bone_name = None
+
+            # Force depsgraph update so scene.ray_cast() sees the new posed mesh
+            context.view_layer.update()
+
+            # Diagnostic: log bone/mesh world state after depsgraph update
+            self._log_post_drag_state(context, drag_bone_name, drag_armature)
+
             return  # Exit early for FABRIK mode
 
         # Normal IK mode continues here
@@ -7439,6 +8029,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._mouse_down_pos = None
         self._accumulated_drag_distance = 0.0
         self._last_detection_mouse_pos = None
+
+        # Force depsgraph update so scene.ray_cast() sees the new posed mesh
+        context.view_layer.update()
+
+        # Diagnostic: log bone/mesh world state after depsgraph update
+        self._log_post_drag_state(context, drag_bone_name, drag_armature)
 
         # Update header
         self._set_header(context,"DAZ Bone Select Active - P to pin | U to unpin | Alt+Shift+R to clear pose | ESC to exit")
@@ -9215,7 +9811,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         blf.position(font_id, x, y, 0)
         blf.draw(font_id, tooltip_text)
 
-    def _get_bone_vertex_indices(self, mesh_obj, bone_names):
+    def _get_bone_vertex_indices(self, mesh_obj, bone_names, armature_name=None):
         """Get vertex indices belonging to a set of bones (DSF face groups or vertex weights).
         Returns a set of vertex indices. Results are cached — topology never changes mid-session."""
         cache_key = (mesh_obj.name, tuple(sorted(bone_names)))
@@ -9228,8 +9824,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         bones_set = set(bone_names)
 
         # Try DSF face groups first (clean, hard-edged zones)
-        if self._face_group_mgr and self._face_group_mgr.valid and mesh_obj == self._base_body_mesh:
-            face_map = self._face_group_mgr.face_group_map
+        fgm = self._face_group_mgrs.get(armature_name) if armature_name else self._face_group_mgr
+        if fgm and fgm.valid:
+            face_map = fgm.face_group_map
             for poly_idx, poly in enumerate(mesh.polygons):
                 if poly_idx < len(face_map) and face_map[poly_idx] in bones_set:
                     vert_indices.update(poly.vertices)
@@ -9265,7 +9862,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not pose_bone.parent and 'pelvis' in armature.pose.bones:
             bone_name = 'pelvis'
 
-        vert_indices = self._get_bone_vertex_indices(mesh_obj, [bone_name])
+        vert_indices = self._get_bone_vertex_indices(mesh_obj, [bone_name], armature_name=armature.name)
 
         if vert_indices:
             # Transform deformed vertices into bone-local space and compute AABB there
@@ -9329,13 +9926,25 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
     def draw_selection_brackets_callback(self):
         """Draw DAZ-style bone-aligned corner brackets: gold on hover, gray on select."""
         try:
-            mesh_obj = self._base_body_mesh
             context = bpy.context
             if context.mode != 'POSE':
                 return
             armature = context.active_object
             if not armature or armature.type != 'ARMATURE':
                 return
+            # Use the correct mesh for the hovered character.
+            # Look up per-character cached base body mesh so non-active characters
+            # also resolve through clothing to the main figure mesh.
+            hover_arm = self._hover_armature
+            cached_mesh = self._base_body_meshes.get(hover_arm.name) if hover_arm else None
+            if cached_mesh:
+                mesh_obj = cached_mesh
+            elif self._hover_mesh:
+                mesh_obj = self._hover_mesh
+            else:
+                mesh_obj = self._base_body_mesh
+            # Use hover armature for bone lookups when hovering a non-active character
+            bracket_armature = hover_arm if hover_arm else armature
         except ReferenceError:
             # Operator was destroyed (e.g. after reload) — self-remove to stop spam
             try:
@@ -9348,25 +9957,26 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if not mesh_obj:
             return
 
-        selected = context.selected_pose_bones or []
-        selected_names = {pb.name for pb in selected}
-
-        # Determine hover bone (skip if already selected — avoid double bracket)
-        hover_bone_name = self._hover_bone_name
-        hover_armature = self._hover_armature
-        hover_pose_bone = None
-        if (hover_bone_name and hover_armature and hover_armature == armature
-                and hover_bone_name not in selected_names
-                and hover_bone_name in armature.pose.bones):
-            hover_pose_bone = armature.pose.bones[hover_bone_name]
-
-        if not selected and not hover_pose_bone:
-            return
-
         # Get deformed mesh (evaluated) once for all bones
         depsgraph = bpy.context.evaluated_depsgraph_get()
         mesh_eval = mesh_obj.evaluated_get(depsgraph)
         mesh_data = mesh_eval.data
+
+        selected = context.selected_pose_bones or []
+        selected_names = {pb.name for pb in selected}
+
+        # Determine hover bone (skip if already selected on the SAME armature — avoid double bracket)
+        hover_bone_name = self._hover_bone_name
+        hover_armature = self._hover_armature
+        hover_pose_bone = None
+        hovering_different_char = hover_armature and hover_armature.name != armature.name
+        if (hover_bone_name and hover_armature
+                and (hovering_different_char or hover_bone_name not in selected_names)
+                and hover_bone_name in bracket_armature.pose.bones):
+            hover_pose_bone = bracket_armature.pose.bones[hover_bone_name]
+
+        if not selected and not hover_pose_bone:
+            return
 
         # Get opacity multiplier from settings
         opacity = 1.0
@@ -9387,10 +9997,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # Draw hover bracket (gold/amber — matches mesh highlight)
         if hover_pose_bone:
-            bone_world_mat = armature.matrix_world @ hover_pose_bone.matrix
+            bone_world_mat = bracket_armature.matrix_world @ hover_pose_bone.matrix
             bone_world_mat_inv = bone_world_mat.inverted_safe()
             hover_lines = self._build_bone_bracket_lines(
-                armature, hover_pose_bone, mesh_obj, mesh_data,
+                bracket_armature, hover_pose_bone, mesh_obj, mesh_data,
                 bone_world_mat, bone_world_mat_inv
             )
             if hover_lines:
@@ -9398,14 +10008,18 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 shader.uniform_float("color", (1.0, 0.6, 0.1, 0.6 * opacity))  # Amber
                 batch.draw(shader)
 
-        # Draw selection brackets (gray)
-        if selected:
+        # Draw selection brackets (gray) — always on the ACTIVE character's mesh,
+        # since selected_pose_bones belong to the active armature.
+        if selected and self._base_body_mesh:
+            select_mesh = self._base_body_mesh
+            select_mesh_eval = select_mesh.evaluated_get(depsgraph)
+            select_mesh_data = select_mesh_eval.data
             select_lines = []
             for pose_bone in selected:
                 bone_world_mat = armature.matrix_world @ pose_bone.matrix
                 bone_world_mat_inv = bone_world_mat.inverted_safe()
                 select_lines.extend(self._build_bone_bracket_lines(
-                    armature, pose_bone, mesh_obj, mesh_data,
+                    armature, pose_bone, select_mesh, select_mesh_data,
                     bone_world_mat, bone_world_mat_inv
                 ))
             if select_lines:
@@ -9435,8 +10049,16 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         armature = hover_arm
         bone_name = hover_bone
 
-        # Use base body mesh for highlighting (ignore clothing)
-        mesh_obj = self._base_body_mesh if self._base_body_mesh else self._hover_mesh
+        # Use base body mesh for highlighting (ignore clothing).
+        # Look up per-character cached base body mesh so non-active characters
+        # also resolve through clothing to the main figure mesh.
+        cached_mesh = self._base_body_meshes.get(hover_arm.name)
+        if cached_mesh:
+            mesh_obj = cached_mesh
+        elif self._hover_mesh:
+            mesh_obj = self._hover_mesh
+        else:
+            mesh_obj = self._base_body_mesh
         if not mesh_obj:
             return
 
@@ -9485,8 +10107,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Try DSF face groups first (clean, hard-edged zones)
             tri_indices = []
             used_face_groups = False
-            if self._face_group_mgr and self._face_group_mgr.valid and mesh_obj == self._base_body_mesh:
-                face_map = self._face_group_mgr.face_group_map
+            fgm = self._face_group_mgrs.get(armature.name) if armature else None
+            if fgm and fgm.valid:
+                face_map = fgm.face_group_map
                 bones_set = set(bones_to_highlight)
                 for poly_idx, poly in enumerate(mesh.polygons):
                     if poly_idx < len(face_map) and face_map[poly_idx] in bones_set:
@@ -9548,13 +10171,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         import bpy
         depsgraph = bpy.context.evaluated_depsgraph_get()
 
-        # Pose hash: sample the hovered bone's head position (world space) as a cheap
+        # Pose hash: sample the hovered bone's matrix (world space) as a cheap
         # change sentinel. Rebuilds the GPU batch only when the pose actually changed.
+        # Uses the full bone matrix (not just head) so rotations on the bone itself
+        # are detected — head stays fixed during rotation, but the matrix changes.
         pose_sentinel = None
         if hover_arm and bone_name in hover_arm.pose.bones:
             pb = hover_arm.pose.bones[bone_name]
-            h = hover_arm.matrix_world @ pb.head
-            pose_sentinel = (round(h.x, 4), round(h.y, 4), round(h.z, 4))
+            m = hover_arm.matrix_world @ pb.matrix
+            pose_sentinel = tuple(round(m[i][j], 4) for i in range(4) for j in range(4))
 
         batch_cache_key = ('batch', cache_key)
         sentinel_cache_key = ('sentinel', cache_key)

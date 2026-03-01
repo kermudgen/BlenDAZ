@@ -3,44 +3,59 @@
 > **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
 > Update this file at the end of every session (3-5 min) so the next session starts fast.
 
-**Updated**: 2026-02-24 (session 6)
+**Updated**: 2026-02-28 (session 9)
 
 ---
 
 ## Current State
 
-**Phase**: Face Panel complete, N-Panel controls functional, visual polish in progress
-**Status**: Body, Hands, and Face panels all functional. N-Panel has Body Controls (Reset Pose) and Face Controls (Reset Face + expression/viseme sliders). DAZ-style selection brackets and mesh hover highlights implemented with adjustable opacity. First demo video recorded.
+**Phase**: Multi-character + multi-viewport architecture implemented, ready for testing
+**Status**: The modal operator now works seamlessly across ALL open 3D viewports. Viewport resolution infrastructure consolidates cross-viewport patterns. PB viewport camera swaps on character switch. mode_set isolated to main viewport. Camera leak from N-panel prevented. Full multi-character workflow: `register_only.py` → Scan → Register → Activate. Character registry (`CharacterSlot`) stores per-character data.
 
-PoseBridge now supports three interaction modes:
+PoseBridge interaction modes (unchanged):
 - **Body/Hands**: Click-drag bone rotation (quaternion) with 4-way LMB/RMB controls
 - **Face**: Click-drag morph values (FACS custom properties on armature) with same 4-way pattern
-- **N-Panel sliders**: Expression presets (smile, frown, etc.) and viseme presets (AA, EE, etc.) as 0-1 intensity sliders that scale preset FACS values
-
-Visual overlays:
-- **Mesh hover highlight**: Amber overlay on mesh region weighted to hovered bone (opacity adjustable)
-- **Selection brackets**: Bone-aligned OBB corner brackets — gold/amber on hover, light gray on select
-- **Highlight Opacity slider**: Controls all highlight/bracket alpha from the Settings N-panel
+- **N-Panel sliders**: Expression presets + viseme presets as 0-1 intensity sliders
 
 ---
 
-## What We Did Last Session (2026-02-24, session 6)
+## What We Did Last Session (2026-02-28, session 9)
 
-### Bug Fixes
-- **Fixed left hand individual finger LMB vert direction** — Drag down was extending fingers instead of curling them closed. Root cause: `vert_invert` defaulted to `False` for fingers; right-hand fingers were accidentally correct because the right-side mirror flipped them, but left-hand fingers got no mirror. Fix: set `vert_invert = is_left_finger` (True for `l*` bones, False for `r*` bones — mirror then handles right side correctly).
+### Multi-Viewport Modal Architecture
+One modal, all viewports. The BlenDAZ modal now works seamlessly across all open 3D viewports.
 
-**Files modified**:
-- `daz_bone_select.py` — Finger branch in `update_rotation()`: added `is_left_finger` check, set `vert_invert = is_left_finger` for LMB and RMB vert (line ~7383)
+**New helpers in `daz_bone_select.py`:**
+- `_resolve_event_viewport(context, event)` — canonical "find viewport under mouse" (replaces 3 duplicates)
+- `_find_pb_viewport(context)` — find PB viewport by CAMERA mode + PB_Camera_* name
+- `_find_main_viewport(context)` — find non-PB viewport
+- `_mode_set_safe(context, mode)` — route mode_set through main viewport (protects PB camera)
+
+**Bug fixes:**
+- PB viewport goes black on character switch → step 3b swaps PB camera to new character
+- mode_set corrupts PB viewport → all 6 mode_set calls routed through main viewport
+- Camera leak to main viewport → `set_panel_view` targets PB viewport only
+- Header text only in one viewport → `_set_header()` broadcasts to all VIEW_3D areas
+
+**Cross-viewport interaction:**
+- LEFTMOUSE resolves viewport at top, uses it for UI/gizmo/raycast checks
+- check_hover non-PB path uses resolved viewport
+- Click-through raycast uses resolved viewport
+- Double-click uses window-relative coords
+
+### Files Modified
+- `daz_bone_select.py` — 4 new helpers, 3 refactored methods, 6 mode_set replacements, LEFTMOUSE handler, check_hover, header broadcasting
+- `projects/posebridge/panel_ui.py` — `_find_pb_viewport()` helper, `set_panel_view` targets PB viewport
 
 ---
 
 ## Next Up
 
-1. **N-Panel: Categorized morph sliders** — DAZ-style sections (Brow, Eyes, Mouth, etc.) instead of flat list
-2. **BUG: Head bone selection fails from deselected state** — clicking head CP when nothing is selected doesn't work
-3. **BUG: Mesh highlight showing on left (PoseBridge) panel** — highlight overlay appears in the wrong viewport
-4. **Polish Shoulders Group LMB horiz** — forward/back axis feels off
-5. **Pin system debugging session** — feet/shin disconnect, arm snapping
+1. **Test multi-viewport architecture** — register two characters, test Hands/Face switching + character switching across viewports
+2. **Camera ortho scale tweaks** — Body=5, Hands=0.7, Face=0.525
+3. **BlenDAZ toggle button should stop modal in ALL viewports**
+4. **Collar snapping during arm IK drag** — pre-existing analytical solver issue
+5. **N-Panel: Categorized morph sliders** — DAZ-style sections (Brow, Eyes, Mouth)
+6. **BUG: Head bone selection fails from deselected state**
 
 ---
 
@@ -50,14 +65,18 @@ Visual overlays:
 - **`daz_bone_select.py` changes → reload script** or restart: `exec(open(r"D:\dev\BlenDAZ\reload_daz_bone_select.py").read())`
 - **`posebridge/core.py` changes → FULL Blender restart** (PoseBridgeSettings PropertyGroup)
 - **`posebridge` module changes** → `exec(open(r"D:\dev\BlenDAZ\projects\posebridge\recapture_with_reload.py").read())`
+- **User's preferred workflow**: `register_only.py` → Scan → Register → Activate (NOT `setup_all.py`)
+- **Commit discipline**: wait until things work before committing
+- **Blender objects don't support arbitrary Python attributes** — use `obj["foo"]` or return values
+- **`_just_selected_armature`** — when True, modal early-out passes ALL events through except clicks on registered DAZ characters
+- **Multi-character naming**: `char_tag` = sanitized armature name, used as suffix for PB objects
+- **Z-offset stacking**: first char -50m, each subsequent -5m lower
+- **Multi-viewport rules**: Never use `context.area`/`context.region` directly — use `_resolve_event_viewport()`. Never call `mode_set()` directly — use `_mode_set_safe()`. PB viewport identified by CAMERA mode + PB_Camera_* name.
+- **Testing guide**: `TESTING_MULTI_CHARACTER.md`
 - **Axis convention**: Y = twist (along bone length), X = forward/back bend, Z = side-to-side bend
-- **FACS property tiers**: `facs_ctrl_*` (bilateral), `facs_bs_*_div2` (unilateral blendshape), `facs_jnt_*` (joint-driven via rotation_euler drivers)
-- **Boolean FACS properties exist** (e.g., `facs_ctrl_EyeLookAuto`) — always check `isinstance(current, bool)` before assigning float
-- **Undo stack is class-level** on `VIEW3D_OT_daz_bone_select` — external operators must use `VIEW3D_OT_daz_bone_select._undo_stack` (not instance ref)
-- **Quaternion only** — never use Euler mode in PoseBridge (except bones with rotation_euler drivers — jaw, tongue, eye bones)
-- **Driven rotation bones** — `_get_driven_rotation_bones()` detects bones with Diffeomorphic rotation_euler drivers. These MUST stay in Euler mode or FACS joint morphs break.
-- **Locked drag state** — `_drag_from_posebridge`, `_drag_control_point_id`, `_drag_bone_names` are set at mouse-down and used throughout drag. Don't rely on hover state during drag.
-- **Native translate pass-through** — When `_use_native_translate` is True, the gate at top of `modal()` passes ALL events through until confirm/cancel.
+- **FACS property tiers**: `facs_ctrl_*` (bilateral), `facs_bs_*_div2` (unilateral), `facs_jnt_*` (joint-driven)
+- **Locked drag state** — `_drag_from_posebridge`, `_drag_control_point_id`, `_drag_bone_names` set at mouse-down
+- **Native translate pass-through** — When `_use_native_translate` is True, gate at top passes ALL events
 
 ---
 
@@ -65,12 +84,12 @@ Visual overlays:
 
 | File | Why |
 |------|-----|
-| `daz_bone_select.py` | Modal operator, draw callbacks, bracket/highlight logic, reset operators |
-| `daz_shared_utils.py` | FACE_EXPRESSION_PRESETS, FACE_MORPH_CONTROLS, control point defs |
-| `projects/posebridge/core.py` | PoseBridgeSettings (highlight_opacity, expression/viseme sliders) |
-| `projects/posebridge/panel_ui.py` | Panel view switching, Settings panel, visibility toggling |
-| `projects/posebridge/extract_face.py` | Face CP positions, camera setup |
-| `projects/posebridge/drawing.py` | GPU overlay (circles/diamonds, morph CP colors) |
+| `daz_bone_select.py` | Modal operator, click-through logic, _just_selected_armature early-out |
+| `projects/posebridge/core.py` | CharacterSlot, PoseBridgeSettings, find_character_mesh |
+| `projects/posebridge/panel_ui.py` | Register/scan operators, character list UI, per-char cameras |
+| `projects/posebridge/outline_generator_lineart.py` | Outline generation with char_tag naming |
+| `register_only.py` | Module registration entry point |
+| `D:\Dev\SimplySwitch\simply_switch.py` | Reference for click-to-switch pattern |
 
 ---
 
@@ -79,8 +98,8 @@ Visual overlays:
 > Things we still don't know. Add when a question comes up; move answered items to TECHNICAL_REFERENCE.md Research Findings.
 
 - [ ] **Genesis 9 rig compatibility** — same bone naming as G8? Different rotation orders?
-- [ ] **Categorized morph slider UI** — best way to organize FACS morphs in N-panel (by region vs by function)
-- [ ] **Expression preset blending** — do multiple sliders compose correctly or do they fight over the same FACS properties?
+- [ ] **Non-registered rig interaction** — does Blender's PASS_THROUGH work reliably for bone posing when a modal is running?
+- [ ] **Multi-character switching UX** — N-Panel radio vs mesh click — which feels more natural?
 
 ---
 

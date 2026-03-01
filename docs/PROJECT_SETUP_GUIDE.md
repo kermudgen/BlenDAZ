@@ -6,20 +6,24 @@ This guide explains how to set up the documentation system used in this project.
 
 ## 📚 Documentation System Overview
 
-This project uses a four-file documentation system designed to help both humans and AI assistants work effectively:
+This project uses a five-file documentation system designed to help both humans and AI assistants work effectively:
 
-1. **CLAUDE.md** - Project context and development guidelines
-2. **INDEX.md** - Complete file reference and quick lookup
-3. **SCRATCHPAD.md** - Development journal for active work
-4. **TODO.md** - Task tracking, roadmap, and project backlog
+1. **SESSION_START.md** - Fast session resumption — read this first every session
+2. **CLAUDE.md** - Project context and development guidelines
+3. **INDEX.md** - Complete file reference and quick lookup
+4. **SCRATCHPAD.md** - Development journal for active work
+5. **TODO.md** - Task tracking, roadmap, and project backlog
 
 ### Why This System?
 
+- **SESSION_START.md** lets AI assistants resume work in seconds — current state, last session, what's next. Replaced each session, stays small forever.
 - **CLAUDE.md** gives AI assistants (and new team members) project context without overwhelming them
 - **INDEX.md** makes it easy to find where specific functionality lives
 - **SCRATCHPAD.md** captures decisions, experiments, and learnings as they happen
 - **TODO.md** tracks what needs to be done, what's in progress, and what's completed
 - Together, they prevent repeating mistakes and preserve institutional knowledge
+
+**Key insight**: Docs serve *reference* (complete, organized). SESSION_START.md serves *resumption* (fast, current). Different jobs, different files. See [patterns/session-start.md](patterns/session-start.md) for the full pattern.
 
 ---
 
@@ -290,6 +294,78 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 - Use checkboxes for tasks so you can track completion
 - Archive when it hits ~300-500 lines or feels overwhelming
 
+### Step 5: Create SESSION_START.md
+
+**Purpose**: Single always-current entry point for fast session resumption
+
+**When to create**: Once you have 3+ docs and sessions frequently start by "catching up"
+
+**What to include**:
+
+```markdown
+# [Project Name] - Session Start
+
+> **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
+> Update at the end of every session (3-5 min).
+
+**Updated**: YYYY-MM-DD
+
+---
+
+## ⚡ Current State
+
+[2-3 sentences: phase, status, what's happening right now]
+
+---
+
+## What We Did Last Session
+
+- **[Change description]** — what was done and why
+- **Files modified**: `file1.py`, `file2.py`
+
+---
+
+## Next Up
+
+1. [Next task from TODO.md]
+2. [Another task]
+
+---
+
+## Don't Forget
+
+- [Critical gotcha — e.g., requires full restart]
+- [Non-obvious behavior or active workaround]
+
+---
+
+## Files Most Likely Needed Today
+
+| File | Why |
+|------|-----|
+| `file1.py` | [What's happening here] |
+
+---
+
+## Need Deeper Context?
+
+| File | When to read |
+|------|-------------|
+| [CLAUDE.md](CLAUDE.md) | Architecture, principles |
+| [INDEX.md](INDEX.md) | Finding a file |
+| [SCRATCHPAD.md](SCRATCHPAD.md) | Understanding recent decisions |
+| [TODO.md](TODO.md) | Full task backlog |
+```
+
+**Critical rules**:
+- **Replace, don't append** — "What We Did Last Session" is always just the last session. History goes in SCRATCHPAD.md.
+- **Keep it small** — if it grows past ~100 lines, it's drifting into reference territory. Prune it.
+- **Update every session** — a stale SESSION_START.md is worse than none. Commit to the 3-5 min ritual.
+
+See [patterns/session-start.md](patterns/session-start.md) for the full pattern with real examples and anti-patterns.
+
+---
+
 ### Step 4: Create TODO.md
 
 **Purpose**: Structured task tracking, roadmap planning, and project backlog management
@@ -451,6 +527,11 @@ Track current development tasks, future features, and improvements needed.
 
 ### When to Update Each File
 
+**SESSION_START.md**:
+- **Every session end** — replace (don't append) current state, last session, next up
+- Keep under ~100 lines — if it's growing, you're adding reference content that belongs elsewhere
+- A stale SESSION_START.md is worse than none — commit to the update ritual or don't create it
+
 **CLAUDE.md**:
 - When project philosophy changes
 - When adding major new components
@@ -503,39 +584,48 @@ mv SCRATCHPAD.md scratchpad_archive/SCRATCHPAD_2026-02.md
 
 When starting a new conversation with an AI assistant about this project:
 
-1. **First message** should reference the docs:
+1. **First message** — point straight to SESSION_START.md:
    ```
-   I'm working on [project name]. Please read CLAUDE.md for project context,
-   and check INDEX.md when you need to find specific files.
+   Read SESSION_START.md to orient yourself, then let me know you're ready.
    ```
+   That's it. SESSION_START.md links to everything else.
 
 2. **During conversation**:
-   - AI should check INDEX.md for file lookups
-   - AI should check TODO.md for current priorities and planned work
-   - AI should update SCRATCHPAD.md with learnings
-   - AI should reference CLAUDE.md for philosophical guidance
+   - AI reads INDEX.md only when it needs to find a specific file
+   - AI reads TODO.md only when reviewing priorities
+   - AI updates SCRATCHPAD.md with decisions and learnings as it works
+   - AI references CLAUDE.md for architectural guidance
 
 3. **Before ending**:
-   - Update SCRATCHPAD.md with session summary
-   - Update TODO.md with completed tasks and new discoveries
-   - Note any decisions made
-   - Update "Current Focus" in CLAUDE.md if priorities shifted
+   - Update SESSION_START.md (3-5 min): current state, what changed, what's next
+   - Update SCRATCHPAD.md with session decisions and discoveries
+   - Update TODO.md with completed/new tasks
+
+**In Claude Code (CLI)**: CLAUDE.md is auto-read at session start. If your CLAUDE.md has a "For AI Assistants" section pointing to SESSION_START.md as Step 1, the session wires up automatically — no prompt needed.
 
 ### AI Assistant Guidelines
 
-Include this in your CLAUDE.md:
+Include this in your CLAUDE.md to wire up the reading order:
 
 ```markdown
 ## For AI Assistants
 
-When working on this project:
-1. Check [INDEX.md](INDEX.md) to find files before searching
-2. Check [TODO.md](TODO.md) for current priorities and planned work
-3. Follow the principles in this document
-4. Update [SCRATCHPAD.md](SCRATCHPAD.md) as you work
-5. Update [TODO.md](TODO.md) when completing tasks or discovering new ones
-6. Prefer simple solutions over complex ones
-7. Ask questions if requirements are unclear
+### Step 1 — Always read first
+**[SESSION_START.md](SESSION_START.md)** — current state, last session, next up, gotchas.
+This is the only file you need for most sessions.
+
+### Step 2 — Read this file (CLAUDE.md)
+Architecture, principles, guidelines.
+
+### Step 3 — Only if the task requires it
+- Finding a file → [INDEX.md](INDEX.md)
+- Full task backlog → [TODO.md](TODO.md)
+- Decision history → [SCRATCHPAD.md](SCRATCHPAD.md)
+
+**Don't front-load.** Read SCRATCHPAD.md and INDEX.md only when the task requires them.
+
+### End of session
+Update SESSION_START.md. Takes 3-5 minutes. Keeps the next session fast.
 ```
 
 ---
@@ -548,10 +638,12 @@ For a new project:
 - [ ] Create `INDEX.md` (can start minimal and expand)
 - [ ] Create `SCRATCHPAD.md` with today's date
 - [ ] Create `TODO.md` with initial tasks and priorities
-- [ ] Add cross-references between all four files
+- [ ] Create `SESSION_START.md` once you have 3+ docs (see Step 5 above)
+- [ ] Add "For AI Assistants" 3-step reading order to CLAUDE.md pointing to SESSION_START.md
+- [ ] Add cross-references between all files
 - [ ] Add `.gitignore` entries for sensitive files (if applicable)
 - [ ] Update CLAUDE.md with "Current Focus"
-- [ ] Test by asking: "If someone new joined, could they understand the project from these docs?"
+- [ ] Test by asking: "If a new Claude session started right now, what would it read first?"
 
 ---
 

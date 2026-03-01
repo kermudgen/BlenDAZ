@@ -1,6 +1,6 @@
 # BlenDAZ - TODO
 
-**Last Updated**: 2026-02-24
+**Last Updated**: 2026-02-28
 
 Track current development tasks, future features, and improvements needed.
 
@@ -180,7 +180,12 @@ DAZ tab
 
 ---
 
-## ✅ Recently Completed (2026-02-24)
+## ✅ Recently Completed (2026-02-28)
+
+- [x] **Multi-character clothing penetration fix** (2026-02-28) — Hovering non-active characters hit clothing instead of body mesh because RAYCAST 2 (clothing-penetration) only checked `_base_body_mesh` (active character). Fix: added `_base_body_meshes = {}` per-character cache (keyed by armature name), populated at invoke for all registered characters. Updated RAYCAST 2 in `check_hover`, cross-viewport hover, posebridge hover, `draw_highlight_callback`, and `draw_selection_brackets_callback` to resolve through clothing for ANY registered character.
+- [x] **Multi-character hand/face panel fix** (2026-02-28) — Hands view showed no standins or CPs, face view showed no CPs. Three bugs: (1) `extract_hands.py` used generic names `PB_Hand_Left`/`PB_Hand_Right` — second character's registration deleted first character's hands. Fix: append `char_tag` to hand mesh names. (2) `panel_ui.py` visibility toggle used exact name match. Fix: substring match with active char_tag filter. (3) `drawing.py` camera check used hardcoded legacy camera names (`PB_Camera_Hands`, `PB_Camera_Face`). Fix: look up camera from active CharacterSlot.
+
+## ✅ Previously Completed (2026-02-24)
 
 - [x] **N-Panel reorganisation design** (2026-02-24) — Full diagram agreed, open questions documented in Next Session above. Structure: BlenDAZ root → Touch → PoseBridge (with Body/Face Controls) → PoseBlend.
 - [x] **Character Init System** (2026-02-24) — `register_only.py`, `init_character.py` (3 operators), `build_from_reference_mesh()` in `dsf_face_groups.py`, status properties in `core.py`, BlenDAZ Setup sub-panel in `panel_ui.py`. Auto-restores remapped FGM on module reload. Live hot-push of FGM into running modal via `_live_instance`.
@@ -275,6 +280,7 @@ DAZ tab
 ### Low Priority
 - [ ] Large file size for [daz_bone_select.py](daz_bone_select.py) (267KB)
 - [ ] [posebridge/scratchpad.md](posebridge/scratchpad.md) approaching archive size (46KB)
+- [ ] BlenDAZ toggle button should stop modal operator in ALL viewports, not just the current one
 
 ---
 
@@ -409,11 +415,18 @@ DAZ tab
 - Hand detail panels (left/right)
 - Foot detail panels
 
-### Phase 4: Multi-Character
+### Phase 4: Multi-Character 🟢 In Progress
 **Focus**: Support multiple characters in scene
-- Character selection
-- Per-character control points
-- Outlining multiple characters
+- [x] Character selection (seamless click-drag switch between characters)
+- [x] Per-character control points (CP cache save/restore on switch)
+- [x] Outlining multiple characters (Z-offset stacking)
+- [x] Per-character DSF face group managers (`_face_group_mgrs` cache)
+- [x] Per-character base body mesh resolution (`_base_body_meshes` cache)
+- [x] Hover highlights on non-active characters
+- [x] Selection brackets on non-active characters
+- [x] Clothing penetration for all characters (not just active)
+- [ ] BlenDAZ toggle button should stop modal in ALL viewports
+- [ ] Collar snapping during arm IK drag (pre-existing analytical solver issue)
 
 ### Phase 5: Polish
 **Focus**: Performance and user experience

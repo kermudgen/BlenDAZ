@@ -17,6 +17,24 @@ from bpy.types import Panel, Operator
 _DAZ_MARKER_BONES = {'lPectoral', 'rPectoral', 'lCollar', 'rCollar'}
 
 
+def _find_pb_viewport(context):
+    """Find the PoseBridge viewport — the VIEW_3D in CAMERA mode with a PB camera.
+
+    Returns (space, r3d, area) or (None, None, None).
+    """
+    for area in context.screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        for sp in area.spaces:
+            if sp.type == 'VIEW_3D':
+                rv3d = sp.region_3d
+                if rv3d and rv3d.view_perspective == 'CAMERA':
+                    cam = sp.camera
+                    if cam and cam.name.startswith('PB_Camera_'):
+                        return sp, rv3d, area
+    return None, None, None
+
+
 # ============================================================================
 # Operators
 # ============================================================================
@@ -32,23 +50,32 @@ class BLENDAZ_OT_switch_character(Operator):
         import daz_bone_select as _dbs
         live = getattr(_dbs.VIEW3D_OT_daz_bone_select, '_live_instance', None)
         if live:
-            if live._switch_active_character(context, self.armature_name):
-                context.area.tag_redraw()
-                return {'FINISHED'}
+            try:
+                if live._switch_active_character(context, self.armature_name):
+                    context.area.tag_redraw()
+                    return {'FINISHED'}
+            except ReferenceError:
+                _dbs.VIEW3D_OT_daz_bone_select._live_instance = None
         # Fallback: just update settings (modal not running)
         settings = getattr(context.scene, 'posebridge_settings', None)
         if settings:
+            # Save old character's CPs, restore new character's
+            from posebridge.core import save_control_points, restore_control_points
+            old_idx = settings.blendaz_active_index
+            if 0 <= old_idx < len(settings.blendaz_characters):
+                save_control_points(settings.blendaz_characters[old_idx].char_tag)
             for i, slot in enumerate(settings.blendaz_characters):
                 if slot.armature_name == self.armature_name:
                     settings.blendaz_active_index = i
                     settings.active_armature_name = self.armature_name
+                    restore_control_points(slot.char_tag)
                     break
             context.area.tag_redraw()
         return {'FINISHED'}
 
 
 class BLENDAZ_OT_scan_characters(Operator):
-    """Scan scene for DAZ armatures"""
+    """Scan scene for DAZ armatures and store results for the N-Panel"""
     bl_idname = "blendaz.scan_characters"
     bl_label = "Scan for Characters"
 
@@ -66,12 +93,239 @@ class BLENDAZ_OT_scan_characters(Operator):
                     tag = "registered" if obj.name in registered else "unregistered"
                     found.append((obj.name, tag))
 
+        # Store scan results as comma-separated string on scene for panel display
+        if settings:
+            unreg = [name for name, tag in found if tag == "unregistered"]
+            settings.blendaz_scanned_unregistered = ",".join(unreg)
+
         if found:
             msg = ", ".join(f"{name} ({tag})" for name, tag in found)
             self.report({'INFO'}, f"Found {len(found)} DAZ rig(s): {msg}")
         else:
             self.report({'WARNING'}, "No DAZ armatures found in scene")
+            if settings:
+                settings.blendaz_scanned_unregistered = ""
 
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class BLENDAZ_OT_register_character(Operator):
+    """Register a DAZ character with BlenDAZ (generates outline, cameras, control points)"""
+    bl_idname = "blendaz.register_character"
+    bl_label = "Register Character"
+
+    armature_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        import re
+        import sys
+
+        armature_name = self.armature_name
+        armature_obj = bpy.data.objects.get(armature_name)
+        if not armature_obj or armature_obj.type != 'ARMATURE':
+            self.report({'ERROR'}, f"Armature '{armature_name}' not found")
+            return {'CANCELLED'}
+
+        settings = getattr(context.scene, 'posebridge_settings', None)
+        if not settings:
+            self.report({'ERROR'}, "PoseBridge not initialised")
+            return {'CANCELLED'}
+
+        # Generate char_tag
+        char_tag = re.sub(r'[^A-Za-z0-9_]', '_', armature_name)
+        char_tag = re.sub(r'_+', '_', char_tag).strip('_')
+
+        # Object names
+        outline_name = f"PB_Outline_{char_tag}"
+        camera_name = f"PB_Camera_Body_{char_tag}"
+        light_name = f"PB_Light_{char_tag}"
+
+        print(f"\n{'='*60}")
+        print(f"  REGISTERING CHARACTER: {armature_name} (tag: {char_tag})")
+        print(f"{'='*60}")
+
+        # Ensure BlenDAZ root is importable (derive from this module's location)
+        import os
+        posebridge_dir = os.path.dirname(os.path.abspath(__file__))
+        projects_dir = os.path.dirname(posebridge_dir)
+        blendaz_root = os.path.dirname(projects_dir)
+        for p in [blendaz_root, posebridge_dir]:
+            if p not in sys.path:
+                sys.path.insert(0, p)
+
+        # Find character mesh
+        from posebridge.core import find_character_mesh, find_standin_mesh
+        body_mesh_name = find_character_mesh(armature_name)
+        if not body_mesh_name:
+            self.report({'ERROR'}, f"No character mesh found for '{armature_name}'")
+            return {'CANCELLED'}
+
+        mesh_obj = bpy.data.objects.get(body_mesh_name)
+        print(f"  Body mesh: {body_mesh_name}")
+
+        # Z-offset for this character
+        from posebridge.core import next_z_offset
+        z_offset = next_z_offset(context)
+        print(f"  Z-offset: {z_offset}m")
+
+        # --- Save previous character's CPs before anything clears them ---
+        # The outline generator internally calls capture_fixed_control_points()
+        # which clears the shared collection. Save BEFORE that happens.
+        from posebridge.core import save_control_points
+        if settings.active_armature_name and settings.active_armature_name != armature_name:
+            prev_tag = None
+            for s in settings.blendaz_characters:
+                if s.armature_name == settings.active_armature_name:
+                    prev_tag = s.char_tag
+                    break
+            if prev_tag:
+                save_control_points(prev_tag)
+                print(f"  Saved {prev_tag} CPs to cache before outline generation")
+
+        # --- 1. Generate outline ---
+        outline_exists = outline_name in bpy.data.objects
+        if not outline_exists and mesh_obj:
+            print(f"\n--- Generating outline from {body_mesh_name} ---")
+            if context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+            context.view_layer.objects.active = mesh_obj
+            mesh_obj.select_set(True)
+
+            try:
+                from posebridge.outline_generator_lineart import create_genesis8_lineart_outline
+                gp_obj = create_genesis8_lineart_outline(mesh_obj, outline_name, char_tag=char_tag)
+                if gp_obj:
+                    print(f"  OK — Outline generated: {outline_name}")
+                    outline_exists = True
+                else:
+                    self.report({'WARNING'}, "Outline generation returned None")
+            except Exception as e:
+                self.report({'WARNING'}, f"Outline generation failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Re-check: outline may exist even if the return errored
+        if not outline_exists:
+            outline_exists = outline_name in bpy.data.objects
+
+        # --- 2. Z-offset positioning ---
+        if outline_exists:
+            mannequin_name = f"{body_mesh_name}_LineArt_Copy"
+            camera_z_offset = 0.72  # fallback
+
+            mannequin_obj = bpy.data.objects.get(mannequin_name)
+            if mannequin_obj and mannequin_obj.type == 'MESH':
+                from mathutils import Vector
+                bbox = [mannequin_obj.matrix_world @ Vector(c)
+                        for c in mannequin_obj.bound_box]
+                char_h = max(c.z for c in bbox) - min(c.z for c in bbox)
+                camera_z_offset = char_h * 0.58
+
+            # Move all stage objects to Z-offset
+            for obj_name, target_z in [(outline_name, z_offset),
+                                        (mannequin_name, z_offset),
+                                        (camera_name, z_offset + camera_z_offset),
+                                        (light_name, z_offset + camera_z_offset)]:
+                obj = bpy.data.objects.get(obj_name)
+                if obj:
+                    if obj.parent:
+                        world_mat = obj.matrix_world.copy()
+                        obj.parent = None
+                        obj.matrix_world = world_mat
+                    obj.location.z = target_z
+                    print(f"  Moved '{obj.name}' to Z={target_z:.1f}")
+
+        # --- 3. Capture body control points ---
+        if outline_exists:
+            # Ensure armature is active and in pose mode for CP capture
+            context.view_layer.objects.active = armature_obj
+            armature_obj.select_set(True)
+            if context.mode != 'POSE':
+                bpy.ops.object.mode_set(mode='POSE')
+
+            try:
+                from posebridge.outline_generator_lineart import capture_fixed_control_points
+                count = capture_fixed_control_points(armature_obj, outline_name)
+                print(f"  OK — Body control points: {count}")
+            except Exception as e:
+                print(f"  Warning: Body CP capture failed: {e}")
+
+        # --- 4. Extract hands ---
+        standin = find_standin_mesh(armature_name)
+        if standin and standin in bpy.data.objects:
+            try:
+                import extract_hands
+                hand_result = extract_hands.extract_and_setup_hands(
+                    standin,
+                    z_offset=z_offset - 3.0,  # 3m below body offset
+                    armature_name=armature_name,
+                    char_name=armature_name,
+                    char_tag=char_tag,
+                )
+                if hand_result:
+                    count = extract_hands.store_hand_control_points(hand_result)
+                    print(f"  OK — Hand panel: {count} control points")
+            except Exception as e:
+                print(f"  Warning: Hand extraction failed: {e}")
+
+        # --- 5. Setup face ---
+        try:
+            import extract_face
+            face_result = extract_face.setup_face_panel(
+                armature_obj, char_name=armature_name, char_tag=char_tag
+            )
+            if face_result:
+                print(f"  OK — Face panel: {face_result['control_points']} control points")
+        except Exception as e:
+            print(f"  Warning: Face extraction failed: {e}")
+
+        # --- 6. Register CharacterSlot ---
+        slot = None
+        slot_idx = -1
+        for i, s in enumerate(settings.blendaz_characters):
+            if s.armature_name == armature_name:
+                slot = s
+                slot_idx = i
+                break
+
+        if slot is None:
+            slot = settings.blendaz_characters.add()
+            slot_idx = len(settings.blendaz_characters) - 1
+
+        slot.armature_name = armature_name
+        slot.char_tag = char_tag
+        slot.body_mesh_name = body_mesh_name
+        slot.outline_gp_name = outline_name
+        slot.camera_body = camera_name
+        slot.camera_hands = f"PB_Camera_Hands_{char_tag}"
+        slot.camera_face = f"PB_Camera_Face_{char_tag}"
+        slot.light_name = light_name
+        slot.mannequin_name = f"{body_mesh_name}_LineArt_Copy"
+        slot.stage_collection = f"PB_{armature_name}_Stage"
+        slot.z_offset = z_offset
+
+        settings.blendaz_active_index = slot_idx
+        settings.active_armature_name = armature_name
+
+        # Remove from scanned list
+        if settings.blendaz_scanned_unregistered:
+            unreg = [n for n in settings.blendaz_scanned_unregistered.split(",")
+                     if n and n != armature_name]
+            settings.blendaz_scanned_unregistered = ",".join(unreg)
+
+        # --- Restore pose mode on the new armature ---
+        context.view_layer.objects.active = armature_obj
+        armature_obj.select_set(True)
+        if context.mode != 'POSE':
+            bpy.ops.object.mode_set(mode='POSE')
+
+        # Cache this character's CPs for later switching
+        save_control_points(char_tag)
+
+        print(f"\n  Registered character [{slot_idx}]: {armature_name}")
+        self.report({'INFO'}, f"Registered: {armature_name}")
         context.area.tag_redraw()
         return {'FINISHED'}
 
@@ -99,9 +353,9 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         'face':  'PB_Camera_Face',
     }
 
-    # Objects shown in each panel view
-    BODY_OBJECTS  = {'PB_Outline', '_LineArt_Copy'}   # substring match
-    HANDS_OBJECTS = {'PB_Hand_Left', 'PB_Hand_Right'} # exact match
+    # Objects shown in each panel view (substring match)
+    BODY_OBJECTS  = {'PB_Outline', '_LineArt_Copy'}
+    HANDS_SUBSTR  = {'PB_Hand_Left', 'PB_Hand_Right'}
 
     # Saved camera state per view: {view_name: (offset, zoom)}
     _saved_state = {}
@@ -125,11 +379,15 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         previous_panel = settings.active_panel
         settings.active_panel = self.view
 
-        # Switch camera in the viewport where the N-panel was clicked
-        space = context.space_data
-        if space and space.type == 'VIEW_3D':
-            r3d = space.region_3d
+        # Switch camera in the PB viewport (not whichever viewport the N-panel is in).
+        # This prevents leaking PB cameras to the main 3D viewport when the user
+        # clicks Hands/Face in the main viewport's N-panel.
+        pb_space, pb_r3d, pb_area = _find_pb_viewport(context)
+        # Fall back to context.space_data for first-time setup (no PB viewport yet)
+        space = pb_space if pb_space else context.space_data
+        r3d = pb_r3d if pb_r3d else (space.region_3d if space and space.type == 'VIEW_3D' else None)
 
+        if space and space.type == 'VIEW_3D' and r3d:
             # Save state of the view we're leaving
             self._saved_state[previous_panel] = (
                 tuple(r3d.view_camera_offset),
@@ -153,12 +411,22 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         show_hands = (self.view == 'hands')
         show_face  = (self.view == 'face')
 
+        # Get active character's char_tag for per-character hand object matching
+        active_char_tag = None
+        if hasattr(settings, 'blendaz_characters'):
+            idx = settings.blendaz_active_index
+            if 0 <= idx < len(settings.blendaz_characters):
+                active_char_tag = settings.blendaz_characters[idx].char_tag
+
         for obj in context.scene.objects:
             name = obj.name
             if any(s in name for s in self.BODY_OBJECTS):
                 obj.hide_viewport = not show_body
-            elif name in self.HANDS_OBJECTS:
-                obj.hide_viewport = not show_hands
+            elif any(s in name for s in self.HANDS_SUBSTR):
+                # Only show the ACTIVE character's hands
+                is_active_hands = (not active_char_tag or active_char_tag in name
+                                   or name in ('PB_Hand_Left', 'PB_Hand_Right'))
+                obj.hide_viewport = not (show_hands and is_active_hands)
 
         # Face panel: hide all PB_ objects (standin, outlines, hand meshes)
         # Character mesh stays visible for live face preview
@@ -167,7 +435,11 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
                 if obj.name.startswith('PB_') and obj.type != 'CAMERA':
                     obj.hide_viewport = True
 
-        context.area.tag_redraw()
+        # Redraw both the invoking area and the PB area (may differ)
+        if context.area:
+            context.area.tag_redraw()
+        if pb_area and pb_area != context.area:
+            pb_area.tag_redraw()
 
         return {'FINISHED'}
 
@@ -196,7 +468,11 @@ class BLENDAZ_OT_stop_blendaz(Operator):
         # Stop Touch (daz_bone_select modal)
         live = getattr(_dbs.VIEW3D_OT_daz_bone_select, '_live_instance', None)
         if live is not None:
-            live.finish(context)
+            try:
+                live.finish(context)
+            except ReferenceError:
+                # Stale reference — operator class was re-registered
+                _dbs.VIEW3D_OT_daz_bone_select._live_instance = None
 
         # Stop PoseBridge
         settings = getattr(context.scene, 'posebridge_settings', None)
@@ -230,7 +506,18 @@ class POSEBRIDGE_OT_open_in_viewport(Operator):
         # Lock camera to this viewport immediately
         space = context.space_data
         if space and space.type == 'VIEW_3D':
-            camera_name = POSEBRIDGE_OT_set_panel_view.CAMERAS.get(settings.active_panel)
+            # Try per-character camera first, fall back to legacy
+            camera_name = None
+            if hasattr(settings, 'blendaz_characters'):
+                idx = settings.blendaz_active_index
+                if 0 <= idx < len(settings.blendaz_characters):
+                    slot = settings.blendaz_characters[idx]
+                    cam_map = {'body': slot.camera_body, 'hands': slot.camera_hands, 'face': slot.camera_face}
+                    camera_name = cam_map.get(settings.active_panel, '')
+                    if camera_name and camera_name not in bpy.data.objects:
+                        camera_name = None
+            if not camera_name:
+                camera_name = POSEBRIDGE_OT_set_panel_view.CAMERAS_LEGACY.get(settings.active_panel)
             camera = bpy.data.objects.get(camera_name) if camera_name else None
             if camera:
                 space.camera = camera
@@ -263,7 +550,17 @@ class VIEW3D_PT_blendaz_root(Panel):
 
         # Touch is active when the daz_bone_select modal is running
         import daz_bone_select as _dbs
-        touch_active = getattr(_dbs.VIEW3D_OT_daz_bone_select, '_live_instance', None) is not None
+        live = getattr(_dbs.VIEW3D_OT_daz_bone_select, '_live_instance', None)
+        if live is not None:
+            try:
+                # Probe the instance to detect stale StructRNA references
+                _ = live.bl_idname
+                touch_active = True
+            except ReferenceError:
+                _dbs.VIEW3D_OT_daz_bone_select._live_instance = None
+                touch_active = False
+        else:
+            touch_active = False
         pb_active = settings.is_active if settings else False
 
         row = layout.row()
@@ -274,7 +571,10 @@ class VIEW3D_PT_blendaz_root(Panel):
             row.operator("blendaz.start_touch", text="BlenDAZ", icon='POSE_HLT')
 
         # --- Registered Characters ---
-        if settings and hasattr(settings, 'blendaz_characters') and len(settings.blendaz_characters) > 0:
+        has_registered = (settings and hasattr(settings, 'blendaz_characters')
+                          and len(settings.blendaz_characters) > 0)
+
+        if has_registered:
             layout.separator()
             layout.label(text="Characters:", icon='COMMUNITY')
             active_idx = settings.blendaz_active_index
@@ -289,25 +589,30 @@ class VIEW3D_PT_blendaz_root(Panel):
                                       text=slot.armature_name, icon='RADIOBUT_OFF')
                     op.armature_name = slot.armature_name
 
-            layout.separator()
-            layout.operator("blendaz.scan_characters", text="Scan for Characters", icon='VIEWZOOM')
-        else:
-            # No characters registered — show single armature info (legacy)
-            armature = context.active_object if (
-                context.active_object and context.active_object.type == 'ARMATURE'
-            ) else None
-            arm_name = (
-                settings.active_armature_name if (settings and settings.active_armature_name)
-                else (armature.name if armature else "")
-            )
+        # --- Unregistered Characters (from scan) ---
+        unreg_names = []
+        if settings and settings.blendaz_scanned_unregistered:
+            unreg_names = [n for n in settings.blendaz_scanned_unregistered.split(",") if n]
 
-            if arm_name:
-                layout.label(text=f"Figure: {arm_name}", icon='ARMATURE_DATA')
-            else:
-                layout.label(text="No armature selected", icon='ERROR')
-
+        if unreg_names:
             layout.separator()
-            layout.operator("blendaz.scan_characters", text="Scan for Characters", icon='VIEWZOOM')
+            layout.label(text="Unregistered:", icon='QUESTION')
+            for name in unreg_names:
+                row = layout.row(align=True)
+                row.label(text=name, icon='ARMATURE_DATA')
+                op = row.operator("blendaz.register_character",
+                                  text="Register", icon='ADD')
+                op.armature_name = name
+
+        # --- Scan button (always visible) ---
+        layout.separator()
+        layout.operator("blendaz.scan_characters", text="Scan for Characters", icon='VIEWZOOM')
+
+        # --- Fallback: no characters at all ---
+        if not has_registered and not unreg_names:
+            layout.separator()
+            layout.label(text="No characters registered", icon='INFO')
+            layout.label(text="Click 'Scan' to find DAZ rigs")
 
 
 # ----------------------------------------------------------------------------
@@ -627,6 +932,7 @@ class VIEW3D_PT_posebridge_settings(Panel):
 classes = (
     BLENDAZ_OT_switch_character,
     BLENDAZ_OT_scan_characters,
+    BLENDAZ_OT_register_character,
     POSEBRIDGE_OT_set_panel_view,
     BLENDAZ_OT_start_touch,
     BLENDAZ_OT_stop_blendaz,

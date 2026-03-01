@@ -14,7 +14,39 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 
 ---
 
-## Current Session: 2026-02-24 (session 4)
+## Current Session: 2026-02-28 (session 9)
+
+### Active Work: Multi-Viewport Modal Architecture
+
+#### Problem
+BlenDAZ's modal operator ran in a single viewport (whichever the user clicked "BlenDAZ" in). This caused:
+1. PB viewport goes black on character switch — `mode_set()` disrupts PB camera/perspective
+2. Camera leak — clicking Hands/Face in main viewport's N-panel sets PB camera there too
+3. No interaction in non-modal viewports — clicking characters elsewhere needed workarounds
+
+#### Solution: One Modal, All Viewports
+Key insight: A single Blender modal already receives ALL window events. `event.mouse_x/y` are window-relative. Draw handlers fire in all viewports. We just needed to consistently use viewport-resolved context everywhere.
+
+#### New Helpers (daz_bone_select.py)
+- `_resolve_event_viewport(context, event)` → (area, region, rv3d, space, local_xy) for viewport under mouse
+- `_find_pb_viewport(context)` → (area, space) for PB viewport (CAMERA + PB_Camera_*)
+- `_find_main_viewport(context)` → (area, space) for non-PB viewport
+- `_mode_set_safe(context, mode)` → route mode_set through main viewport
+
+#### Changes Made
+1. **Phase 1**: Viewport resolution infrastructure — 3 helpers, refactored 3 existing methods
+2. **Phase 5**: PB camera swap on character switch in step 3b
+3. **Phase 6**: All 6 mode_set calls replaced with `_mode_set_safe()`
+4. **Phase 7**: `set_panel_view` targets PB viewport only (panel_ui.py)
+5. **Phase 2**: `_set_header()` + `clear_hover()` broadcast to all VIEW_3D areas
+6. **Phase 3+4**: LEFTMOUSE + check_hover use resolved viewport for all raycasts
+
+#### Key Rule
+Never use `context.area`/`context.region` directly for raycasts or UI checks. Always resolve via `_resolve_event_viewport()`. Never call `mode_set()` directly — use `_mode_set_safe()`.
+
+---
+
+## Previous Session: 2026-02-24 (session 4)
 
 ### Active Work: Pin System — Head Pins, Spine Compensation, UX Polish
 

@@ -861,15 +861,6 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
         capture_fixed_control_points(armature, outline_name)
     print(f"{'='*70}\n")
 
-    # Return GP object and a dict of created object names for CharacterSlot registration
-    gp_obj._blendaz_created_names = {
-        'outline_gp_name': outline_name,
-        'camera_body': camera_name,
-        'light_name': light_name,
-        'mannequin_name': mesh_copy.name,
-        'stage_collection': stage_coll.name,
-    }
-
     return gp_obj
 
 

@@ -20,7 +20,7 @@ FINGER_BONES = [
     'Pinky1', 'Pinky2', 'Pinky3',
 ]
 
-def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None):
+def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None, char_tag=None):
     """
     Extract hand geometry from a mesh using vertex groups.
 
@@ -125,8 +125,11 @@ def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None):
 
     print(f"Created hand mesh with {len(new_bm.verts)} verts, {len(new_bm.faces)} faces")
 
-    # Create new mesh object
-    hand_mesh_name = f"PB_Hand_{hand_side.capitalize()}"
+    # Create new mesh object (per-character naming for multi-character support)
+    if char_tag:
+        hand_mesh_name = f"PB_Hand_{hand_side.capitalize()}_{char_tag}"
+    else:
+        hand_mesh_name = f"PB_Hand_{hand_side.capitalize()}"
 
     # Remove existing if present
     if hand_mesh_name in bpy.data.objects:
@@ -285,10 +288,15 @@ def get_transformed_bone_positions(armature_name, hand_obj, geometry_center, han
     # Get the hand object's rotation matrix
     rotation_matrix = hand_obj.rotation_euler.to_matrix().to_4x4()
 
-    def transform_point(world_pos):
-        """Transform a world position to match hand mesh transforms"""
-        local_pos = world_pos - geometry_center
-        rotated = rotation_matrix @ local_pos
+    def transform_point(local_pos):
+        """Transform a local-space position to match hand mesh transforms.
+
+        Both bone positions and geometry_center must be in the same space
+        (armature/mesh local) so the subtraction is valid regardless of
+        where the armature sits in the scene.
+        """
+        offset = local_pos - geometry_center
+        rotated = rotation_matrix @ offset
         return rotated + hand_obj.location
 
     for bone_name in FINGER_BONES:
@@ -299,17 +307,18 @@ def get_transformed_bone_positions(armature_name, hand_obj, geometry_center, han
             continue
 
         pose_bone = armature.pose.bones[full_bone_name]
-        bone_head_world = armature.matrix_world @ pose_bone.head
-        bone_tail_world = armature.matrix_world @ pose_bone.tail
-        bone_mid_world = (bone_head_world + bone_tail_world) / 2
+        # Use armature-local positions (same space as geometry_center from mesh data)
+        bone_head = Vector(pose_bone.head)
+        bone_tail = Vector(pose_bone.tail)
+        bone_mid = (bone_head + bone_tail) / 2
 
         # Determine which position to use for this bone's individual control
         if bone_name in ['Thumb1', 'Thumb2']:
             # Thumb first two joints: use tail
-            individual_pos = bone_tail_world
+            individual_pos = bone_tail
         else:
             # All others (including Thumb3): use mid
-            individual_pos = bone_mid_world
+            individual_pos = bone_mid
 
         # Transform and store individual control position
         bone_positions[full_bone_name] = transform_point(individual_pos)
@@ -321,21 +330,21 @@ def get_transformed_bone_positions(armature_name, hand_obj, geometry_center, han
             # Thumb group: use mid-point (head is deep in palm)
             # Other fingers: use head (visible knuckle position)
             if finger_name == 'Thumb':
-                bone_positions[group_key] = transform_point(bone_mid_world)
+                bone_positions[group_key] = transform_point(bone_mid)
             else:
-                bone_positions[group_key] = transform_point(bone_head_world)
+                bone_positions[group_key] = transform_point(bone_head)
 
     # Add Hand bone controls (individual wrist + fist group)
     hand_bone_name = f"{prefix}Hand"
     if hand_bone_name in armature.pose.bones:
         hand_bone = armature.pose.bones[hand_bone_name]
-        hand_head = armature.matrix_world @ hand_bone.head
-        hand_tail = armature.matrix_world @ hand_bone.tail
-        hand_mid = (hand_head + hand_tail) / 2
+        bone_head = Vector(hand_bone.head)
+        bone_tail = Vector(hand_bone.tail)
+        bone_mid = (bone_head + bone_tail) / 2
         # Individual wrist control at head of Hand bone
-        bone_positions[f"{prefix}Hand"] = transform_point(hand_head)
+        bone_positions[f"{prefix}Hand"] = transform_point(bone_head)
         # Fist group control at mid-point of Hand bone
-        bone_positions[f"{prefix}Hand_fist"] = transform_point(hand_mid)
+        bone_positions[f"{prefix}Hand_fist"] = transform_point(bone_mid)
 
     print(f"  Transformed {len(bone_positions)} positions for {hand_side} hand")
     return bone_positions
@@ -372,11 +381,11 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
 
     # Extract left hand
     print("\n--- Extracting LEFT hand ---")
-    left_hand, left_center = extract_hand_geometry(standin_mesh_name, 'left', hands_coll=hands_coll)
+    left_hand, left_center = extract_hand_geometry(standin_mesh_name, 'left', hands_coll=hands_coll, char_tag=char_tag)
 
     # Extract right hand
     print("\n--- Extracting RIGHT hand ---")
-    right_hand, right_center = extract_hand_geometry(standin_mesh_name, 'right', hands_coll=hands_coll)
+    right_hand, right_center = extract_hand_geometry(standin_mesh_name, 'right', hands_coll=hands_coll, char_tag=char_tag)
 
     if not left_hand or not right_hand:
         print("\nERROR: Failed to extract one or both hands")

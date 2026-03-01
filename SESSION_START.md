@@ -3,13 +3,13 @@
 > **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
 > Update at the end of every session (3-5 min).
 
-**Updated**: 2026-02-24 (session 6)
+**Updated**: 2026-02-28 (session 9)
 
 ---
 
 ## Current State
 
-**Character init system complete. N-panel reorganisation designed, pending implementation.** BlenDAZ now has a full onboarding flow for DAZ characters with geografts: `register_only.py` → Snapshot Pre-Merge → merge in Diffeomorphic → Remap Face Groups. Face group highlights survive module reloads via auto-rebuild from reference mesh. N-panel structure agreed (BlenDAZ / Touch / PoseBridge / PoseBlend) but not yet built — four open questions documented in `docs/TODO.md` (Next Session section). `daz_bone_select.py` pin system stable, highlight system working on merged meshes.
+**Multi-character Phase 4 — multi-viewport modal architecture implemented, ready for testing.** Major refactor: the single modal operator now works seamlessly across ALL open 3D viewports. Viewport resolution infrastructure (`_resolve_event_viewport`, `_find_pb_viewport`, `_find_main_viewport`) consolidates the repeated "find viewport under mouse" pattern. PB viewport camera swaps correctly on character switch. `mode_set` is isolated to the main viewport via `_mode_set_safe()`. Camera leak from N-panel click is prevented. Header text and tag_redraw broadcast to all viewports.
 
 ---
 
@@ -17,55 +17,59 @@
 
 | Sub-project | Status | Session Start |
 |-------------|--------|---------------|
-| [projects/posebridge/](projects/posebridge/) | 🟢 Demo-ready, visual polish | [SESSION_START.md](projects/posebridge/SESSION_START.md) |
+| [projects/posebridge/](projects/posebridge/) | 🟢 Multi-character Phase 4 — multi-viewport testing | [SESSION_START.md](projects/posebridge/SESSION_START.md) |
 | [projects/poseblend/](projects/poseblend/) | 🔴 Pre-first-test | [SESSION_START.md](projects/poseblend/SESSION_START.md) |
 
 **Read the sub-project SESSION_START.md for the one you're working on.**
 
 ---
 
-## What We Did Last Session (2026-02-24, session 6)
+## What We Did Last Session (2026-02-28, session 9)
 
-**Character init system + face group remap + N-panel reorganisation design:**
-- **`register_only.py`** — new lightweight startup script that registers all modules without requiring an armature. Entry point for Tier 2 workflow (snapshot before merge).
-- **`init_character.py`** — three operators: `blendaz.snapshot_premerge` (creates mannequin copy, records reference), `blendaz.remap_face_groups` (face center remap post-merge), `blendaz.merge_and_remap` (auto Diffeomorphic merge + remap).
-- **`build_from_reference_mesh()`** in `dsf_face_groups.py` — face center matching at 4dp precision; handles geograft merge polygon index shift transparently.
-- **Auto-restore on reload** — `invoke()` in modal operator now calls `build_from_reference_mesh` if `get_or_create` returns invalid FGM and `blendaz_init_status == 'ready'`. Module reloads no longer lose the remap.
-- **Live hot-push** — `_live_instance` class var on modal operator; `_run_face_group_remap` pushes updated FGM into running modal so Remap button takes effect without restart.
-- **`used_face_groups` fix** — only blocks vertex-weight fallback when DSF actually returned polygons (not just when FGM is valid).
-- **BlenDAZ Setup sub-panel** in `posebridge/panel_ui.py` — status indicator with icon, context-sensitive buttons, collapsed by default once Ready.
-- **N-panel reorganisation design** — agreed structure: BlenDAZ root / Touch / PoseBridge (Body Controls + Face Controls + Settings) / PoseBlend. Diagram + open questions saved in `docs/TODO.md` Next Session section.
+**Multi-viewport modal architecture — seamless interaction across all 3D viewports:**
+
+### New Helpers (daz_bone_select.py)
+- **`_resolve_event_viewport(context, event)`** — canonical helper to find the VIEW_3D area/region/rv3d/space under the mouse. Replaces 3 duplicate viewport-scan patterns in `_crossviewport_raycast`, `_get_region_rv3d`, and `check_posebridge_hover`.
+- **`_find_pb_viewport(context)`** — finds the PB viewport (CAMERA mode + PB_Camera_* name). Used by character switch and mode_set isolation.
+- **`_find_main_viewport(context)`** — finds the non-PB viewport. Used to route mode_set safely.
+- **`_mode_set_safe(context, mode)`** — wraps `bpy.ops.object.mode_set()` with a `temp_override` routed through the main viewport, protecting PB viewport camera/perspective state. Replaces ALL 6 direct mode_set call sites.
+
+### Bug Fixes
+- **PB viewport goes black on character switch** — step 3b now uses `_find_pb_viewport()` to swap the PB camera to the new character's hands/face camera.
+- **mode_set corrupts PB viewport** — all mode_set calls routed through main viewport via `_mode_set_safe()`.
+- **Camera leak to main viewport** — `set_panel_view` in `panel_ui.py` now targets the PB viewport specifically (via new `_find_pb_viewport()` helper in panel_ui.py), not `context.space_data`.
+- **Header text only in one viewport** — `_set_header()` now broadcasts to ALL VIEW_3D areas. `clear_hover()` tag_redraw also broadcasts.
+
+### Cross-Viewport Interaction
+- **LEFTMOUSE handler** — resolves viewport at top of handler, uses resolved area/region/rv3d for UI check, gizmo proximity, raycasts, double-click detection.
+- **check_hover() non-PB path** — uses `_resolve_event_viewport()` for UI region check, gizmo check, and raycast. Hover works in any viewport.
+- **Click-through mode** — single-click raycast on non-registered objects uses resolved viewport.
+- **Double-click tracking** — uses window-relative coords (stable across viewports).
+
+### Files Modified
+- `daz_bone_select.py` — 4 new helpers, refactored 3 existing methods, updated all mode_set calls, LEFTMOUSE handler, check_hover, header/redraw broadcasting
+- `projects/posebridge/panel_ui.py` — new `_find_pb_viewport()` module helper, `set_panel_view` targets PB viewport, redraws both areas
+- `projects/posebridge/drawing.py` — unchanged (camera check still works correctly with the new architecture)
 
 ---
 
 ## Next Up
 
-**N-Panel reorganisation (answer open questions first):**
-- Decide: Rotation Limits + IK Settings — move to Touch > Settings or drop?
-- Decide: Body Controls + Face Controls — DEFAULT_CLOSED or open?
-- Decide: "Open in Viewport" — locks to camera immediately or draw-handler only?
-- Decide: Stop BlenDAZ — stops everything or just Touch?
-- Then implement — full task list in `docs/TODO.md` "Next Session" section
+**Test multi-viewport architecture:**
+1. Register two characters, click BlenDAZ in right pane
+2. Click Hands in left N-panel — verify CPs appear in left only, main viewport stays perspective
+3. Click other character in right viewport — verify left viewport switches to new character's hands
+4. Switch Face/Body — verify seamless transitions
+5. Double-click non-registered object — verify no viewport corruption
 
-**Character init — test with pre-merge character:**
-- Run `register_only.py` on the pre-merge test character
-- Click Snapshot Pre-Merge State
-- Merge geografts in Diffeomorphic
-- Click Remap Face Groups
-- Run `setup_all.py` — confirm sections are clean (not janky)
+**Remaining multi-character issues:**
+- [ ] BlenDAZ toggle button should stop modal in ALL viewports
+- [ ] Collar snapping during arm IK drag (pre-existing analytical solver issue)
 
-**PoseBridge (after N-panel done):**
-- N-Panel: Categorized morph sliders (Brow, Eyes, Mouth sections)
-- BUG: Head bone selection fails from deselected state
-- BUG: Mesh highlight shows in PoseBridge viewport instead of 3D viewport
-- Pin system debugging session (feet/shin disconnect, arm snapping)
-
-**Pin system:**
-- **BUG: Unpin pose preservation** — snaps to rest on unpin. Three approaches failed. Try `bpy.ops.constraint.apply()` or set `pose_bone.matrix` directly.
-
-**PoseBlend:**
-- Fix `default_mask_mode` crash bug
-- First Blender test after fixes
+**Deferred TODOs:**
+- Camera ortho scale tweaks: Body=5, Hands=0.7, Face=0.525
+- N-Panel reorganization (agreed structure in TODO.md)
+- PoseBlend first Blender test
 
 ---
 
@@ -74,21 +78,25 @@
 - `daz_shared_utils.py` changes → **full Blender restart** (importlib.reload doesn't work)
 - `posebridge/core.py` changes (PropertyGroup) → **full Blender restart**
 - `daz_bone_select.py` changes → reload script or restart
-- PoseBlend: `importlib.reload()` works fine (no global shared state)
-- All docs are in `docs/` — SCRATCHPAD.md, TODO.md, INDEX.md, TECHNICAL_REFERENCE.md, templates/
-- **New startup scripts**: `register_only.py` (no armature needed — for init workflow), `setup_all.py` (full setup with character)
-- **Character init workflow**: `register_only.py` → Snapshot Pre-Merge → merge in Diffeomorphic → Remap Face Groups → `setup_all.py`
-- **Face group remap persistence**: stored in `posebbridge_settings.blendaz_reference_mesh_name` (survives module reload). Auto-restored in modal `invoke()` if DSF mismatch + status='ready'.
-- **`_live_instance`** on `VIEW3D_OT_daz_bone_select` — set in invoke(), cleared in finish(). Used by `_run_face_group_remap` to hot-push FGM updates into running modal.
-- **Analytical IK tests**: `tests/test_analytical_leg.py` (57 tests), `tests/test_analytical_arm.py` (62 tests), `tests/test_hip_pin_ik.py` (30 tests), `tests/test_pin_system.py` (30 tests, 78 assertions) — run in Blender's Text Editor with a Genesis 8/9 armature in Pose mode
-- **Arm solver key difference from legs**: dynamic bend_normal (recomputed each frame) vs locked (computed once). Arms need this due to full spherical ROM.
-- **Hip pin IK architecture**: native `translate('INVOKE_DEFAULT')` + `depsgraph_update_post` handler. Handler has re-entrancy guard (`_hip_pin_solving`). Cleanup via `_end_hip_pin_ik()` called from LEFTMOUSE RELEASE / RIGHTMOUSE / ESC handlers.
-- **Pin constraint muting**: Only `DAZ_Pin_Translation` muted during analytical drags. `DAZ_Pin_Rotation` stays active so pinned bone orientation is maintained by the constraint.
-- **R key handler**: Intercepts R for hip + spine chain bones when head is rotation-pinned. Passes through for all other bones. Pin override: R on a rotation-pinned bone mutes constraint, passes through to native rotate, updates pin on confirm.
-- **Head rotation solver**: `_solve_pinned_neck()` uses `correction @ bone.rotation_quaternion` (compose, not replace). Partial chains via `_find_pinned_head(armature, rotated_bone_name=X)`.
-- **Head translation solver**: Neck IK uses `cross(bone_Y, target_dir)` for bend normal (not fixed forward heuristic).
-- **Driven rotation bones**: `_get_driven_rotation_bones()` detects jaw/tongue/eye bones with rotation_euler drivers — must stay Euler mode or FACS joint morphs break.
-- **KNOWN BUG**: `unpin_bone()` doesn't preserve visual pose — bone snaps to rest on unpin. Three approaches failed.
+- **Blender objects don't support arbitrary Python attributes** — use `obj["foo"]` (custom properties) or return values instead of `obj._foo`
+- **User's preferred workflow**: `register_only.py` → Scan → Register → Activate (NOT `setup_all.py` as entry point)
+- **Commit discipline**: wait until things work before committing — don't commit every small fix
+- **Multi-viewport architecture** (single modal, all viewports):
+  - `_resolve_event_viewport(context, event)` — find viewport under mouse (canonical helper)
+  - `_find_pb_viewport(context)` — find PB viewport (CAMERA mode + PB_Camera_*)
+  - `_find_main_viewport(context)` — find non-PB viewport
+  - `_mode_set_safe(context, mode)` — route mode_set through main viewport (protects PB camera)
+  - `_set_header(context, text)` — broadcasts to ALL VIEW_3D areas
+  - **Never use `context.area`/`context.region` directly** for raycasts or UI checks — always resolve via `_resolve_event_viewport()` since modal's context is pinned to invoking viewport
+  - **Never call `bpy.ops.object.mode_set()` directly** — use `_mode_set_safe()` to protect PB viewport
+- **Per-character caches** (class-level dicts on `VIEW3D_OT_daz_bone_select`, persist across modal restarts):
+  - `_base_body_meshes = {}` — `{armature_name: mesh_obj}` resolves through clothing
+  - `_face_group_mgrs = {}` — `{armature_name: FaceGroupManager}` DSF zone detection
+  - Both populated at invoke for ALL registered characters
+- **RAYCAST 2 pattern**: Scene raycast → armature modifier lookup → raycast cached body mesh → priority within 1.0m threshold
+- **`_just_selected_armature`** flag — when True, modal passes through ALL events except clicks on registered DAZ characters
+- **`_live_instance`** on `VIEW3D_OT_daz_bone_select` — set in invoke(), cleared in finish()
+- **Analytical IK tests**: `tests/test_analytical_leg.py` (57), `tests/test_analytical_arm.py` (62), `tests/test_hip_pin_ik.py` (30), `tests/test_pin_system.py` (30)
 
 ---
 

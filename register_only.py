@@ -148,8 +148,9 @@ elif hasattr(bpy.context.scene, 'posebridge_settings'):
 
 import posebridge
 if RELOAD_MODULES:
-    for sub in ['core', 'control_points', 'outline_generator', 'interaction',
-                 'drawing', 'panel_ui', 'presets', 'init_character']:
+    for sub in ['core', 'control_points', 'outline_generator',
+                 'outline_generator_lineart',
+                 'interaction', 'drawing', 'panel_ui', 'presets', 'init_character']:
         mod_name = f'posebridge.{sub}'
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])

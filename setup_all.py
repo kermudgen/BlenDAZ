@@ -90,10 +90,12 @@ def find_standin_mesh(armature_name):
                 name = obj.name
                 if '_Standin' in name or '_LineArt_Copy' in name:
                     candidates.append(name)
-    # Also try common names
-    for name in ["Fey Mesh_Standin", "Fey Mesh_LineArt_Copy", "Fey Mesh"]:
-        if name in bpy.data.objects:
-            candidates.append(name)
+    # Also try DAZ naming convention
+    if armature_name:
+        for suffix in ["_Standin", "_LineArt_Copy"]:
+            name = f"{armature_name} Mesh{suffix}"
+            if name in bpy.data.objects:
+                candidates.append(name)
 
     return candidates[0] if candidates else None
 
@@ -297,6 +299,7 @@ if not SKIP_POSEBRIDGE:
     if RELOAD_MODULES:
         # Reload submodules in dependency order
         for sub in ['core', 'control_points', 'outline_generator',
+                     'outline_generator_lineart',
                      'interaction', 'drawing', 'panel_ui', 'presets', 'init_character']:
             mod_name = f'posebridge.{sub}'
             if mod_name in sys.modules:
@@ -384,8 +387,15 @@ if not SKIP_POSEBRIDGE:
                 bpy.data.objects[old_name].name = new_name
                 print(f"  Migrated '{old_name}' → '{new_name}'")
 
+        # Dump all PB_ objects for diagnostics
+        pb_objects = [(o.name, o.type, f"Z={o.location.z:.1f}") for o in bpy.data.objects if o.name.startswith('PB_')]
+        lineart_copies = [(o.name, o.type, f"Z={o.location.z:.1f}") for o in bpy.data.objects if '_LineArt_Copy' in o.name]
+        print(f"  PB_ objects in scene: {pb_objects}")
+        print(f"  LineArt_Copy objects: {lineart_copies}")
+
         # Check if outline already exists
         outline_exists = outline_name in bpy.data.objects
+        print(f"  Looking for outline '{outline_name}': {'FOUND' if outline_exists else 'NOT FOUND'}")
 
         if outline_exists:
             # Show what mesh the existing outline was built from
@@ -434,42 +444,40 @@ if not SKIP_POSEBRIDGE:
 
         # Move outline/camera/light/mesh copy to Z offset using ABSOLUTE positioning
         # (matches TESTING_POSEBRIDGE.md Step 4 — idempotent, safe to run multiple times)
+        print(f"\n  --- Z-offset positioning (target Z={OUTLINE_Z_OFFSET}m) ---")
+        print(f"  outline_exists={outline_exists}, outline_name='{outline_name}'")
+        print(f"  camera_name='{camera_name}', light_name='{light_name}'")
+
         if outline_exists:
             moved = []
-            # Outline GP goes to OUTLINE_Z_OFFSET (character feet level).
-            for obj_name in [outline_name]:
-                obj = bpy.data.objects.get(obj_name)
-                if obj:
-                    obj.location.z = OUTLINE_Z_OFFSET
-                    moved.append(obj.name)
-            # Camera and light: position at OUTLINE_Z_OFFSET + character_height * 0.58
-            # so the camera frames the character correctly regardless of height.
-            # Derive character_height from the mannequin bounding box (idempotent).
-            mannequin_name_for_height = f"{find_character_mesh(armature_name) or ''}_LineArt_Copy".lstrip('_')
-            mannequin_for_height = bpy.data.objects.get(mannequin_name_for_height)
-            if mannequin_for_height and mannequin_for_height.type == 'MESH':
-                from mathutils import Vector as _Vec
-                _bbox = [mannequin_for_height.matrix_world @ _Vec(c)
-                         for c in mannequin_for_height.bound_box]
-                _char_h = max(c.z for c in _bbox) - min(c.z for c in _bbox)
-                camera_z_offset = _char_h * 0.58
+
+            # Collect all objects that need Z-offset: outline GP, camera, light, mannequin
+            z_targets = {}
+
+            # 1. Outline GP → feet level
+            gp_obj = bpy.data.objects.get(outline_name)
+            if gp_obj:
+                z_targets[gp_obj] = OUTLINE_Z_OFFSET
             else:
-                camera_z_offset = 0.72  # Fallback: ~58% of average 1.24m character
-            for obj_name in [camera_name, light_name]:
-                obj = bpy.data.objects.get(obj_name)
-                if obj:
-                    obj.location.z = OUTLINE_Z_OFFSET + camera_z_offset
-                    moved.append(obj.name)
-            # Also move the mannequin mesh copy.
-            # It may be in PB_{char}_Stage (new collection flow) or still in the
-            # legacy TempCollection — check both so this is safe to run on old and new scenes.
-            mannequin_name = f"{find_character_mesh(armature_name) or ''}_LineArt_Copy".lstrip('_')
-            # First try the direct name lookup (works regardless of which collection it's in)
+                print(f"  WARNING: Outline GP '{outline_name}' not found in bpy.data.objects!")
+                print(f"  Available GP objects: {[o.name for o in bpy.data.objects if o.type == 'GREASEPENCIL']}")
+
+            # 2. Mannequin mesh copy → feet level
+            body_mesh = find_character_mesh(armature_name) or ''
+            mannequin_name = f"{body_mesh}_LineArt_Copy".lstrip('_')
             mannequin_obj = bpy.data.objects.get(mannequin_name)
+            if not mannequin_obj:
+                # Fallback: scan temp collection
+                temp_coll_name = f"{outline_name}_TempCollection"
+                if temp_coll_name in bpy.data.collections:
+                    for obj in bpy.data.collections[temp_coll_name].objects:
+                        if obj.type == 'MESH':
+                            mannequin_obj = obj
+                            mannequin_name = obj.name
+                            break
             if mannequin_obj and mannequin_obj.type == 'MESH':
-                mannequin_obj.location.z = OUTLINE_Z_OFFSET
-                moved.append(mannequin_obj.name)
-                # Strip shape keys (JCMs, flexions, FACS) — mannequin is geometry-only
+                z_targets[mannequin_obj] = OUTLINE_Z_OFFSET
+                # Strip shape keys
                 if mannequin_obj.data.shape_keys:
                     sk_count = len(mannequin_obj.data.shape_keys.key_blocks)
                     mannequin_obj.shape_key_clear()
@@ -479,21 +487,52 @@ if not SKIP_POSEBRIDGE:
                     if mod.type != 'ARMATURE':
                         mannequin_obj.modifiers.remove(mod)
             else:
-                # Fallback: scan temp collection (legacy scenes before collection management)
-                temp_coll_name = f"{outline_name}_TempCollection"
-                if temp_coll_name in bpy.data.collections:
-                    for obj in bpy.data.collections[temp_coll_name].objects:
-                        if obj.type == 'MESH':
-                            obj.location.z = OUTLINE_Z_OFFSET
-                            moved.append(obj.name)
-                            if obj.data.shape_keys:
-                                sk_count = len(obj.data.shape_keys.key_blocks)
-                                obj.shape_key_clear()
-                                print(f"  Stripped {sk_count} shape keys from {obj.name}")
-                            for mod in list(obj.modifiers):
-                                if mod.type != 'ARMATURE':
-                                    obj.modifiers.remove(mod)
-            print(f"  OK — Positioned at Z={OUTLINE_Z_OFFSET}m: {', '.join(moved)}")
+                print(f"  WARNING: Mannequin '{mannequin_name}' not found!")
+
+            # 3. Camera and light → offset by character height fraction
+            # Derive character height from mannequin bounding box
+            if mannequin_obj and mannequin_obj.type == 'MESH':
+                from mathutils import Vector as _Vec
+                _bbox = [mannequin_obj.matrix_world @ _Vec(c)
+                         for c in mannequin_obj.bound_box]
+                _char_h = max(c.z for c in _bbox) - min(c.z for c in _bbox)
+                camera_z_offset = _char_h * 0.58
+            else:
+                camera_z_offset = 0.72
+            cam_z = OUTLINE_Z_OFFSET + camera_z_offset
+            for obj_name in [camera_name, light_name]:
+                obj = bpy.data.objects.get(obj_name)
+                if obj:
+                    z_targets[obj] = cam_z
+                else:
+                    print(f"  WARNING: '{obj_name}' not found!")
+
+            # Apply Z-offset to all targets
+            # Clear parent transforms first so location.z is in world space
+            print(f"  Z-offset targets ({len(z_targets)}):")
+            for obj, target_z in z_targets.items():
+                print(f"    '{obj.name}' type={obj.type} parent={'%s' % obj.parent.name if obj.parent else 'None'} loc.z={obj.location.z:.2f} world_z={obj.matrix_world.translation.z:.2f}")
+
+            for obj, target_z in z_targets.items():
+                if obj.parent:
+                    print(f"  Clearing parent on '{obj.name}' (was parented to '{obj.parent.name}')")
+                    world_mat = obj.matrix_world.copy()
+                    obj.parent = None
+                    obj.matrix_world = world_mat
+                old_z = obj.location.z
+                obj.location.z = target_z
+                moved.append(obj.name)
+                # Verify it actually took
+                actual_z = obj.location.z
+                world_z = obj.matrix_world.translation.z
+                print(f"  '{obj.name}': loc.z {old_z:.2f} → {actual_z:.2f} (world: {world_z:.2f})")
+
+            if moved:
+                print(f"  OK — Positioned {len(moved)} objects at Z={OUTLINE_Z_OFFSET}m")
+            else:
+                print(f"  WARNING: No objects were moved!")
+        else:
+            print(f"  SKIPPED Z-offset — outline_exists is False")
 
         # Recapture body control points at new Z position
         # (MUST come before hands/face since capture_fixed_control_points clears all CPs)
