@@ -962,6 +962,13 @@ FACE_MORPH_CONTROLS = {
         'rmb_vert_neg': ('facs_jnt_EyeBlinkRight', 'positive', 1.0),
         'rmb_horiz': None,
     },
+    # === EYE LOOK: bilateral gaze control (LMB only) ===
+    'face_eyeLook': {
+        'lmb_vert': ('facs_ctrl_EyeLookUp-Down', 'positive', 1.0),
+        'lmb_horiz': ('facs_ctrl_EyeLookSide-Side', 'negative', 1.0),
+        'rmb_vert': None,
+        'rmb_horiz': None,
+    },
     # === SQUINT ===
     'face_lSquint': {
         'lmb_vert': ('facs_ctrl_EyesSquint', 'positive', 1.0),

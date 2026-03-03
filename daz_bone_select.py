@@ -124,14 +124,35 @@ def _get_driven_rotation_bones(armature):
 
     for driver in armature.animation_data.drivers:
         dp = driver.data_path
-        # Match patterns like: pose.bones["lowerJaw"].rotation_euler
-        if 'pose.bones[' in dp and 'rotation_euler' in dp:
-            # Extract bone name from data_path
+        # Match bones with rotation drivers of ANY mode (euler, quaternion, axis-angle).
+        # Diffeomorphic FACS morphs target rotation_euler on jaw/tongue/eyelid helper
+        # bones, but the actual eye bones (lEye, rEye) may use Copy Rotation
+        # constraints from helper bones — converting them to quaternion breaks
+        # the constraint chain because the source bones stay euler.
+        if 'pose.bones[' in dp and ('rotation_euler' in dp or
+                                     'rotation_quaternion' in dp or
+                                     'rotation_axis_angle' in dp):
             try:
                 bone_name = dp.split('"')[1]
                 driven.add(bone_name)
             except (IndexError, KeyError):
                 pass
+
+    # Also protect bones constrained to copy from driven bones.
+    # Diffeomorphic uses "boneName(drv)" helper bones with euler drivers, and
+    # the real bones (lEye, rEye) use COPY_TRANSFORMS from them. Converting
+    # the real bones to quaternion breaks the constraint evaluation chain.
+    _COPY_TYPES = {'COPY_ROTATION', 'COPY_TRANSFORMS'}
+    if driven:
+        for pose_bone in armature.pose.bones:
+            if pose_bone.name in driven:
+                continue
+            for con in pose_bone.constraints:
+                if con.type in _COPY_TYPES and hasattr(con, 'subtarget'):
+                    if con.subtarget in driven:
+                        driven.add(pose_bone.name)
+                        break
+
     return driven
 
 
@@ -166,16 +187,26 @@ def prepare_rig_for_ik(armature, force=False):
     driven_bones = _get_driven_rotation_bones(armature)
 
     converted_count = 0
+    restored_count = 0
     euler_bones = []
     skipped_bones = []
+    restored_bones = []
 
     for pose_bone in armature.pose.bones:
-        if pose_bone.rotation_mode != 'QUATERNION':
-            # Skip bones with rotation_euler drivers
-            if pose_bone.name in driven_bones:
+        if pose_bone.name in driven_bones:
+            # This bone must stay in euler. If a previous run wrongly converted
+            # it to quaternion, restore it now.
+            if pose_bone.rotation_mode == 'QUATERNION':
+                euler = pose_bone.rotation_quaternion.to_euler('XYZ')
+                pose_bone.rotation_mode = 'XYZ'
+                pose_bone.rotation_euler = euler
+                restored_bones.append(pose_bone.name)
+                restored_count += 1
+            else:
                 skipped_bones.append(pose_bone.name)
-                continue
+            continue
 
+        if pose_bone.rotation_mode != 'QUATERNION':
             euler_bones.append(pose_bone.name)
 
             # Convert current rotation to quaternion BEFORE changing mode
@@ -9296,12 +9327,15 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         for key in all_keys:
             entry = controls.get(key)
             if entry is not None:
-                prop_name = entry[0]
-                if prop_name not in self._morph_initial_values:
-                    if prop_name in armature:
-                        self._morph_initial_values[prop_name] = float(armature[prop_name])
-                    else:
-                        self._morph_initial_values[prop_name] = 0.0
+                # Support list of tuples for bilateral controls
+                entries = entry if isinstance(entry, list) else [entry]
+                for e in entries:
+                    prop_name = e[0]
+                    if prop_name not in self._morph_initial_values:
+                        if prop_name in armature:
+                            self._morph_initial_values[prop_name] = float(armature[prop_name])
+                        else:
+                            self._morph_initial_values[prop_name] = 0.0
 
         # Clear drag bone (morph CPs don't select bones)
         self._drag_bone_name = None
@@ -9363,31 +9397,35 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         Args:
             armature: Armature object with custom properties
-            entry: (prop_name, direction, scale) tuple
+            entry: (prop_name, direction, scale) tuple, or list of such tuples
+                   for bilateral/multi-property controls
             delta_pixels: Mouse movement in pixels from initial position
             sensitivity: Base sensitivity (value per pixel)
         """
-        prop_name, direction, scale = entry[0], entry[1], entry[2]
+        # Support list of tuples for bilateral controls (e.g. eye look L+R)
+        entries = entry if isinstance(entry, list) else [entry]
+        for e in entries:
+            prop_name, direction, scale = e[0], e[1], e[2]
 
-        # Skip if property doesn't exist on armature
-        if prop_name not in armature and prop_name not in self._morph_initial_values:
-            return
+            # Skip if property doesn't exist on armature
+            if prop_name not in armature and prop_name not in self._morph_initial_values:
+                continue
 
-        # Calculate new value from initial + total delta
-        sign = 1.0 if direction == 'positive' else -1.0
-        initial = self._morph_initial_values.get(prop_name, 0.0)
-        new_value = initial + (delta_pixels * sensitivity * scale * sign)
+            # Calculate new value from initial + total delta
+            sign = 1.0 if direction == 'positive' else -1.0
+            initial = self._morph_initial_values.get(prop_name, 0.0)
+            new_value = initial + (delta_pixels * sensitivity * scale * sign)
 
-        # Clamp to valid range
-        try:
-            info = armature.id_properties_ui(prop_name).as_dict()
-            min_val = info.get('min', 0.0)
-            max_val = info.get('max', 1.0)
-        except Exception:
-            min_val, max_val = 0.0, 1.0
+            # Clamp to valid range
+            try:
+                info = armature.id_properties_ui(prop_name).as_dict()
+                min_val = info.get('min', 0.0)
+                max_val = info.get('max', 1.0)
+            except Exception:
+                min_val, max_val = 0.0, 1.0
 
-        new_value = max(min_val, min(max_val, new_value))
-        armature[prop_name] = new_value
+            new_value = max(min_val, min(max_val, new_value))
+            armature[prop_name] = new_value
 
     def _apply_split_morph(self, armature, pos_entry, neg_entry, delta_pixels, sensitivity):
         """Apply split morph using virtual axis for smooth transitions.

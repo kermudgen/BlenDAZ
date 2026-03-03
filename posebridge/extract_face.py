@@ -277,6 +277,10 @@ def get_face_control_positions(armature):
     positions['face_lEye'] = Vector((leye_pos.x, hc.y, leye_pos.z + vu * 0.3))
     positions['face_rEye'] = Vector((reye_pos.x, hc.y, reye_pos.z + vu * 0.3))
 
+    # Eye look (gaze FACS control) - centered between both eyes
+    eye_look_z = (leye_pos.z + reye_pos.z) / 2 + vu * 0.3
+    positions['face_eyeLook'] = Vector((eye_center.x, hc.y, eye_look_z))
+
     # Squint node - at SquintOuter bone locations
     if lsquint_pos:
         positions['face_lSquint'] = Vector((lsquint_pos.x, hc.y, lsquint_pos.z))
@@ -427,6 +431,14 @@ def generate_face_control_points(positions):
     })
 
     # ===== EYE CONTROLS =====
+    # Eye Look: bilateral gaze via FACS controllers, LMB only
+    add_cp('face_eyeLook', 'Eye Look', {
+        'lmb_vert': ('facs_ctrl_EyeLookUp-Down', 'positive', 1.0),
+        'lmb_horiz': ('facs_ctrl_EyeLookSide-Side', 'negative', 1.0),
+        'rmb_vert': None,
+        'rmb_horiz': None,
+    })
+
     # Combined node: drag up = wide, drag down = blink
     # Uses split keys (_pos/_neg) for directional vertical control
     add_cp('face_lEye', 'Left Eye', {
@@ -679,9 +691,12 @@ def setup_face_panel(armature=None, char_name=None, char_tag=None):
         controls = cp_def.get('controls', {})
         for key, entry in controls.items():
             if entry is not None:
-                prop_name = entry[0]
-                if prop_name not in all_props:
-                    missing.append(prop_name)
+                # Support list of tuples for bilateral controls
+                entries = entry if isinstance(entry, list) else [entry]
+                for e in entries:
+                    prop_name = e[0]
+                    if prop_name not in all_props:
+                        missing.append(prop_name)
 
     if missing:
         unique_missing = sorted(set(missing))
