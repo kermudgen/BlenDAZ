@@ -1,3 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 BlenDAZ Diagnostic Logger — Structured event logging for modal operator debugging.
 
@@ -16,6 +32,10 @@ import os
 import json
 import time
 
+import logging
+log = logging.getLogger(__name__)
+
+
 # ============================================================================
 # Master switch — zero overhead when False
 # ============================================================================
@@ -25,10 +45,7 @@ DIAG_ENABLED = True
 try:
     _module_dir = os.path.dirname(os.path.abspath(__file__))
 except (NameError, TypeError):
-    _module_dir = r"D:\Dev\BlenDAZ"
-# Sanity check: if __file__ resolved to something odd, fall back to known path
-if not os.path.isdir(_module_dir) or "BlenDAZ" not in _module_dir:
-    _module_dir = r"D:\Dev\BlenDAZ"
+    _module_dir = os.getcwd()
 DIAG_LOG_DIR = os.path.join(_module_dir, "logs")
 DIAG_LOG_FILE = "diag_events.jsonl"
 
@@ -108,7 +125,7 @@ class DiagLogger:
         filepath = os.path.join(DIAG_LOG_DIR, DIAG_LOG_FILE)
         inst._file = open(filepath, 'a', encoding='utf-8')
         inst._session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{id(inst) & 0xFFFF:04x}"
-        print(f"[DIAG] Session started — logging to {filepath}")
+        log.info(f"[DIAG] Session started — logging to {filepath}")
         inst._write_entry({
             'event': 'session_start',
             **kwargs,
@@ -154,7 +171,7 @@ class DiagLogger:
             self._file.write(json.dumps(entry, default=_json_default) + '\n')
             self._file.flush()
         except Exception as e:
-            print(f"[DIAG] Write error: {e}")
+            log.warning(f"[DIAG] Write error: {e}")
 
 
 # ============================================================================
@@ -185,7 +202,7 @@ def log_session_start(**kwargs):
     try:
         DiagLogger.start_session(**kwargs)
     except Exception as e:
-        print(f"[DIAG] ERROR in log_session_start: {e}")
+        log.warning(f"[DIAG] ERROR in log_session_start: {e}")
         import traceback; traceback.print_exc()
 
 

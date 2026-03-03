@@ -1,3 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 DAZ Rig Manager - Centralized rig detection, preparation, and metadata storage
 
@@ -13,7 +29,7 @@ Usage:
     # Check if rig is ready
     if RigManager.is_prepared(armature):
         info = RigManager.get_rig_info(armature)
-        print(f"Genesis {info.genesis_version} rig with {len(info.bone_hierarchy)} bones")
+        log.info(f"Genesis {info.genesis_version} rig with {len(info.bone_hierarchy)} bones")
 
     # For DAZ export (future)
     RigManager.export_pose_to_daz(armature, "my_pose.duf")
@@ -23,6 +39,10 @@ import bpy
 from mathutils import Vector, Quaternion
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
+
+import logging
+log = logging.getLogger(__name__)
+
 
 
 @dataclass
@@ -132,11 +152,11 @@ class RigManager:
         # Cache and return
         cls._rig_cache[armature_id] = info
 
-        print(f"[RIG MANAGER] Prepared rig: {armature.name}")
-        print(f"  Genesis version: {info.genesis_version or 'Unknown'}")
-        print(f"  Bones: {info.bone_count}")
-        print(f"  Converted to quaternion: {info.bones_converted_to_quaternion}")
-        print(f"  Bend/twist pairs: {len(info.bend_twist_pairs)}")
+        log.info(f"[RIG MANAGER] Prepared rig: {armature.name}")
+        log.info(f"  Genesis version: {info.genesis_version or 'Unknown'}")
+        log.info(f"  Bones: {info.bone_count}")
+        log.info(f"  Converted to quaternion: {info.bones_converted_to_quaternion}")
+        log.info(f"  Bend/twist pairs: {len(info.bend_twist_pairs)}")
 
         return info
 
@@ -343,7 +363,7 @@ class RigManager:
     def clear_cache(cls):
         """Clear all cached rig info."""
         cls._rig_cache.clear()
-        print("[RIG MANAGER] Cache cleared")
+        log.info("[RIG MANAGER] Cache cleared")
 
     # ========================================================================
     # FUTURE: DAZ Export Functions
@@ -364,8 +384,8 @@ class RigManager:
             True if successful
         """
         # Placeholder for future implementation
-        print(f"[RIG MANAGER] Export to DAZ not yet implemented")
-        print(f"  Would export: {armature.name} → {filepath}")
+        log.info(f"[RIG MANAGER] Export to DAZ not yet implemented")
+        log.info(f"  Would export: {armature.name} → {filepath}")
         return False
 
 

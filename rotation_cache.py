@@ -1,3 +1,23 @@
+
+import logging
+log = logging.getLogger(__name__)
+
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 Rotation Cache Utilities for DAZ Genesis 8/9 Characters
 
@@ -57,7 +77,7 @@ class PreserveRotations:
                 self.rotation_cache[pose_bone.name] = pose_bone.rotation_euler.copy()
 
         if self.verbose:
-            print(f"  Cached rotations for {len(self.rotation_cache)} bones before mode switch")
+            log.info(f"  Cached rotations for {len(self.rotation_cache)} bones before mode switch")
 
         return self
 
@@ -80,9 +100,9 @@ class PreserveRotations:
 
         if self.verbose and rotations_restored > 0:
             if self.exclude_on_restore:
-                print(f"  ✓ Restored {rotations_restored} non-excluded bone rotations after mode switch")
+                log.info(f"  ✓ Restored {rotations_restored} non-excluded bone rotations after mode switch")
             else:
-                print(f"  ✓ Restored {rotations_restored} bone rotations after mode switch")
+                log.info(f"  ✓ Restored {rotations_restored} bone rotations after mode switch")
 
         # Don't suppress exceptions
         return False

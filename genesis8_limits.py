@@ -1,3 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 Genesis 8 Rotation Limits Reference
 
@@ -7,6 +23,9 @@ Used to fix missing constraints from Diffeomorphic import.
 Based on DAZ Studio's default rotation limits for Genesis 8.
 All angles in degrees.
 """
+
+import logging
+log = logging.getLogger(__name__)
 
 # Format: 'bone_name': {'x': (min, max), 'y': (min, max), 'z': (min, max)}
 # None means no limit on that axis
@@ -263,7 +282,7 @@ def apply_rotation_limits(armature, bone_name, force=False):
     for constraint in pose_bone.constraints:
         if constraint.type == 'LIMIT_ROTATION':
             if not force:
-                print(f"  {bone_name}: LIMIT_ROTATION already exists")
+                log.info(f"  {bone_name}: LIMIT_ROTATION already exists")
                 return False
             existing_constraint = constraint
             break
@@ -295,7 +314,7 @@ def apply_rotation_limits(armature, bone_name, force=False):
         limit_rot.min_z = radians(limits['z'][0])
         limit_rot.max_z = radians(limits['z'][1])
 
-    print(f"  ✓ {bone_name}: Applied rotation limits")
+    log.info(f"  ✓ {bone_name}: Applied rotation limits")
     return True
 
 
@@ -314,9 +333,9 @@ def apply_all_genesis8_limits(armature, force=False):
     skipped = 0
     missing = 0
 
-    print(f"\n=== Applying Genesis 8 Rotation Limits ===")
-    print(f"Armature: {armature.name}")
-    print(f"Force update: {force}")
+    log.info(f"\n=== Applying Genesis 8 Rotation Limits ===")
+    log.info(f"Armature: {armature.name}")
+    log.info(f"Force update: {force}")
 
     for bone_name in GENESIS8_ROTATION_LIMITS.keys():
         if bone_name not in armature.pose.bones:
@@ -328,10 +347,10 @@ def apply_all_genesis8_limits(armature, force=False):
         else:
             skipped += 1
 
-    print(f"\n=== Summary ===")
-    print(f"  Applied: {applied}")
-    print(f"  Skipped: {skipped} (already had constraints)")
-    print(f"  Missing: {missing} (bones not in armature)")
+    log.info(f"\n=== Summary ===")
+    log.info(f"  Applied: {applied}")
+    log.info(f"  Skipped: {skipped} (already had constraints)")
+    log.info(f"  Missing: {missing} (bones not in armature)")
 
     return (applied, skipped, missing)
 

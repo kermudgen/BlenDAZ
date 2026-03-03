@@ -3,13 +3,13 @@
 > **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
 > Update at the end of every session (3-5 min).
 
-**Updated**: 2026-02-28 (session 9)
+**Updated**: 2026-03-03 (session 12)
 
 ---
 
 ## Current State
 
-**Multi-character Phase 4 — multi-viewport modal architecture implemented, ready for testing.** Major refactor: the single modal operator now works seamlessly across ALL open 3D viewports. Viewport resolution infrastructure (`_resolve_event_viewport`, `_find_pb_viewport`, `_find_main_viewport`) consolidates the repeated "find viewport under mouse" pattern. PB viewport camera swaps correctly on character switch. `mode_set` is isolated to the main viewport via `_mode_set_safe()`. Camera leak from N-panel click is prevented. Header text and tag_redraw broadcast to all viewports.
+**Release preparation — packaging complete, testing next.** Completed all pre-release code cleanup: imports converted to relative, debug prints replaced with logging, LICENSE + blender_manifest.toml created, version numbers unified to 1.0.0. ZIP packaged as `blendaz-v1.0.0.zip` (41 shipped files). Next: clean-slate install test on second machine.
 
 ---
 
@@ -17,64 +17,77 @@
 
 | Sub-project | Status | Session Start |
 |-------------|--------|---------------|
-| [projects/posebridge/](projects/posebridge/) | 🟢 Multi-character Phase 4 — multi-viewport testing | [SESSION_START.md](projects/posebridge/SESSION_START.md) |
-| [projects/poseblend/](projects/poseblend/) | 🔴 Pre-first-test | [SESSION_START.md](projects/poseblend/SESSION_START.md) |
+| [posebridge/](posebridge/) | 🟢 Multi-character verified, PB hover + switching working | [SESSION_START.md](posebridge/SESSION_START.md) |
+| [poseblend/](poseblend/) | 🔴 Pre-first-test | [SESSION_START.md](poseblend/SESSION_START.md) |
 
 **Read the sub-project SESSION_START.md for the one you're working on.**
 
 ---
 
-## What We Did Last Session (2026-02-28, session 9)
+## What We Did Last Session (2026-03-03, session 12)
 
-**Multi-viewport modal architecture — seamless interaction across all 3D viewports:**
+### Import & Path Cleanup
+- Moved `projects/posebridge/` → `posebridge/` and `projects/poseblend/` → `poseblend/` (direct children of BlenDAZ root)
+- Converted all shipped files to relative imports (`from . import`, `from .. import`)
+- Removed all `sys.path` manipulation and hardcoded paths from shipped files
+- Dev entry points (`register_only.py`, `setup_all.py`) use `BLENDAZ_PARENT = r"D:\Dev"` + `from BlenDAZ import ...`
+- Created `__init__.py` addon entry point with root logging config
 
-### New Helpers (daz_bone_select.py)
-- **`_resolve_event_viewport(context, event)`** — canonical helper to find the VIEW_3D area/region/rv3d/space under the mouse. Replaces 3 duplicate viewport-scan patterns in `_crossviewport_raycast`, `_get_region_rv3d`, and `check_posebridge_hover`.
-- **`_find_pb_viewport(context)`** — finds the PB viewport (CAMERA mode + PB_Camera_* name). Used by character switch and mode_set isolation.
-- **`_find_main_viewport(context)`** — finds the non-PB viewport. Used to route mode_set safely.
-- **`_mode_set_safe(context, mode)`** — wraps `bpy.ops.object.mode_set()` with a `temp_override` routed through the main viewport, protecting PB viewport camera/perspective state. Replaces ALL 6 direct mode_set call sites.
+### Debug Print → Logging
+- Replaced 820 `print()` calls across all 40 shipped files with `logging` calls
+- Root logger `"BlenDAZ"` in `__init__.py`, child loggers via `logging.getLogger(__name__)`
+- WARNING level by default (silent), configurable to DEBUG for verbose output
+- Cleaned up 17 files with unused logging imports
 
-### Bug Fixes
-- **PB viewport goes black on character switch** — step 3b now uses `_find_pb_viewport()` to swap the PB camera to the new character's hands/face camera.
-- **mode_set corrupts PB viewport** — all mode_set calls routed through main viewport via `_mode_set_safe()`.
-- **Camera leak to main viewport** — `set_panel_view` in `panel_ui.py` now targets the PB viewport specifically (via new `_find_pb_viewport()` helper in panel_ui.py), not `context.space_data`.
-- **Header text only in one viewport** — `_set_header()` now broadcasts to ALL VIEW_3D areas. `clear_hover()` tag_redraw also broadcasts.
+### Release Packaging
+- Created `LICENSE` (GPL-3.0 full text)
+- Created `blender_manifest.toml` (schema 1.0.0, id=blendaz, Blender 5.0+ min)
+- Unified all version numbers to `(1, 0, 0)` / `"1.0.0"`
+- Built `blendaz-v1.0.0.zip` — 41 files, correct `blendaz/` folder structure
 
-### Cross-Viewport Interaction
-- **LEFTMOUSE handler** — resolves viewport at top of handler, uses resolved area/region/rv3d for UI check, gizmo proximity, raycasts, double-click detection.
-- **check_hover() non-PB path** — uses `_resolve_event_viewport()` for UI region check, gizmo check, and raycast. Hover works in any viewport.
-- **Click-through mode** — single-click raycast on non-registered objects uses resolved viewport.
-- **Double-click tracking** — uses window-relative coords (stable across viewports).
+### Files Created
+- `__init__.py` — addon entry point
+- `blender_manifest.toml` — Blender extension manifest
+- `LICENSE` — GPL-3.0 full text
+- `blendaz-v1.0.0.zip` — release package
 
-### Files Modified
-- `daz_bone_select.py` — 4 new helpers, refactored 3 existing methods, updated all mode_set calls, LEFTMOUSE handler, check_hover, header/redraw broadcasting
-- `projects/posebridge/panel_ui.py` — new `_find_pb_viewport()` module helper, `set_panel_view` targets PB viewport, redraws both areas
-- `projects/posebridge/drawing.py` — unchanged (camera check still works correctly with the new architecture)
+### Files Modified (imports + logging)
+- All shipped .py files — see session 12 details in SCRATCHPAD
 
 ---
 
 ## Next Up
 
-**Test multi-viewport architecture:**
-1. Register two characters, click BlenDAZ in right pane
-2. Click Hands in left N-panel — verify CPs appear in left only, main viewport stays perspective
-3. Click other character in right viewport — verify left viewport switches to new character's hands
-4. Switch Face/Body — verify seamless transitions
-5. Double-click non-registered object — verify no viewport corruption
+**Testing (immediate):**
+- [ ] Clean-slate install test from ZIP on work machine (Blender 5.0+)
+- [ ] Test with Genesis 8 F/M, 8.1 F/M
+- [ ] Test multi-character registration/switching
+- [ ] Test all PoseBridge modes (body, hands, face)
+- [ ] Test Streamline on/off
+- [ ] Test IK on all limbs
+- [ ] Verify clean uninstall
 
-**Remaining multi-character issues:**
+**Release checklist (remaining):**
+- [ ] Marketing assets (cover image, screenshots, demo video, product description)
+- [ ] Launch channels (Superhive, Gumroad, community posts)
+- [ ] License key / activation system (lite vs full split)
+
+**Feature TODO:**
+1. **Head rotation CP in face mode** — add head rotation control point for PoseBridge
+2. **Eye look control CP in face mode** — add eye look control point for PoseBridge
+3. **Finger bone selection after posing hand** — drill into child bones after proximity override (low priority)
+
+**Other:**
 - [ ] BlenDAZ toggle button should stop modal in ALL viewports
 - [ ] Collar snapping during arm IK drag (pre-existing analytical solver issue)
-
-**Deferred TODOs:**
-- Camera ortho scale tweaks: Body=5, Hands=0.7, Face=0.525
-- N-Panel reorganization (agreed structure in TODO.md)
-- PoseBlend first Blender test
 
 ---
 
 ## Don't Forget
 
+- **Package structure**: `blendaz/` top-level folder inside ZIP, matching manifest `id`
+- **Imports**: All shipped files use relative imports. Dev scripts use `from BlenDAZ import ...`
+- **Logging**: `logging.getLogger(__name__)` in each module. Root logger "BlenDAZ" at WARNING level.
 - `daz_shared_utils.py` changes → **full Blender restart** (importlib.reload doesn't work)
 - `posebridge/core.py` changes (PropertyGroup) → **full Blender restart**
 - `daz_bone_select.py` changes → reload script or restart
@@ -83,19 +96,18 @@
 - **Commit discipline**: wait until things work before committing — don't commit every small fix
 - **Multi-viewport architecture** (single modal, all viewports):
   - `_resolve_event_viewport(context, event)` — find viewport under mouse (canonical helper)
-  - `_find_pb_viewport(context)` — find PB viewport (CAMERA mode + PB_Camera_*)
+  - `_find_pb_viewport(context)` — find PB viewport (assigned PB_Camera_* name)
   - `_find_main_viewport(context)` — find non-PB viewport
   - `_mode_set_safe(context, mode)` — route mode_set through main viewport (protects PB camera)
   - `_set_header(context, text)` — broadcasts to ALL VIEW_3D areas
-  - **Never use `context.area`/`context.region` directly** for raycasts or UI checks — always resolve via `_resolve_event_viewport()` since modal's context is pinned to invoking viewport
+  - **Never use `context.area`/`context.region` directly** for raycasts or UI checks — always resolve via `_resolve_event_viewport()`
   - **Never call `bpy.ops.object.mode_set()` directly** — use `_mode_set_safe()` to protect PB viewport
 - **Per-character caches** (class-level dicts on `VIEW3D_OT_daz_bone_select`, persist across modal restarts):
   - `_base_body_meshes = {}` — `{armature_name: mesh_obj}` resolves through clothing
   - `_face_group_mgrs = {}` — `{armature_name: FaceGroupManager}` DSF zone detection
-  - Both populated at invoke for ALL registered characters
 - **RAYCAST 2 pattern**: Scene raycast → armature modifier lookup → raycast cached body mesh → priority within 1.0m threshold
-- **`_just_selected_armature`** flag — when True, modal passes through ALL events except clicks on registered DAZ characters
-- **`_live_instance`** on `VIEW3D_OT_daz_bone_select` — set in invoke(), cleared in finish()
+- **Proximity bone override**: After DSF resolution, if result is torso/thigh bone, check if IK-target bone's posed position is within 0.15m of hit location
+- **Diagnostic logger**: `diag_logger.py` — set `DIAG_ENABLED = True` to capture structured events to `logs/diag_events.jsonl`. Disable when not debugging.
 - **Analytical IK tests**: `tests/test_analytical_leg.py` (57), `tests/test_analytical_arm.py` (62), `tests/test_hip_pin_ik.py` (30), `tests/test_pin_system.py` (30)
 
 ---

@@ -1,3 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 BlenDAZ Full Setup — Register & Start Everything
 =================================================
@@ -44,16 +60,13 @@ SETUP_HANDS = True            # Extract hand geometry + control points
 SETUP_FACE = True             # Extract face control points
 
 # ============================================================================
-# Path setup
+# Path setup — add parent of BlenDAZ so package imports resolve
 # ============================================================================
 
-BLENDAZ_ROOT = r"D:\Dev\BlenDAZ"
-PROJECTS_DIR = r"D:\Dev\BlenDAZ\projects"
-POSEBRIDGE_DIR = r"D:\Dev\BlenDAZ\projects\posebridge"
+BLENDAZ_PARENT = r"D:\Dev"
 
-for p in [BLENDAZ_ROOT, PROJECTS_DIR, POSEBRIDGE_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if BLENDAZ_PARENT not in sys.path:
+    sys.path.insert(0, BLENDAZ_PARENT)
 
 # ============================================================================
 # Helpers
@@ -216,9 +229,9 @@ if armature_obj:
 print(f"\n--- Step 1: daz_bone_select ---")
 
 # Stop any live modal instance + remove its draw handlers before unregistering.
-if 'daz_bone_select' in sys.modules:
+if 'BlenDAZ.daz_bone_select' in sys.modules:
     try:
-        import daz_bone_select as _dbs_old
+        from BlenDAZ import daz_bone_select as _dbs_old
         op_cls = getattr(_dbs_old, 'VIEW3D_OT_daz_bone_select', None)
         if op_cls is not None:
             live = getattr(op_cls, '_live_instance', None)
@@ -235,25 +248,25 @@ if 'daz_bone_select' in sys.modules:
     except Exception as _e:
         print(f"  Warning stopping live instance: {_e}")
 
-if RELOAD_MODULES and 'daz_bone_select' in sys.modules:
+if RELOAD_MODULES and 'BlenDAZ.daz_bone_select' in sys.modules:
     try:
-        import daz_bone_select
+        from BlenDAZ import daz_bone_select
         daz_bone_select.unregister()
     except:
         pass
-    del sys.modules['daz_bone_select']
+    purge_modules('BlenDAZ')
     # Also reload shared utils
-    if 'daz_shared_utils' in sys.modules:
-        importlib.reload(sys.modules['daz_shared_utils'])
+    if 'BlenDAZ.daz_shared_utils' in sys.modules:
+        importlib.reload(sys.modules['BlenDAZ.daz_shared_utils'])
         print("  Reloaded daz_shared_utils")
 elif hasattr(bpy.ops.view3d, 'daz_bone_select'):
     try:
-        import daz_bone_select
+        from BlenDAZ import daz_bone_select
         daz_bone_select.unregister()
     except:
         pass
 
-import daz_bone_select
+from BlenDAZ import daz_bone_select
 if RELOAD_MODULES:
     importlib.reload(daz_bone_select)
 daz_bone_select.register()
@@ -274,9 +287,9 @@ if not SKIP_POSEBRIDGE:
     print(f"\n--- Step 2: PoseBridge ---")
 
     # Unregister + purge if reloading
-    if RELOAD_MODULES and 'posebridge' in sys.modules:
+    if RELOAD_MODULES and 'BlenDAZ.posebridge' in sys.modules:
         try:
-            import posebridge
+            from BlenDAZ import posebridge
             safe_unregister('posebridge', posebridge)
         except:
             pass
@@ -285,23 +298,23 @@ if not SKIP_POSEBRIDGE:
             del bpy.types.Scene.posebridge_settings
         except:
             pass
-        purge_modules('posebridge')
+        purge_modules('BlenDAZ.posebridge')
         print("  Purged cached posebridge modules")
     elif hasattr(bpy.context.scene, 'posebridge_settings'):
         try:
-            import posebridge
+            from BlenDAZ import posebridge
             safe_unregister('posebridge', posebridge)
         except:
             pass
 
     # Fresh import + register
-    import posebridge
+    from BlenDAZ import posebridge
     if RELOAD_MODULES:
         # Reload submodules in dependency order
         for sub in ['core', 'control_points', 'outline_generator',
                      'outline_generator_lineart',
                      'interaction', 'drawing', 'panel_ui', 'presets', 'init_character']:
-            mod_name = f'posebridge.{sub}'
+            mod_name = f'BlenDAZ.posebridge.{sub}'
             if mod_name in sys.modules:
                 importlib.reload(sys.modules[mod_name])
         importlib.reload(posebridge)
@@ -319,7 +332,7 @@ if not SKIP_POSEBRIDGE:
 
     # Register draw handler
     try:
-        from posebridge.drawing import PoseBridgeDrawHandler
+        from BlenDAZ.posebridge.drawing import PoseBridgeDrawHandler
         if PoseBridgeDrawHandler._draw_handler is not None:
             PoseBridgeDrawHandler.unregister()
         PoseBridgeDrawHandler.register()
@@ -339,7 +352,7 @@ if not SKIP_POSEBRIDGE:
             if mod in sys.modules:
                 importlib.reload(sys.modules[mod])
 
-        from posebridge.outline_generator_lineart import capture_fixed_control_points
+        from BlenDAZ.posebridge.outline_generator_lineart import capture_fixed_control_points
 
         # Force-regenerate: delete existing outline objects so they get recreated
         if FORCE_REGENERATE_OUTLINE:
@@ -423,7 +436,7 @@ if not SKIP_POSEBRIDGE:
                 mesh_obj.select_set(True)
 
                 try:
-                    from posebridge.outline_generator_lineart import create_genesis8_lineart_outline
+                    from BlenDAZ.posebridge.outline_generator_lineart import create_genesis8_lineart_outline
                     gp_obj = create_genesis8_lineart_outline(mesh_obj, outline_name, char_tag=char_tag)
                     if gp_obj:
                         print(f"  OK — Outline generated: {outline_name}")
@@ -552,7 +565,7 @@ if not SKIP_POSEBRIDGE:
         standin = STANDIN_NAME or find_standin_mesh(armature_name)
         if standin and standin in bpy.data.objects:
             try:
-                import extract_hands
+                from BlenDAZ.posebridge import extract_hands
                 if RELOAD_MODULES:
                     importlib.reload(extract_hands)
                 hand_result = extract_hands.extract_and_setup_hands(
@@ -575,7 +588,7 @@ if not SKIP_POSEBRIDGE:
     # --- Optional: Face extraction ---
     if SETUP_FACE and pb_settings and armature_obj:
         try:
-            import extract_face
+            from BlenDAZ.posebridge import extract_face
             if RELOAD_MODULES:
                 importlib.reload(extract_face)
             face_result = extract_face.setup_face_panel(armature_obj, char_name=armature_name, char_tag=char_tag)
@@ -597,9 +610,9 @@ if not SKIP_POSEBLEND:
     print(f"\n--- Step 3: PoseBlend ---")
 
     # Unregister + purge if reloading
-    if RELOAD_MODULES and 'poseblend' in sys.modules:
+    if RELOAD_MODULES and 'BlenDAZ.poseblend' in sys.modules:
         try:
-            import poseblend
+            from BlenDAZ import poseblend
             safe_unregister('poseblend', poseblend)
         except:
             pass
@@ -607,23 +620,23 @@ if not SKIP_POSEBLEND:
             del bpy.types.Scene.poseblend_settings
         except:
             pass
-        purge_modules('poseblend')
+        purge_modules('BlenDAZ.poseblend')
         print("  Purged cached poseblend modules")
     elif hasattr(bpy.context.scene, 'poseblend_settings'):
         try:
-            import poseblend
+            from BlenDAZ import poseblend
             safe_unregister('poseblend', poseblend)
         except:
             pass
 
     # Fresh import + register
     try:
-        import poseblend
+        from BlenDAZ import poseblend
         if RELOAD_MODULES:
             for sub in ['core', 'presets', 'poses', 'blending', 'grid',
                          'viewport_setup', 'drawing', 'interaction',
                          'panel_ui', 'import_export']:
-                mod_name = f'poseblend.{sub}'
+                mod_name = f'BlenDAZ.poseblend.{sub}'
                 if mod_name in sys.modules:
                     importlib.reload(sys.modules[mod_name])
             importlib.reload(poseblend)

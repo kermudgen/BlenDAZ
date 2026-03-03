@@ -2,7 +2,7 @@
 
 Quick reference guide for what's in each file and where to find specific functionality.
 
-**Last Updated**: 2026-02-24
+**Last Updated**: 2026-03-03
 
 ---
 
@@ -33,9 +33,9 @@ Quick reference guide for what's in each file and where to find specific functio
 
 ## 🎨 PoseBridge Module
 
-**Location**: [posebridge/](posebridge/)
+**Location**: [posebridge/](../posebridge/)
 
-Visual posing editor with fixed control points overlaid on a 2D character outline. Phase 1 MVP focuses on basic click-drag rotation with fixed control points.
+Visual posing editor with fixed control points overlaid on a 2D character outline. All panel modes (body, hands, face) complete.
 
 ### Core Files
 
@@ -163,7 +163,7 @@ Visual posing editor with fixed control points overlaid on a 2D character outlin
 
 ## 🎭 PoseBlend Module
 
-**Location**: [poseblend/](poseblend/)
+**Location**: [poseblend/](../poseblend/)
 
 Pose blending system for creating and blending between multiple character poses using a grid interface.
 
@@ -403,7 +403,7 @@ Pose blending system for creating and blending between multiple character poses 
 
 ### "How do I set up a new character with BlenDAZ?"
 → [planning/CHARACTER_INIT_SYSTEM.md](planning/CHARACTER_INIT_SYSTEM.md) - Full design doc
-→ `projects/posebridge/init_character.py` - Operators (planned, not yet implemented)
+→ `posebridge/init_character.py` - Operators (planned, not yet implemented)
 
 ### "How does face group highlight survive a geograft merge?"
 → [planning/CHARACTER_INIT_SYSTEM.md](planning/CHARACTER_INIT_SYSTEM.md) - Remap algorithm
@@ -484,16 +484,15 @@ Pose blending system for creating and blending between multiple character poses 
 
 ---
 
-## 📊 File Statistics
+## File Statistics
 
-**Total Python Files**: ~30+
+**Shipped Python Files**: 41 (in `blendaz-v1.0.0.zip`)
+**Dev/Test Scripts**: ~20+
 **Documentation Files**: ~25+
 **Active Modules**: 3 (daz_bone_select, posebridge, poseblend)
-**Lines of Code**: ~2000+ (estimated across all modules)
 
 **Largest Files**:
-- [posebridge/scratchpad.md](posebridge/scratchpad.md) - 46KB (consider archiving)
-- [posebridge/outline_generator_lineart.py](posebridge/outline_generator_lineart.py) - 33KB
-- [daz_bone_select.py](daz_bone_select.py) - 267KB (!)
-
-**Note**: daz_bone_select.py at 267KB is unusually large and may benefit from refactoring into smaller modules.
+- [daz_bone_select.py](../daz_bone_select.py) - ~576KB (~11,400 lines)
+- [posebridge/outline_generator_lineart.py](../posebridge/outline_generator_lineart.py) - ~42KB
+- [posebridge/panel_ui.py](../posebridge/panel_ui.py) - ~41KB
+- [daz_shared_utils.py](../daz_shared_utils.py) - ~51KB

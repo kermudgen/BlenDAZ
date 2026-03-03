@@ -1,3 +1,23 @@
+
+import logging
+log = logging.getLogger(__name__)
+
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 Bone Utility Functions for DAZ Genesis 8/9 Characters
 
@@ -68,14 +88,14 @@ def get_ik_target_bone(armature, bone_name, silent=False):
     # Twist/roll bones - NO IK (causes noodle limbs)
     if is_twist_bone(bone_name):
         if not silent:
-            print(f"  Twist bone detected - IK disabled: {bone_name}")
+            log.info(f"  Twist bone detected - IK disabled: {bone_name}")
         return None
 
     # Pectoral bones - NO IK (shouldn't pull spine/chest)
     # These are breast/chest bones that should not create IK chains
     if is_pectoral(bone_name):
         if not silent:
-            print(f"  Pectoral bone detected - IK disabled: {bone_name}")
+            log.info(f"  Pectoral bone detected - IK disabled: {bone_name}")
         return None
 
     # Carpal/metacarpal bones → map to hand
@@ -99,7 +119,7 @@ def get_ik_target_bone(armature, bone_name, silent=False):
                 target = bone_name
 
         if target != bone_name and not silent:
-            print(f"  Mapping {bone_name} → {target} for IK")
+            log.info(f"  Mapping {bone_name} → {target} for IK")
         return target
 
     # Metatarsal bones → map to foot
@@ -123,7 +143,7 @@ def get_ik_target_bone(armature, bone_name, silent=False):
                 target = bone_name
 
         if target != bone_name and not silent:
-            print(f"  Mapping {bone_name} → {target} for IK")
+            log.info(f"  Mapping {bone_name} → {target} for IK")
         return target
 
     # Face bones → map to head
@@ -141,12 +161,12 @@ def get_ik_target_bone(armature, bone_name, silent=False):
             while current.parent:
                 parent_lower = current.parent.name.lower()
                 if 'head' in parent_lower and not any(kw in parent_lower for kw in face_keywords):
-                    print(f"  Mapping {bone_name} → {current.parent.name} for IK")
+                    log.info(f"  Mapping {bone_name} → {current.parent.name} for IK")
                     return current.parent.name
                 current = current.parent
 
         # Fallback - no IK for face bones if can't find head
-        print(f"  Face bone - no head found, IK disabled: {bone_name}")
+        log.info(f"  Face bone - no head found, IK disabled: {bone_name}")
         return None
 
     # Metatarsal bones → map to foot
@@ -159,7 +179,7 @@ def get_ik_target_bone(armature, bone_name, silent=False):
             target = bone_name
 
         if target != bone_name and not silent:
-            print(f"  Mapping {bone_name} → {target} for IK")
+            log.info(f"  Mapping {bone_name} → {target} for IK")
         return target
 
     # Toe bones → map to main toe bone (lToe/rToe)
@@ -172,7 +192,7 @@ def get_ik_target_bone(armature, bone_name, silent=False):
             target = bone_name
 
         if target != bone_name and not silent:
-            print(f"  Mapping {bone_name} → {target} for IK")
+            log.info(f"  Mapping {bone_name} → {target} for IK")
         return target
 
     # Use the bone itself for major bones

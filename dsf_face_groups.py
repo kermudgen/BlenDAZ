@@ -1,3 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 DSF Face Groups - Parse DAZ DSF geometry files for clean mesh zone detection.
 
@@ -12,6 +28,10 @@ import os
 from urllib.parse import unquote
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+
+import logging
+log = logging.getLogger(__name__)
+
 
 
 # ============================================================================
@@ -352,15 +372,15 @@ class FaceGroupManager:
         # Step 1: Resolve DSF path
         dsf_path = resolve_dsf_path(armature, mesh_obj)
         if not dsf_path:
-            print("  [FaceGroups] DSF file not found - using vertex weight fallback")
+            log.warning("  [FaceGroups] DSF file not found - using vertex weight fallback")
             return
 
-        print(f"  [FaceGroups] Parsing: {dsf_path}")
+        log.info(f"  [FaceGroups] Parsing: {dsf_path}")
 
         # Step 2: Parse DSF
         dsf_data = parse_dsf_face_groups(dsf_path)
         if not dsf_data:
-            print("  [FaceGroups] Failed to parse DSF file")
+            log.warning("  [FaceGroups] Failed to parse DSF file")
             return
 
         # Step 3: Validate polygon count
@@ -368,8 +388,8 @@ class FaceGroupManager:
         dsf_poly_count = dsf_data['polygon_count']
 
         if blender_poly_count != dsf_poly_count:
-            print(f"  [FaceGroups] Polygon count mismatch: Blender={blender_poly_count}, DSF={dsf_poly_count}")
-            print("  [FaceGroups] Mesh may have geografts merged or edits applied - using vertex weight fallback")
+            log.info(f"  [FaceGroups] Polygon count mismatch: Blender={blender_poly_count}, DSF={dsf_poly_count}")
+            log.info("  [FaceGroups] Mesh may have geografts merged or edits applied - using vertex weight fallback")
             return
 
         # Step 4: Build face_group_map
@@ -398,9 +418,9 @@ class FaceGroupManager:
         self._bvh_tree = BVHTree.FromPolygons(vertices, polygons)
 
         self.valid = True
-        print(f"  [FaceGroups] Loaded: {mapped_count}/{dsf_poly_count} polygons mapped to bones")
+        log.info(f"  [FaceGroups] Loaded: {mapped_count}/{dsf_poly_count} polygons mapped to bones")
         if unmapped_groups:
-            print(f"  [FaceGroups] Unmapped DSF groups (no matching bone): {sorted(unmapped_groups)}")
+            log.info(f"  [FaceGroups] Unmapped DSF groups (no matching bone): {sorted(unmapped_groups)}")
 
     @classmethod
     def get_or_create(cls, mesh_obj, armature):
@@ -440,7 +460,7 @@ class FaceGroupManager:
             cls._cache[ref_key] = ref_fgm
 
         if not ref_fgm.valid:
-            print("  [FaceGroups] Reference mesh has no valid face group data — remap aborted")
+            log.info("  [FaceGroups] Reference mesh has no valid face group data — remap aborted")
             return None
 
         ref_mesh = reference_mesh_obj.data
@@ -459,7 +479,7 @@ class FaceGroupManager:
             key = (round(center.x, 4), round(center.y, 4), round(center.z, 4))
             ref_center_map[key] = bone_name
 
-        print(f"  [FaceGroups] Reference map built: {len(ref_center_map)} mapped face centers")
+        log.info(f"  [FaceGroups] Reference map built: {len(ref_center_map)} mapped face centers")
 
         # Step 2: Build new face_group_map for live mesh by matching face centers
         new_map = [None] * len(live_mesh.polygons)
@@ -477,8 +497,8 @@ class FaceGroupManager:
 
         total = len(live_mesh.polygons)
         new_polys = total - len(ref_mesh.polygons)
-        print(f"  [FaceGroups] Remap complete: {matched}/{total} polygons mapped "
-              f"({new_polys} new geograft polygons left unmapped — expected)")
+        log.info(f"  [FaceGroups] Remap complete: {matched}/{total} polygons mapped "
+                 f"({new_polys} new geograft polygons left unmapped — expected)")
 
         # Step 3: Construct a FaceGroupManager with the remapped data
         instance = cls.__new__(cls)
@@ -492,7 +512,7 @@ class FaceGroupManager:
         # Cache under live mesh key so rest of system uses it transparently
         live_key = (live_mesh_obj.data.name, len(live_mesh.polygons))
         cls._cache[live_key] = instance
-        print(f"  [FaceGroups] Cached remapped FaceGroupManager for '{live_mesh_obj.name}'")
+        log.info(f"  [FaceGroups] Cached remapped FaceGroupManager for '{live_mesh_obj.name}'")
         return instance
 
     @classmethod

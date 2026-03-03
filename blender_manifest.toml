@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "blendaz"
+version = "1.0.0"
+name = "BlenDAZ"
+tagline = "Visual posing tools for DAZ Genesis 8/9 characters"
+maintainer = "Joshua D Rother <josh@azra.ai>"
+type = "add-on"
+
+blender_version_min = "5.0.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Joshua D Rother"]
+
+website = "https://github.com/jrother/BlenDAZ"
+
+tags = ["Rigging", "Animation"]
+
+# No special permissions needed — BlenDAZ operates entirely within the Blender scene.
+# No network, filesystem, clipboard, camera, or microphone access required.

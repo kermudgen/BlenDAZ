@@ -10,15 +10,15 @@ Blender is technically powerful but its interface can overwhelm visually-oriente
 
 BlenDAZ is a collection of Blender addons for working with DAZ Studio characters (Genesis 8/9) in Blender. It improves the posing workflow for characters imported via the Diffeomorphic DAZ Importer.
 
-**Tech Stack**: Python 3.x, Blender 3.x+ API (bpy), GPU viewport rendering. Requires Diffeomorphic DAZ Importer.
+**Tech Stack**: Python 3.x, Blender 5.0+ API (bpy), GPU viewport rendering. Requires Diffeomorphic DAZ Importer (v5 recommended).
 
 ## Quick File Lookup
 
 **See [docs/INDEX.md](docs/INDEX.md) for complete reference.** Key files:
 - Bone selection, IK, modal interaction → [daz_bone_select.py](daz_bone_select.py)
 - Shared utilities (rotation, limits, CPs) → [daz_shared_utils.py](daz_shared_utils.py)
-- Visual posing editor → [projects/posebridge/](projects/posebridge/)
-- Pose blending → [projects/poseblend/](projects/poseblend/)
+- Visual posing editor → [posebridge/](posebridge/)
+- Pose blending → [poseblend/](poseblend/)
 - All docs → [docs/](docs/)
 
 ## Running / Testing
@@ -104,9 +104,7 @@ Update [SESSION_START.md](SESSION_START.md) with current state and what's next (
 
 ## Current Focus
 
-**Phase 4 — Multi-Character Support.** See [docs/TODO.md](docs/TODO.md) Phase 4 and [SESSION_START.md](SESSION_START.md) for detailed status.
-
-**Roadmap**: Phase 1 ✅ → Phase 2 (gestures) → Phase 3 (detail panels) → **Phase 4 (current)** → Phase 5 (polish)
+**Release preparation.** All core features complete. Pre-release code cleanup done (relative imports, logging, LICENSE, manifest, version numbers). ZIP packaged for install testing. See [SESSION_START.md](SESSION_START.md) for detailed status and remaining checklist items.
 
 ## Questions to Ask Before Making Changes
 

@@ -1,3 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Joshua D Rother
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 """
 IK Rig Templates for DAZ Genesis 8/9 Characters
 
@@ -8,6 +24,10 @@ Extracted from daz_bone_select.py for maintainability.
 """
 
 from mathutils import Vector
+
+import logging
+log = logging.getLogger(__name__)
+
 
 
 # ============================================================================
@@ -185,7 +205,7 @@ def calculate_pole_position(template, posed_positions, daz_bones, clicked_bone_w
             break
 
     if not reference_bone or reference_bone.name not in posed_positions:
-        print(f"  ⚠️  Pole reference bone not found: {reference_pattern}")
+        log.warning(f"  ⚠️  Pole reference bone not found: {reference_pattern}")
         return None
 
     if method == 'perpendicular_to_line':
@@ -202,7 +222,7 @@ def calculate_pole_position(template, posed_positions, daz_bones, clicked_bone_w
                     break
 
         if not chain_start_world:
-            print(f"  ⚠️  Chain start not found for pole calculation")
+            log.warning(f"  ⚠️  Chain start not found for pole calculation")
             return None
 
         # Detect if this is a leg or arm chain
@@ -226,7 +246,7 @@ def calculate_pole_position(template, posed_positions, daz_bones, clicked_bone_w
         pole_world_head = clicked_bone_world_tail + pole_offset
         pole_world_tail = pole_world_head + pole_offset.normalized() * 0.05  # 5cm for visibility
 
-        print(f"  ✓ Calculated pole position: {pole_world_head} (method: target_relative, dist: {pole_distance:.3f}m)")
+        log.debug(f"  ✓ Calculated pole position: {pole_world_head} (method: target_relative, dist: {pole_distance:.3f}m)")
         return (pole_world_head, pole_world_tail)
 
     return None
