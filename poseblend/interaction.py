@@ -102,7 +102,7 @@ class POSEBLEND_OT_interact(Operator):
 
         # --- Mid-interaction: always handle regardless of cursor position ---
         if self._state in (InteractionState.PREVIEWING, InteractionState.DRAGGING_DOT):
-            if event.type == 'MOUSEMOVE':
+            if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
                 self.update_cursor(context, event)
                 if self._state == InteractionState.PREVIEWING:
                     self.update_preview(context)
@@ -121,7 +121,7 @@ class POSEBLEND_OT_interact(Operator):
 
         # --- Panning: MMB drag ---
         if self._state == InteractionState.PANNING:
-            if event.type == 'MOUSEMOVE':
+            if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
                 self.update_pan(context, event)
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
@@ -137,12 +137,12 @@ class POSEBLEND_OT_interact(Operator):
 
         # Not over grid → pass everything through to Blender
         if not over_grid:
-            if event.type == 'MOUSEMOVE':
+            if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
                 context.area.tag_redraw()
             return {'PASS_THROUGH'}
 
         # Over grid — handle grid-specific events
-        if event.type == 'MOUSEMOVE':
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             self.update_cursor(context, event)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}

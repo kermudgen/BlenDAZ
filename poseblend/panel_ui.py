@@ -324,10 +324,6 @@ class POSEBLEND_OT_activate(Operator):
         PoseBlendDrawHandler._target_area_ptr = context.area.as_pointer()
         PoseBlendDrawHandler.register_handler()
 
-        # Setup viewport
-        from .viewport_setup import setup_poseblend_viewport
-        setup_poseblend_viewport(context)
-
         # Auto-select armature if one is selected
         if context.active_object and context.active_object.type == 'ARMATURE':
             settings.active_armature_name = context.active_object.name
@@ -357,10 +353,6 @@ class POSEBLEND_OT_deactivate(Operator):
         from .drawing import PoseBlendDrawHandler
         PoseBlendDrawHandler._target_area_ptr = None
         PoseBlendDrawHandler.unregister_handler()
-
-        # Restore viewport
-        from .viewport_setup import restore_viewport
-        restore_viewport(context)
 
         self.report({'INFO'}, "PoseBlend deactivated")
         context.area.tag_redraw()

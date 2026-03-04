@@ -231,6 +231,9 @@ def prepare_rig_for_ik(armature, force=False):
     if skipped_bones:
         log.debug(f"  [RIG PREP] Kept {len(skipped_bones)} bones in Euler (have rotation drivers): "
                   f"{', '.join(skipped_bones[:10])}{'...' if len(skipped_bones) > 10 else ''}")
+    if restored_bones:
+        log.info(f"  [RIG PREP] Restored {restored_count} bones back to Euler: "
+                 f"{', '.join(restored_bones[:10])}{'...' if len(restored_bones) > 10 else ''}")
 
     _prepared_armatures.add(armature_id)
     return converted_count
@@ -2118,6 +2121,17 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if getattr(self, '_should_stop', False):
             return {'CANCELLED'}
 
+        try:
+            return self._modal_inner(context, event)
+        except Exception as _modal_exc:
+            import traceback
+            print(f"\n[BlenDAZ] MODAL EXCEPTION (non-fatal, staying alive):")
+            traceback.print_exc()
+            return {'PASS_THROUGH'}
+
+    def _modal_inner(self, context, event):
+        """Inner modal logic — wrapped by modal() for crash protection"""
+
         # Clear tooltip on any mouse button press
         if event.type in {'LEFTMOUSE', 'RIGHTMOUSE', 'MIDDLEMOUSE'} and event.value == 'PRESS':
             if self._tooltip_text:
@@ -2144,7 +2158,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         # Double-click on non-registered rig/mesh → drops to OBJECT mode.
         # Click on registered DAZ character → re-acquire and resume BlenDAZ control.
         if self._just_selected_armature:
-            if event.type == 'MOUSEMOVE':
+            if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
                 # Still run hover check so we detect when mouse is over a registered character
                 self.check_hover(context, event)
                 return {'PASS_THROUGH'}
@@ -2245,7 +2259,7 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # so that post-release CLICK events are still consumed
             return {'RUNNING_MODAL'}
 
-        if event.type == 'MOUSEMOVE':
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             # Clear RMB suppression flag after mouse movement (safe: any CLICK already consumed)
             if self._right_click_used_for_drag and not self._is_rotating:
                 self._right_click_used_for_drag = False
@@ -2307,10 +2321,25 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             evt_area, evt_region, evt_rv3d, evt_space, evt_local = \
                 self._resolve_event_viewport(context, event)
 
-            # Detect if click is in the PB viewport (camera name starts with PB_Camera_)
+            # Detect if click is in the PB viewport (CAMERA mode + PB_Camera_* name).
+            # Must check BOTH: space.camera can reference a PB camera even when the
+            # viewport is in PERSP mode (Blender keeps the last-used camera object).
             click_in_pb_viewport = False
             if evt_space and hasattr(evt_space, 'camera') and evt_space.camera:
-                click_in_pb_viewport = evt_space.camera.name.startswith('PB_Camera_')
+                _cam_name = evt_space.camera.name
+                _is_cam_view = (evt_space.region_3d and
+                                evt_space.region_3d.view_perspective == 'CAMERA')
+                click_in_pb_viewport = _is_cam_view and _cam_name.startswith('PB_Camera_')
+
+            # PoseBlend active + Shift+LMB: pass through so PoseBlend's modal can
+            # handle dot creation/dragging in the main viewport overlay.
+            if event.shift and hasattr(context.scene, 'poseblend_settings'):
+                pb_settings = context.scene.poseblend_settings
+                if pb_settings.is_active:
+                    self._mouse_down_pos = None
+                    self._accumulated_drag_distance = 0.0
+                    self._last_detection_mouse_pos = None
+                    return {'PASS_THROUGH'}
 
             # Pass through if clicking on UI regions (header, toolbar, N-panel, etc.)
             # Check against the RESOLVED area's non-WINDOW regions, not the modal's.
@@ -2346,11 +2375,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             is_double_click = False
             if self._last_click_time > 0:
                 time_delta = current_time - self._last_click_time
-                if time_delta < 0.3 and self._last_click_pos:  # Within 300ms
-                    # Check if clicks are close in position (within 5 pixels)
+                if time_delta < 0.5 and self._last_click_pos:  # Within 500ms
+                    # Check if clicks are close in position (within 15 pixels)
                     pos_delta = ((current_pos[0] - self._last_click_pos[0])**2 +
                                 (current_pos[1] - self._last_click_pos[1])**2)**0.5
-                    if pos_delta < 5:
+                    if pos_delta < 15:
                         is_double_click = True
 
             # Update click tracking
@@ -2459,6 +2488,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     # for the now-active character — lets the click continue into drag.
                     self.check_hover(context, event)
 
+            # PoseBlend viewport: pass through all clicks so PoseBlend's modal handles them
+            if click_in_pb_viewport and not self._hover_from_posebridge:
+                self._mouse_down_pos = None
+                self._accumulated_drag_distance = 0.0
+                self._last_detection_mouse_pos = None
+                return {'PASS_THROUGH'}
+
             # Only handle click if we're hovering over a bone or a PoseBridge morph CP
             # (morph CPs have _hover_bone_name=None to suppress mesh highlighting)
             if not self._hover_armature or (not self._hover_bone_name and not self._hover_from_posebridge):
@@ -2525,19 +2561,19 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             # Also skip for cross-viewport hovers (already raycast-verified)
             if not self._hover_from_posebridge and not getattr(self, '_hover_from_crossviewport', False):
                 # Do a fresh raycast to verify we hit mesh (not clicking through to background)
-                region = context.region
+                # Use resolved viewport (evt_region/evt_rv3d), NOT context.region which may
+                # point to the wrong area when the modal's context doesn't match the click.
+                click_region = evt_region if evt_region else context.region
+                click_rv3d = evt_rv3d if evt_rv3d else (
+                    context.space_data.region_3d if context.space_data and context.space_data.type == 'VIEW_3D' else None)
 
-                # Safety check: ensure we're in a 3D viewport with valid region
-                if not region or not context.space_data or context.space_data.type != 'VIEW_3D':
+                # Safety check: ensure we have valid region data
+                if not click_region or not click_rv3d:
                     return {'PASS_THROUGH'}
 
-                rv3d = context.space_data.region_3d
-                if not rv3d:
-                    return {'PASS_THROUGH'}
-
-                coord = (event.mouse_region_x, event.mouse_region_y)
-                view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-                ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+                coord = evt_local if evt_region else (event.mouse_region_x, event.mouse_region_y)
+                view_vector = view3d_utils.region_2d_to_vector_3d(click_region, click_rv3d, coord)
+                ray_origin = view3d_utils.region_2d_to_origin_3d(click_region, click_rv3d, coord)
 
                 # Verify click hits mesh using scene raycast (depsgraph-aware,
                 # sees deformed/posed geometry — individual obj.ray_cast uses
@@ -9796,7 +9832,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 armature[prop_name] = value
                 armature.keyframe_insert(data_path=f'["{prop_name}"]', frame=frame)
                 log.debug(f"  Restored: {prop_name} = {value:.3f}")
-            context.view_layer.update()
+            # Force driver re-evaluation so morphs visually update immediately
+            armature.update_tag()
+            context.view_layer.depsgraph.update()
             self.report({'INFO'}, f"Undone: Restored {len(morph_data)} morph values")
             log.info(f"  ✓ Morph undo complete")
             return
