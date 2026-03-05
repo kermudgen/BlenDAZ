@@ -79,7 +79,8 @@ def apply_streamline(enabled,
                      disable_modifiers=True,
                      disable_physics=True,
                      disable_normals_auto_smooth=True,
-                     blender_simplify=True):
+                     blender_simplify=True,
+                     mute_armature_meshes=True):
     """Apply or remove streamline settings across all registered characters.
 
     Args:
@@ -90,6 +91,7 @@ def apply_streamline(enabled,
         disable_physics:  Disable rigid-body world.
         disable_normals_auto_smooth:  Disable 'Smooth by Angle' GN modifier.
         blender_simplify:  Toggle Blender's built-in render.use_simplify.
+        mute_armature_meshes:  Hide selected child meshes and disable their Armature modifier.
 
     Returns:
         Dict of counts for each category.
@@ -101,6 +103,7 @@ def apply_streamline(enabled,
         'modifiers': 0,
         'normals': 0,
         'physics': 0,
+        'meshes': 0,
     }
 
     # --- Blender built-in simplify ---
@@ -159,6 +162,24 @@ def apply_streamline(enabled,
                     if _is_smooth_by_angle(mod):
                         mod.show_viewport = not mute
                         counts['normals'] += 1
+
+        # --- High-poly mesh hiding + Armature modifier muting ---
+        if mute_armature_meshes:
+            settings = bpy.context.scene.posebridge_settings
+            slot = None
+            for s in settings.blendaz_characters:
+                if s.armature_name == armature.name:
+                    slot = s
+                    break
+            if slot:
+                muted_names = set(slot.get_muted_meshes_list())
+                for mesh_obj in meshes:
+                    if mesh_obj.name in muted_names:
+                        mesh_obj.hide_viewport = mute
+                        for mod in mesh_obj.modifiers:
+                            if mod.type == 'ARMATURE':
+                                mod.show_viewport = not mute
+                        counts['meshes'] += 1
 
     state = "ON" if enabled else "OFF"
     parts = [f"{v} {k}" for k, v in counts.items() if v > 0]

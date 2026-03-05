@@ -3511,6 +3511,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if cam:
                     space.camera = cam
 
+        # 10. Face mode local view: re-isolate new character in PB viewport
+        if (active_panel == 'face'
+                and len(settings.blendaz_characters) > 1
+                and pb_area_sw and pb_space_sw):
+            self._refresh_face_local_view(
+                context, settings, new_slot, pb_space_sw, pb_area_sw)
+
         log.info(f"=== Switched to {target_armature_name} ===\n")
         return True
 
@@ -3783,6 +3790,75 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                         if cam and cam.name.startswith('PB_Camera_'):
                             return area, sp
         return None, None
+
+    @staticmethod
+    def _refresh_face_local_view(context, settings, new_slot, pb_space, pb_area):
+        """Exit old local view and re-enter with the new character's objects.
+
+        Called during character switch while in Face mode so the PB viewport
+        shows only the newly-selected character.
+        """
+        # Find the WINDOW region for temp_override
+        region = None
+        for r in pb_area.regions:
+            if r.type == 'WINDOW':
+                region = r
+                break
+        if not region:
+            return
+
+        # Exit existing local view if active
+        if pb_space.local_view:
+            with context.temp_override(area=pb_area, region=region):
+                bpy.ops.view3d.localview(frame_selected=False)
+
+        # Collect new character's objects
+        armature = bpy.data.objects.get(new_slot.armature_name)
+        if not armature:
+            return
+        char_objs = {armature}
+        for child in armature.children:
+            char_objs.add(child)
+        cam_name = new_slot.camera_face
+        if cam_name:
+            cam = bpy.data.objects.get(cam_name)
+            if cam:
+                char_objs.add(cam)
+
+        # Save selection, select only new character objects
+        saved_sel = context.selected_objects[:]
+        saved_active = context.view_layer.objects.active
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in char_objs:
+            obj.select_set(True)
+        context.view_layer.objects.active = armature
+
+        # Enter local view
+        with context.temp_override(area=pb_area, region=region):
+            bpy.ops.view3d.localview(frame_selected=False)
+
+        # Restore selection
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in saved_sel:
+            try:
+                obj.select_set(True)
+            except ReferenceError:
+                pass
+        if saved_active:
+            try:
+                context.view_layer.objects.active = saved_active
+            except ReferenceError:
+                pass
+
+        # Re-ensure camera mode (localview may have snapped out)
+        rv3d = pb_space.region_3d
+        if rv3d:
+            cam = bpy.data.objects.get(cam_name) if cam_name else None
+            if cam:
+                pb_space.camera = cam
+                rv3d.view_perspective = 'CAMERA'
 
     @staticmethod
     def _find_main_viewport(context):

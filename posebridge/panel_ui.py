@@ -27,7 +27,7 @@ Panel hierarchy (all in bl_category='DAZ'):
 """
 
 import bpy
-from bpy.types import Panel, Operator
+from bpy.types import Panel, Operator, PropertyGroup
 
 import logging
 log = logging.getLogger(__name__)
@@ -386,18 +386,95 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         # Fallback to legacy
         return self.CAMERAS_LEGACY.get(view)
 
+    def _enter_face_local_view(self, context, settings, pb_space, pb_area):
+        """Enter local view in PB viewport to isolate the active character."""
+        # Already in local view — skip
+        if pb_space.local_view:
+            return
+        idx = settings.blendaz_active_index
+        if idx < 0 or idx >= len(settings.blendaz_characters):
+            return
+        slot = settings.blendaz_characters[idx]
+        armature = bpy.data.objects.get(slot.armature_name)
+        if not armature:
+            return
+
+        # Collect objects that belong to the active character
+        char_objs = {armature}
+        for child in armature.children:
+            char_objs.add(child)
+        # Include the face camera so camera view stays valid
+        cam_name = slot.camera_face
+        if cam_name:
+            cam = bpy.data.objects.get(cam_name)
+            if cam:
+                char_objs.add(cam)
+
+        # Save current selection, select only character objects
+        saved_sel = context.selected_objects[:]
+        saved_active = context.view_layer.objects.active
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in char_objs:
+            obj.select_set(True)
+        context.view_layer.objects.active = armature
+
+        # Enter local view in the PB viewport
+        region = None
+        for r in pb_area.regions:
+            if r.type == 'WINDOW':
+                region = r
+                break
+        if region:
+            with context.temp_override(area=pb_area, region=region):
+                bpy.ops.view3d.localview(frame_selected=False)
+
+        # Restore selection
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in saved_sel:
+            try:
+                obj.select_set(True)
+            except ReferenceError:
+                pass
+        if saved_active:
+            try:
+                context.view_layer.objects.active = saved_active
+            except ReferenceError:
+                pass
+
+    def _exit_face_local_view(self, context, pb_space, pb_area):
+        """Exit local view in PB viewport when leaving Face mode."""
+        if not pb_space.local_view:
+            return
+        region = None
+        for r in pb_area.regions:
+            if r.type == 'WINDOW':
+                region = r
+                break
+        if region:
+            with context.temp_override(area=pb_area, region=region):
+                bpy.ops.view3d.localview(frame_selected=False)
+
     def execute(self, context):
         settings = context.scene.posebridge_settings
         previous_panel = settings.active_panel
         settings.active_panel = self.view
 
+        show_body  = (self.view == 'body')
+        show_hands = (self.view == 'hands')
+        show_face  = (self.view == 'face')
+
         # Switch camera in the PB viewport (not whichever viewport the N-panel is in).
-        # This prevents leaking PB cameras to the main 3D viewport when the user
-        # clicks Hands/Face in the main viewport's N-panel.
         pb_space, pb_r3d, pb_area = _find_pb_viewport(context)
         # Fall back to context.space_data for first-time setup (no PB viewport yet)
         space = pb_space if pb_space else context.space_data
         r3d = pb_r3d if pb_r3d else (space.region_3d if space and space.type == 'VIEW_3D' else None)
+
+        # Exit face local view BEFORE switching camera (so body/hands
+        # cameras become visible in the viewport again).
+        if pb_space and pb_area and previous_panel == 'face' and not show_face:
+            self._exit_face_local_view(context, pb_space, pb_area)
 
         if space and space.type == 'VIEW_3D' and r3d:
             # Save state of the view we're leaving
@@ -418,12 +495,7 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
                     r3d.view_camera_offset = saved_offset
                     r3d.view_camera_zoom = saved_zoom
 
-        # Toggle object visibility
-        show_body  = (self.view == 'body')
-        show_hands = (self.view == 'hands')
-        show_face  = (self.view == 'face')
-
-        # Get active character's char_tag for per-character hand object matching
+        # Toggle PB object visibility
         active_char_tag = None
         if hasattr(settings, 'blendaz_characters'):
             idx = settings.blendaz_active_index
@@ -435,17 +507,28 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
             if any(s in name for s in self.BODY_OBJECTS):
                 obj.hide_viewport = not show_body
             elif any(s in name for s in self.HANDS_SUBSTR):
-                # Only show the ACTIVE character's hands
                 is_active_hands = (not active_char_tag or active_char_tag in name
                                    or name in ('PB_Hand_Left', 'PB_Hand_Right'))
                 obj.hide_viewport = not (show_hands and is_active_hands)
 
         # Face panel: hide all PB_ objects (standin, outlines, hand meshes)
-        # Character mesh stays visible for live face preview
         if show_face:
             for obj in context.scene.objects:
                 if obj.name.startswith('PB_') and obj.type != 'CAMERA':
                     obj.hide_viewport = True
+
+        # Enter face local view AFTER camera is set (so the face camera is
+        # included in the local view). Only needed with multiple characters.
+        if pb_space and pb_area and show_face:
+            if hasattr(settings, 'blendaz_characters') and len(settings.blendaz_characters) > 1:
+                self._enter_face_local_view(context, settings, pb_space, pb_area)
+                # Re-ensure camera mode — localview may snap out of it
+                if space and space.type == 'VIEW_3D' and r3d:
+                    camera_name = self._get_camera_name(context, self.view)
+                    camera = bpy.data.objects.get(camera_name) if camera_name else None
+                    if camera:
+                        space.camera = camera
+                        r3d.view_perspective = 'CAMERA'
 
         # Redraw both the invoking area and the PB area (may differ)
         if context.area:
@@ -787,6 +870,17 @@ class VIEW3D_PT_touch(Panel):
                 col.prop(settings, "streamline_modifiers")
                 col.prop(settings, "streamline_physics")
                 col.prop(settings, "streamline_normals")
+                col.prop(settings, "streamline_meshes")
+            # Select Meshes always available (configure before enabling)
+            if len(settings.blendaz_characters) > 0:
+                row = box.row(align=True)
+                row.operator("blendaz.select_streamline_meshes",
+                             text="Select Meshes...", icon='MESH_DATA')
+                idx = settings.blendaz_active_index
+                if 0 <= idx < len(settings.blendaz_characters):
+                    muted = settings.blendaz_characters[idx].get_muted_meshes_list()
+                    if muted:
+                        row.label(text=f"({len(muted)})")
 
 
 # ----------------------------------------------------------------------------
@@ -973,10 +1067,127 @@ class VIEW3D_PT_posebridge_settings(Panel):
 
 
 # ============================================================================
+# Streamline Mesh Selection
+# ============================================================================
+
+class STREAMLINE_MeshItem(PropertyGroup):
+    """Single mesh entry for the Streamline mesh selection popup."""
+    mesh_name: bpy.props.StringProperty(default="")
+    vertex_count: bpy.props.IntProperty(default=0)
+    selected: bpy.props.BoolProperty(default=False)
+
+
+class BLENDAZ_OT_select_streamline_meshes(Operator):
+    """Select which child meshes to hide during Streamline"""
+    bl_idname = "blendaz.select_streamline_meshes"
+    bl_label = "Select Meshes to Mute"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    mesh_items: bpy.props.CollectionProperty(type=STREAMLINE_MeshItem)
+
+    # Meshes with vertex count >= this are pre-checked on first use
+    _AUTO_CHECK_THRESHOLD = 5000
+
+    def invoke(self, context, event):
+        self.mesh_items.clear()
+
+        settings = context.scene.posebridge_settings
+        idx = settings.blendaz_active_index
+        if idx < 0 or idx >= len(settings.blendaz_characters):
+            self.report({'WARNING'}, "No active character")
+            return {'CANCELLED'}
+
+        slot = settings.blendaz_characters[idx]
+        armature = bpy.data.objects.get(slot.armature_name)
+        if not armature:
+            self.report({'WARNING'}, f"Armature '{slot.armature_name}' not found")
+            return {'CANCELLED'}
+
+        body_mesh_name = slot.body_mesh_name
+        existing_selection = set(slot.get_muted_meshes_list())
+        has_existing = len(existing_selection) > 0
+
+        # Scan child meshes (exclude internal BlenDAZ copies)
+        _EXCLUDE_SUFFIXES = ('_Standin', '_LineArt_Copy', '_LineArt')
+        children = [
+            c for c in armature.children
+            if c.type == 'MESH' and not c.name.endswith(_EXCLUDE_SUFFIXES)
+        ]
+
+        # Sort: body mesh first, then by vertex count descending
+        children.sort(key=lambda c: (c.name != body_mesh_name, -len(c.data.vertices)))
+
+        for child in children:
+            item = self.mesh_items.add()
+            item.mesh_name = child.name
+            item.vertex_count = len(child.data.vertices)
+
+            if has_existing:
+                item.selected = child.name in existing_selection
+            else:
+                # First time: auto-check non-body meshes above threshold
+                is_body = (child.name == body_mesh_name)
+                item.selected = (not is_body
+                                 and item.vertex_count >= self._AUTO_CHECK_THRESHOLD)
+
+        return context.window_manager.invoke_props_dialog(self, width=400)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Select meshes to hide during Streamline:", icon='MOD_SIMPLIFY')
+        layout.separator()
+
+        settings = context.scene.posebridge_settings
+        idx = settings.blendaz_active_index
+        body_name = ""
+        if 0 <= idx < len(settings.blendaz_characters):
+            body_name = settings.blendaz_characters[idx].body_mesh_name
+
+        col = layout.column(align=True)
+        for item in self.mesh_items:
+            row = col.row(align=True)
+            row.prop(item, "selected", text="")
+            label = item.mesh_name
+            if item.mesh_name == body_name:
+                label += "  [BODY]"
+            row.label(text=f"{label}  ({item.vertex_count:,} verts)")
+
+    def execute(self, context):
+        settings = context.scene.posebridge_settings
+        idx = settings.blendaz_active_index
+        if idx < 0 or idx >= len(settings.blendaz_characters):
+            return {'CANCELLED'}
+
+        slot = settings.blendaz_characters[idx]
+        selected_names = [item.mesh_name for item in self.mesh_items if item.selected]
+        slot.set_muted_meshes_list(selected_names)
+
+        self.report({'INFO'}, f"Streamline: {len(selected_names)} meshes selected for muting")
+
+        # If Streamline is currently engaged, re-apply immediately
+        if settings.streamline_enabled:
+            from .streamline import apply_streamline
+            apply_streamline(
+                True,
+                mute_drivers=settings.streamline_drivers,
+                mute_shape_keys=settings.streamline_shape_keys,
+                disable_modifiers=settings.streamline_modifiers,
+                disable_physics=settings.streamline_physics,
+                disable_normals_auto_smooth=settings.streamline_normals,
+                blender_simplify=settings.streamline_blender_simplify,
+                mute_armature_meshes=settings.streamline_meshes,
+            )
+
+        return {'FINISHED'}
+
+
+# ============================================================================
 # Registration
 # ============================================================================
 
 classes = (
+    STREAMLINE_MeshItem,
+    BLENDAZ_OT_select_streamline_meshes,
     BLENDAZ_OT_switch_character,
     BLENDAZ_OT_scan_characters,
     BLENDAZ_OT_register_character,

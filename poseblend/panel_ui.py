@@ -18,6 +18,7 @@
 
 import bpy
 from bpy.types import Panel, Operator, UIList
+from .presets import get_available_morph_categories, get_available_custom_morph_cats
 
 
 
@@ -236,6 +237,90 @@ class VIEW3D_PT_poseblend_io(Panel):
         col = layout.column(align=True)
         col.operator("poseblend.export_grid", text="Export Grid", icon='EXPORT')
         col.operator("poseblend.import_grid", text="Import Grid", icon='IMPORT')
+
+
+# ============================================================================
+# Morph Categories Panel
+# ============================================================================
+
+class VIEW3D_PT_poseblend_morphs(Panel):
+    """Morph category selection for PoseBlend grids"""
+    bl_label = "Morph Categories"
+    bl_idname = "VIEW3D_PT_poseblend_morphs"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'DAZ'
+    bl_parent_id = "VIEW3D_PT_poseblend_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        settings = getattr(context.scene, 'poseblend_settings', None)
+        if not settings or not settings.is_active:
+            return False
+        return settings.get_active_grid() is not None
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if not grid:
+            return
+
+        armature = bpy.data.objects.get(grid.armature_name)
+        if not armature:
+            armature = bpy.data.objects.get(settings.active_armature_name)
+        if not armature:
+            layout.label(text="No armature selected", icon='INFO')
+            return
+
+        # Standard categories
+        available = get_available_morph_categories(armature)
+        custom_cats = get_available_custom_morph_cats(armature)
+
+        if not available and not custom_cats:
+            layout.label(text="No morphs loaded", icon='INFO')
+            return
+
+        if available:
+            col = layout.column(align=True)
+            col.label(text="Standard:", icon='SHAPEKEY_DATA')
+            for cat_key, display_name, count in available:
+                prop_name = f'morph_{cat_key}'
+                col.prop(grid, prop_name, text=f"{display_name} ({count})")
+
+        # Custom morph categories (DazMorphCats — dynamic per character)
+        if custom_cats:
+            layout.separator()
+            col = layout.column(align=True)
+            col.label(text="Custom:", icon='MODIFIER')
+            selected = grid.get_custom_cats_list()
+            for cat_name, count in custom_cats:
+                is_on = cat_name in selected
+                icon = 'CHECKBOX_HLT' if is_on else 'CHECKBOX_DEHLT'
+                op = col.operator(
+                    "poseblend.toggle_custom_morph_cat",
+                    text=f"{cat_name} ({count})",
+                    icon=icon,
+                    depress=is_on
+                )
+                op.category_name = cat_name
+
+
+class POSEBLEND_OT_toggle_custom_morph_cat(Operator):
+    """Toggle a custom morph category for the active grid"""
+    bl_idname = "poseblend.toggle_custom_morph_cat"
+    bl_label = "Toggle Custom Morph Category"
+    bl_options = {'INTERNAL'}
+
+    category_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if grid:
+            grid.toggle_custom_cat(self.category_name)
+        return {'FINISHED'}
 
 
 # ============================================================================
@@ -490,6 +575,8 @@ classes = (
     VIEW3D_PT_poseblend_dots,
     VIEW3D_PT_poseblend_settings,
     VIEW3D_PT_poseblend_io,
+    VIEW3D_PT_poseblend_morphs,
+    POSEBLEND_OT_toggle_custom_morph_cat,
     POSEBLEND_UL_grids,
     POSEBLEND_UL_dots,
     POSEBLEND_OT_activate,

@@ -316,6 +316,57 @@ def blend_quaternions(weighted_quats):
 
 
 # ============================================================================
+# Morph Capture / Apply / Blend
+# ============================================================================
+
+def capture_morphs(armature, morph_names):
+    """Capture current morph values from armature custom properties.
+
+    Args:
+        armature: Armature object
+        morph_names: List of morph property names to capture
+
+    Returns:
+        Dict of {morph_name: float_value}
+    """
+    morphs = {}
+    for name in morph_names:
+        val = armature.get(name)
+        if isinstance(val, (int, float)):
+            morphs[name] = float(val)
+    return morphs
+
+
+def apply_morphs(armature, morph_dict):
+    """Apply morph values to armature custom properties.
+
+    Args:
+        armature: Armature object
+        morph_dict: Dict of {morph_name: float_value}
+    """
+    for name, value in morph_dict.items():
+        if name in armature:
+            armature[name] = value
+    armature.update_tag()
+
+
+def blend_morphs(weighted_morph_dicts):
+    """Weighted blend of morph values from multiple dots.
+
+    Args:
+        weighted_morph_dicts: List of (morph_dict, weight) tuples
+
+    Returns:
+        Blended morph_dict {name: float}
+    """
+    result = {}
+    for morph_dict, weight in weighted_morph_dicts:
+        for name, value in morph_dict.items():
+            result[name] = result.get(name, 0.0) + value * weight
+    return result
+
+
+# ============================================================================
 # Keyframing
 # ============================================================================
 

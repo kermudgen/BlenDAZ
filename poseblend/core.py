@@ -132,6 +132,14 @@ class PoseBlendDot(PropertyGroup):
         max=1.0
     )
 
+    # Morph data - stored as JSON string
+    # Format: {"morph_prop_name": float_value, ...}
+    morph_values: StringProperty(
+        name="Morph Values",
+        description="JSON-encoded morph property values",
+        default="{}"
+    )
+
     # Metadata
     created_time: StringProperty(
         name="Created",
@@ -184,6 +192,17 @@ class PoseBlendDot(PropertyGroup):
         if bone_name in locations:
             return locations[bone_name]  # [x, y, z]
         return None
+
+    def get_morphs_dict(self):
+        """Parse morph_values JSON to dict"""
+        try:
+            return json.loads(self.morph_values)
+        except json.JSONDecodeError:
+            return {}
+
+    def set_morphs_dict(self, morphs):
+        """Serialize morphs dict to JSON"""
+        self.morph_values = json.dumps(morphs)
 
     def get_custom_mask_list(self):
         """Parse custom mask JSON to list"""
@@ -284,6 +303,25 @@ class PoseBlendGrid(PropertyGroup):
         default='HEAD'
     )
 
+    # Morph category toggles (which Diffeomorphic morph groups to capture/blend)
+    morph_facs: BoolProperty(name="FACS", default=False)
+    morph_facs_detail: BoolProperty(name="FACS Detail", default=False)
+    morph_facs_expr: BoolProperty(name="FACS Expr", default=False)
+    morph_expressions: BoolProperty(name="Expressions", default=False)
+    morph_visemes: BoolProperty(name="Visemes", default=False)
+    morph_body: BoolProperty(name="Body", default=False)
+    morph_units: BoolProperty(name="Units", default=False)
+    morph_head: BoolProperty(name="Head Morphs", default=False)
+    morph_custom: BoolProperty(name="Custom", default=False)
+
+    # Dynamic custom morph categories (from DazMorphCats)
+    # JSON list of selected category names, e.g. ["Geograft Controls", "Custom JCMs"]
+    morph_custom_cats: StringProperty(
+        name="Custom Morph Categories",
+        description="JSON list of selected DazMorphCats category names",
+        default="[]"
+    )
+
     # Visual settings
     background_color: FloatVectorProperty(
         name="Background",
@@ -311,6 +349,29 @@ class PoseBlendGrid(PropertyGroup):
     )
 
     # --- Helper Methods ---
+
+    def get_custom_cats_list(self):
+        """Parse morph_custom_cats JSON to list of category names"""
+        try:
+            return json.loads(self.morph_custom_cats)
+        except json.JSONDecodeError:
+            return []
+
+    def set_custom_cats_list(self, cats):
+        """Serialize custom cats list to JSON"""
+        self.morph_custom_cats = json.dumps(cats)
+
+    def toggle_custom_cat(self, cat_name):
+        """Toggle a custom morph category on/off. Returns new state."""
+        cats = self.get_custom_cats_list()
+        if cat_name in cats:
+            cats.remove(cat_name)
+            self.set_custom_cats_list(cats)
+            return False
+        else:
+            cats.append(cat_name)
+            self.set_custom_cats_list(cats)
+            return True
 
     def generate_id(self):
         """Generate unique ID for this grid"""

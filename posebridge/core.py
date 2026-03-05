@@ -16,6 +16,7 @@
 
 """PoseBridge Core - PropertyGroup definitions and data structures"""
 
+import json
 import bpy
 from bpy.types import PropertyGroup
 from bpy.props import (
@@ -294,19 +295,67 @@ class CharacterSlot(PropertyGroup):
         default=""
     )
 
+    # Streamline: meshes to hide + mute Armature modifier
+    streamline_muted_meshes: StringProperty(
+        name="Muted Meshes",
+        description="JSON list of mesh object names to hide during Streamline",
+        default="[]"
+    )
+
+    def get_muted_meshes_list(self):
+        """Parse streamline_muted_meshes JSON to list of mesh names."""
+        try:
+            return json.loads(self.streamline_muted_meshes)
+        except json.JSONDecodeError:
+            return []
+
+    def set_muted_meshes_list(self, names):
+        """Serialize mesh name list to JSON."""
+        self.streamline_muted_meshes = json.dumps(names)
+
 
 def _on_streamline_toggled(self, context):
-    """Called when the master Streamline checkbox changes."""
+    """Called when a sub-toggle changes while Streamline is active.
+
+    Restore everything first, then re-apply with the new sub-toggle values.
+    This ensures unchecking a category actually restores those items.
+    """
+    if not self.streamline_enabled:
+        return
     from .streamline import apply_streamline
+    # Restore all
+    apply_streamline(False)
+    # Re-apply with current sub-toggle values
     apply_streamline(
-        self.streamline_enabled,
+        True,
         mute_drivers=self.streamline_drivers,
         mute_shape_keys=self.streamline_shape_keys,
         disable_modifiers=self.streamline_modifiers,
         disable_physics=self.streamline_physics,
         disable_normals_auto_smooth=self.streamline_normals,
         blender_simplify=self.streamline_blender_simplify,
+        mute_armature_meshes=self.streamline_meshes,
     )
+
+
+def _on_streamline_master_toggled(self, context):
+    """Called when the master Streamline ON/OFF checkbox changes."""
+    from .streamline import apply_streamline
+    if self.streamline_enabled:
+        # Turning ON — apply with current sub-toggle selections
+        apply_streamline(
+            True,
+            mute_drivers=self.streamline_drivers,
+            mute_shape_keys=self.streamline_shape_keys,
+            disable_modifiers=self.streamline_modifiers,
+            disable_physics=self.streamline_physics,
+            disable_normals_auto_smooth=self.streamline_normals,
+            blender_simplify=self.streamline_blender_simplify,
+            mute_armature_meshes=self.streamline_meshes,
+        )
+    else:
+        # Turning OFF — full restore regardless of sub-toggle state
+        apply_streamline(False)
 
 
 class PoseBridgeSettings(PropertyGroup):
@@ -438,43 +487,56 @@ class PoseBridgeSettings(PropertyGroup):
         name="Streamline",
         description="Disable heavy drivers, shape keys, and modifiers for faster viewport posing",
         default=False,
-        update=_on_streamline_toggled,
+        update=_on_streamline_master_toggled,
     )
 
     streamline_blender_simplify: BoolProperty(
         name="Blender Simplify",
         description="Enable Blender's built-in Render > Simplify",
         default=True,
+        update=_on_streamline_toggled,
     )
 
     streamline_drivers: BoolProperty(
         name="Drivers",
         description="Mute shape key and armature drivers (JCMs, flexions, FACS joint morphs)",
         default=True,
+        update=_on_streamline_toggled,
     )
 
     streamline_shape_keys: BoolProperty(
         name="Shape Keys",
         description="Mute all shape keys (corrective morphs, FACS blendshapes)",
         default=True,
+        update=_on_streamline_toggled,
     )
 
     streamline_modifiers: BoolProperty(
         name="Modifiers",
         description="Disable subdivision and corrective modifiers in viewport",
         default=True,
+        update=_on_streamline_toggled,
     )
 
     streamline_physics: BoolProperty(
         name="Physics",
         description="Disable rigid-body world",
         default=True,
+        update=_on_streamline_toggled,
     )
 
     streamline_normals: BoolProperty(
         name="Normals Auto Smooth",
         description="Disable 'Smooth by Angle' geometry node modifier",
         default=True,
+        update=_on_streamline_toggled,
+    )
+
+    streamline_meshes: BoolProperty(
+        name="High-Poly Meshes",
+        description="Hide selected child meshes and disable their Armature modifier (hair, clothing, etc.)",
+        default=True,
+        update=_on_streamline_toggled,
     )
 
     # -------------------------------------------------------------------------

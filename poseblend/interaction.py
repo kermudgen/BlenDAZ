@@ -20,8 +20,8 @@ import bpy
 from bpy.types import Operator
 from .grid import pixel_to_grid, find_dot_at_position, snap_to_grid, clamp_to_grid
 from .blending import calculate_blend_weights
-from .poses import apply_blended_pose, capture_pose, capture_bone_locations, keyframe_pose, get_bone_mask_for_dot
-from .presets import get_dot_color
+from .poses import apply_blended_pose, capture_pose, capture_bone_locations, keyframe_pose, get_bone_mask_for_dot, capture_morphs, apply_morphs, blend_morphs
+from .presets import get_dot_color, get_morph_names_for_categories
 
 
 
@@ -380,6 +380,16 @@ class POSEBLEND_OT_interact(Operator):
         if weights:
             apply_blended_pose(armature, weights)
 
+            # Blend and apply morphs
+            weighted_morphs = []
+            for dot, weight in weights:
+                md = dot.get_morphs_dict()
+                if md:
+                    weighted_morphs.append((md, weight))
+            if weighted_morphs:
+                blended = blend_morphs(weighted_morphs)
+                apply_morphs(armature, blended)
+
     def update_dot_drag(self, context):
         """Update dot position during drag"""
         if not self._dragged_dot:
@@ -408,6 +418,11 @@ class POSEBLEND_OT_interact(Operator):
         # Apply with 100% weight
         apply_blended_pose(armature, [(dot, 1.0)])
 
+        # Apply morphs
+        md = dot.get_morphs_dict()
+        if md:
+            apply_morphs(armature, md)
+
         # Auto keyframe if enabled
         if settings.auto_keyframe:
             bone_mask = get_bone_mask_for_dot(dot)
@@ -426,6 +441,10 @@ class POSEBLEND_OT_interact(Operator):
         rotations = capture_pose(armature)
         locations = capture_bone_locations(armature)
 
+        # Capture morphs for enabled categories
+        morph_names = get_morph_names_for_categories(armature, grid)
+        morphs = capture_morphs(armature, morph_names) if morph_names else {}
+
         # Clamp to 0-1 (dots live in dot space) and snap if enabled
         position = clamp_to_grid(self._cursor_pos)
         if grid.snap_to_grid:
@@ -441,6 +460,10 @@ class POSEBLEND_OT_interact(Operator):
             mask_mode=grid.bone_mask_mode,
             mask_preset=grid.bone_mask_preset
         )
+
+        # Store morph values
+        if morphs:
+            dot.set_morphs_dict(morphs)
 
         # Set color based on mask
         dot.color = get_dot_color(dot.bone_mask_mode, dot.bone_mask_preset)
@@ -598,6 +621,7 @@ class POSEBLEND_OT_duplicate_dot(Operator):
                     mask_preset=dot.bone_mask_preset
                 )
                 new_dot.color = dot.color
+                new_dot.set_morphs_dict(dot.get_morphs_dict())
         return {'FINISHED'}
 
 
@@ -624,6 +648,12 @@ class POSEBLEND_OT_update_dot_pose(Operator):
         locations = capture_bone_locations(armature)
         dot.set_rotations_dict(rotations)
         dot.set_locations_dict(locations)
+
+        # Update morphs for enabled categories
+        morph_names = get_morph_names_for_categories(armature, grid)
+        morphs = capture_morphs(armature, morph_names) if morph_names else {}
+        dot.set_morphs_dict(morphs)
+
         self.report({'INFO'}, f"Updated dot: {dot.name}")
         return {'FINISHED'}
 

@@ -17,6 +17,8 @@
 
 """PoseBlend Presets - Bone group definitions and default configurations"""
 
+from collections import OrderedDict
+
 # ============================================================================
 # Genesis 8 Bone Groups
 # ============================================================================
@@ -289,6 +291,96 @@ def get_grid_template(template_name):
         Dict with template configuration, or None
     """
     return GRID_TEMPLATES.get(template_name)
+
+
+# ============================================================================
+# Diffeomorphic Morph Categories
+# ============================================================================
+
+# Maps our internal key → (display_name, Diffeomorphic attribute on dazRna(armature))
+# Property suffix on PoseBlendGrid: morph_{key}  (e.g. morph_facs)
+MORPH_CATEGORIES = OrderedDict([
+    ('facs',        ('FACS',        'DazFacs')),
+    ('facs_detail', ('FACS Detail', 'DazFacsdetails')),
+    ('facs_expr',   ('FACS Expr',   'DazFacsexpr')),
+    ('expressions', ('Expressions', 'DazExpressions')),
+    ('visemes',     ('Visemes',     'DazVisemes')),
+    ('body',        ('Body',        'DazBody')),
+    ('units',       ('Units',       'DazUnits')),
+    ('head',        ('Head Morphs', 'DazHead')),
+    ('custom',      ('Custom',      'DazCustom')),
+])
+
+
+def _get_daz_rna(armature):
+    """Access Diffeomorphic's RNA wrapper for an armature.
+
+    Diffeomorphic stores morph lists on either armature.daz_importer or
+    directly on the armature, depending on version/settings.
+    """
+    di = getattr(armature, 'daz_importer', None)
+    if di is not None and not getattr(di, 'legacy', True):
+        return di
+    return armature
+
+
+def _get_morph_pg(armature, daz_attr):
+    """Get a Diffeomorphic morph PropertyGroup from the armature.
+
+    Returns the collection or None if not available.
+    """
+    rna = _get_daz_rna(armature)
+    return getattr(rna, daz_attr, None)
+
+
+def _get_custom_morph_cats(armature):
+    """Get the DazMorphCats collection from the armature (custom imported morphs).
+
+    Returns the collection or None.
+    """
+    rna = _get_daz_rna(armature)
+    return getattr(rna, 'DazMorphCats', None)
+
+
+def get_morph_names_for_categories(armature, grid):
+    """Return list of morph property names for all enabled categories on grid."""
+    names = []
+    # Standard categories
+    for cat_key, (_, daz_attr) in MORPH_CATEGORIES.items():
+        if getattr(grid, f'morph_{cat_key}', False):
+            pg = _get_morph_pg(armature, daz_attr)
+            if pg:
+                names.extend([item.name for item in pg.values()])
+    # Custom categories (DazMorphCats)
+    selected_custom = grid.get_custom_cats_list()
+    if selected_custom:
+        morph_cats = _get_custom_morph_cats(armature)
+        if morph_cats:
+            for cat in morph_cats:
+                if cat.name in selected_custom:
+                    names.extend([m.name for m in cat.morphs])
+    return names
+
+
+def get_available_morph_categories(armature):
+    """Return list of (cat_key, display_name, count) for categories with loaded morphs."""
+    available = []
+    for cat_key, (display, daz_attr) in MORPH_CATEGORIES.items():
+        pg = _get_morph_pg(armature, daz_attr)
+        if pg and len(pg) > 0:
+            available.append((cat_key, display, len(pg)))
+    return available
+
+
+def get_available_custom_morph_cats(armature):
+    """Return list of (cat_name, morph_count) for custom morph categories on armature."""
+    available = []
+    morph_cats = _get_custom_morph_cats(armature)
+    if morph_cats:
+        for cat in morph_cats:
+            if len(cat.morphs) > 0:
+                available.append((cat.name, len(cat.morphs)))
+    return available
 
 
 # ============================================================================
