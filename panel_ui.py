@@ -141,7 +141,7 @@ class BLENDAZ_OT_clear_all_pins(bpy.types.Operator):
             count = 0
             for bone in armature.data.bones:
                 if daz_bone_select.is_bone_pinned_translation(bone) or daz_bone_select.is_bone_pinned_rotation(bone):
-                    daz_bone_select.unpin_bone(bone)
+                    daz_bone_select.unpin_bone(armature, bone.name)
                     count += 1
 
             self.report({'INFO'}, f"Cleared {count} pin markers")
