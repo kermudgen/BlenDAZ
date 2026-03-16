@@ -1077,11 +1077,34 @@ class STREAMLINE_MeshItem(PropertyGroup):
     selected: bpy.props.BoolProperty(default=False)
 
 
+class BLENDAZ_OT_streamline_mesh_toggle_all(Operator):
+    """Select or deselect all meshes in the Streamline popup"""
+    bl_idname = "blendaz.streamline_mesh_toggle_all"
+    bl_label = "Toggle All"
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    action: bpy.props.EnumProperty(
+        items=[('ALL', 'All', ''), ('NONE', 'None', '')],
+    )
+
+    def execute(self, context):
+        # Access the running dialog's mesh_items via the class-level reference
+        items = BLENDAZ_OT_select_streamline_meshes._active_mesh_items
+        if items is not None:
+            state = (self.action == 'ALL')
+            for item in items:
+                item.selected = state
+        return {'FINISHED'}
+
+
 class BLENDAZ_OT_select_streamline_meshes(Operator):
     """Select which child meshes to hide during Streamline"""
     bl_idname = "blendaz.select_streamline_meshes"
     bl_label = "Select Meshes to Mute"
     bl_options = {'REGISTER', 'INTERNAL'}
+
+    # Class-level ref for the toggle_all operator to access
+    _active_mesh_items = None
 
     mesh_items: bpy.props.CollectionProperty(type=STREAMLINE_MeshItem)
 
@@ -1130,11 +1153,19 @@ class BLENDAZ_OT_select_streamline_meshes(Operator):
                 item.selected = (not is_body
                                  and item.vertex_count >= self._AUTO_CHECK_THRESHOLD)
 
+        # Expose mesh_items to the toggle_all operator
+        BLENDAZ_OT_select_streamline_meshes._active_mesh_items = self.mesh_items
         return context.window_manager.invoke_props_dialog(self, width=400)
 
     def draw(self, context):
         layout = self.layout
         layout.label(text="Select meshes to hide during Streamline:", icon='MOD_SIMPLIFY')
+
+        row = layout.row(align=True)
+        row.operator("blendaz.streamline_mesh_toggle_all",
+                     text="All").action = 'ALL'
+        row.operator("blendaz.streamline_mesh_toggle_all",
+                     text="None").action = 'NONE'
         layout.separator()
 
         settings = context.scene.posebridge_settings
@@ -1178,7 +1209,11 @@ class BLENDAZ_OT_select_streamline_meshes(Operator):
                 mute_armature_meshes=settings.streamline_meshes,
             )
 
+        BLENDAZ_OT_select_streamline_meshes._active_mesh_items = None
         return {'FINISHED'}
+
+    def cancel(self, context):
+        BLENDAZ_OT_select_streamline_meshes._active_mesh_items = None
 
 
 # ============================================================================
@@ -1187,6 +1222,7 @@ class BLENDAZ_OT_select_streamline_meshes(Operator):
 
 classes = (
     STREAMLINE_MeshItem,
+    BLENDAZ_OT_streamline_mesh_toggle_all,
     BLENDAZ_OT_select_streamline_meshes,
     BLENDAZ_OT_switch_character,
     BLENDAZ_OT_scan_characters,

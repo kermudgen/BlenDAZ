@@ -3,14 +3,14 @@
 > **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
 > Update this file at the end of every session (3-5 min) so the next session starts fast.
 
-**Updated**: 2026-03-03 (session 12)
+**Updated**: 2026-03-06 (session 14)
 
 ---
 
 ## Current State
 
-**Phase**: Release preparation — packaging complete, testing next
-**Status**: All core features working. Release packaging done: relative imports, logging (replaced 820 prints), LICENSE, blender_manifest.toml, version 1.0.0 unified. ZIP built (`blendaz-v1.0.0.zip`). Next: clean-slate install test.
+**Phase**: Active stress testing and feature iteration
+**Status**: Streamline mesh muting added — user-selectable popup hides high-poly child meshes and disables their Armature modifiers for dramatically faster interactive posing. Sub-toggles now live-update (restore-all then re-apply). Face mode isolates active character in PB viewport via Blender local view. All committed as `2407846`.
 
 PoseBridge interaction modes (unchanged):
 - **Body/Hands**: Click-drag bone rotation (quaternion) with 4-way LMB/RMB controls
@@ -19,36 +19,37 @@ PoseBridge interaction modes (unchanged):
 
 ---
 
-## What We Did Last Session (2026-03-03, session 12)
+## What We Did Last Session (2026-03-05/06, sessions 13-14)
 
-### Import & Path Cleanup
-- Moved `projects/posebridge/` → `posebridge/` (direct child of BlenDAZ root)
-- All shipped files now use relative imports (`from . import`, `from .. import`)
-- Removed all `sys.path` manipulation and hardcoded paths
+### Streamline High-Poly Mesh Muting
+- `core.py`: `streamline_muted_meshes` JSON StringProperty on CharacterSlot with `get_muted_meshes_list()`/`set_muted_meshes_list()`. New `streamline_meshes` BoolProperty on PoseBridgeSettings.
+- `streamline.py`: `mute_armature_meshes` param in `apply_streamline()` — hides mesh objects (`hide_viewport`) + disables Armature modifiers (`mod.show_viewport`). Separate from `_DISABLE_MOD_TYPES` path.
+- `panel_ui.py`: `BLENDAZ_OT_select_streamline_meshes` popup — scans child meshes, shows vertex counts, auto-checks ≥5K verts (except body mesh), All/None buttons. Available before Streamline is enabled.
 
-### Debug Print → Logging
-- All `print()` calls replaced with `logging` calls (`log.debug()`, `log.info()`, `log.warning()`)
-- Logger per module via `logging.getLogger(__name__)`
+### Streamline Sub-Toggle Live Updates
+- `core.py`: Split into `_on_streamline_master_toggled` (master ON/OFF) and `_on_streamline_toggled` (sub-toggles). Sub-toggle callback: `apply_streamline(False)` then `apply_streamline(True, ...)` with current values. Master OFF: unconditional `apply_streamline(False)`.
+- All 7 sub-toggle BoolProperties now have `update=_on_streamline_toggled`.
 
-### Release Packaging
-- `blender_manifest.toml` created (Blender 5.0+ min)
-- `LICENSE` (GPL-3.0), version numbers unified to 1.0.0
-- ZIP packaged for install testing
+### Face Mode Local View Isolation
+- `panel_ui.py`: `_enter_face_local_view()` — selects active character objects + face camera, enters local view in PB viewport via `temp_override`. `_exit_face_local_view()` — exits local view when leaving Face mode. Only activates with 2+ registered characters.
+- `daz_bone_select.py`: `_refresh_face_local_view()` in `_switch_active_character()` — exits old local view, re-enters with new character when switching in Face mode.
+- Re-ensures camera mode after localview (it can snap out). Selection saved/restored around calls.
+
+### Bug Fixes
+- Replaced `bpy.ops.object.select_all()` with direct `obj.select_set()` in face local view (context error from N-panel)
 
 ---
 
 ## Next Up
 
-**Testing (immediate):**
-- [ ] Clean-slate install from ZIP
-- [ ] Test all PoseBridge modes (body, hands, face)
-- [ ] Test multi-character registration/switching
-- [ ] Test Streamline on/off
+**Testing (active):**
+- [ ] Continue stress testing all features
+- [ ] Test Streamline mesh muting with various configurations
+- [ ] Test face local view with 2+ characters
 
 **Features:**
 1. **Head rotation CP in face mode** — add head rotation control point
-2. **Eye look control CP in face mode** — add eye look control point
-3. **Finger bone selection after posing hand** — drill into child bones (low priority)
+2. **Finger bone selection after posing hand** — drill into child bones (low priority)
 
 **Other:**
 - BlenDAZ toggle button should stop modal in ALL viewports
@@ -70,14 +71,15 @@ PoseBridge interaction modes (unchanged):
 - **Multi-viewport rules**:
   - Never use `context.area`/`context.region` directly — use `_resolve_event_viewport()`
   - Never call `mode_set()` directly — use `_mode_set_safe()`
-  - PB viewport identified by assigned camera name (not view_perspective)
+  - PB viewport = CAMERA mode + PB_Camera_* name (always check BOTH)
   - `tag_redraw` on resolved `pb_hover_area`, not `context.area`
+- **Streamline sub-toggle pattern**: restore-all (`apply_streamline(False)`) then re-apply. Master OFF = unconditional full restore. Don't pass sub-toggle values on master OFF.
+- **Streamline mesh muting**: Separate from `_DISABLE_MOD_TYPES` path. Hides `mesh_obj.hide_viewport` + disables `ARMATURE` modifier. JSON list of mesh names on CharacterSlot.
+- **Face local view**: `bpy.ops.view3d.localview(frame_selected=False)` with `temp_override(area=pb_area, region=region)`. Must re-ensure camera mode after. Use `obj.select_set()` not `bpy.ops.object.select_all()` (context issues from N-panel).
 - **Diagnostic logger**: `DIAG_ENABLED = True` in `diag_logger.py` → logs to `logs/diag_events.jsonl`. Disable when not debugging.
 - **Proximity bone override**: After DSF → torso/thigh bone, check IK-target bone proximity (0.15m threshold)
 - **Axis convention**: Y = twist (along bone length), X = forward/back bend, Z = side-to-side bend
 - **FACS property tiers**: `facs_ctrl_*` (bilateral), `facs_bs_*_div2` (unilateral), `facs_jnt_*` (joint-driven)
-- **Locked drag state** — `_drag_from_posebridge`, `_drag_control_point_id`, `_drag_bone_names` set at mouse-down
-- **Native translate pass-through** — When `_use_native_translate` is True, gate at top passes ALL events
 
 ---
 
@@ -85,13 +87,11 @@ PoseBridge interaction modes (unchanged):
 
 | File | Why |
 |------|-----|
-| `daz_bone_select.py` | Modal operator, hover detection, proximity override, PB hover, character switching |
-| `diag_logger.py` | Diagnostic logging — enable/disable, add new event types |
-| `posebridge/core.py` | CharacterSlot, PoseBridgeSettings, find_character_mesh |
-| `posebridge/panel_ui.py` | Register/scan operators, character list UI, per-char cameras |
+| `daz_bone_select.py` | Modal operator, hover detection, proximity override, PB hover, character switching, face local view refresh |
+| `posebridge/core.py` | CharacterSlot, PoseBridgeSettings, streamline properties + callbacks |
+| `posebridge/panel_ui.py` | Register/scan operators, character list UI, streamline mesh popup, face local view, panel view switching |
+| `posebridge/streamline.py` | apply_streamline(), mesh muting logic |
 | `posebridge/drawing.py` | CP drawing handler, hover highlight colors |
-| `posebridge/outline_generator_lineart.py` | Outline generation, body camera setup |
-| `posebridge/extract_hands.py` | Hand extraction, hand camera setup |
 | `posebridge/extract_face.py` | Face setup, face camera setup |
 
 ---
@@ -114,7 +114,7 @@ Only read these if the task requires it:
 |------|-------------|
 | [CLAUDE.md](CLAUDE.md) | Architecture, principles, full file map |
 | [INDEX.md](INDEX.md) | Finding a specific file |
-| [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) | Technical findings, research, rig architecture (bone nodes, rig detection, rotation math) |
+| [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) | Technical findings, research, rig architecture |
 | [SCRATCHPAD.md](SCRATCHPAD.md) | Understanding decisions from recent sessions |
 
 ---

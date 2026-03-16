@@ -93,6 +93,11 @@ _DEBUG_DRAW_ANALYTICAL_ARM = False
 # FABRIK SOLVER: Set to False to disable FABRIK and fall back to Blender native IK
 _FABRIK_ENABLED = True
 
+# FABRIK DIAGNOSTICS: Record bone rotations as f-curves during drag.
+# When True, creates a temporary action with keyframes for every FABRIK frame.
+# View in Graph Editor during/after drag. Summary printed to console on release.
+_FABRIK_RECORD_CURVES = True
+
 # DEBUG VERBOSITY: Controls console output
 # 0 = Quiet (errors only)
 # 1 = Normal (key events: drag start/end, IK activation, snaps)
@@ -3290,6 +3295,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         self._fabrik_rotation_limits = {}    # {bone_name: (min_x,max_x,min_y,max_y,min_z,max_z)} radians
         self._fabrik_max_swing_deg = {}      # {bone_name: float} max swing from original (degrees)
         # FABRIK targets lHand.head directly (last segment spans through lForearmTwist)
+        # FABRIK curve recording state
+        self._fabrik_curve_action = None       # Temp bpy.types.Action for f-curve recording
+        self._fabrik_curve_bones = []          # List of bone names being recorded
+        self._fabrik_curve_prev_action = None  # Previous action to restore after recording
 
         # Analytical leg IK state (bypasses Blender's IK solver completely)
         self._use_analytical_leg_ik = False
@@ -5935,6 +5944,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                                 'armature': self._drag_armature
                             })
 
+                            # --- FABRIK Curve Recording: Init ---
+                            self._fabrik_curve_action = None
+                            self._fabrik_curve_bones = []
+                            if _FABRIK_RECORD_CURVES:
+                                self._init_fabrik_curve_recording()
+
                             # Mute translation pin on dragged bone if it's pinned
                             if self._temp_unpinned_bone:
                                 pose_bone = self._drag_armature.pose.bones.get(self._temp_unpinned_bone)
@@ -6730,6 +6745,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 if pose_bone:
                     pose_bone.rotation_quaternion = new_rot
 
+            # --- FABRIK Curve Recording: Sample ---
+            if _FABRIK_RECORD_CURVES and self._fabrik_curve_action:
+                self._record_fabrik_frame(frame_num)
+
             # Tag armature for viewport redraw
             self._drag_armature.update_tag()
             if context.area:
@@ -6799,6 +6818,241 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     twist_pb.rotation_quaternion = twist_for_partner @ orig_twist_rot
                 else:
                     twist_pb.rotation_quaternion = twist_for_partner
+
+    # ─────────────────────────────────────────────────────────────────────
+    # FABRIK F-Curve Diagnostic Recording
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _init_fabrik_curve_recording(self):
+        """Create a temporary action and record frame 0 (pre-drag baseline)."""
+        try:
+            armature = self._drag_armature
+            if not armature:
+                return
+            if not armature.animation_data:
+                armature.animation_data_create()
+
+            # Save the current action so we can restore it later
+            self._fabrik_curve_prev_action = armature.animation_data.action
+
+            # Clean up any previous FABRIK diagnostic actions
+            stale = [a for a in bpy.data.actions if a.name.startswith("_FABRIK_Diag_")]
+            for a in stale:
+                bpy.data.actions.remove(a)
+
+            # Create temp action
+            action_name = f"_FABRIK_Diag_{self._drag_bone_name}"
+            action = bpy.data.actions.new(name=action_name)
+            action.use_fake_user = False  # Don't persist across saves
+            armature.animation_data.action = action
+            self._fabrik_curve_action = action
+
+            # Build list of bones to record: chain + spine + twist partners
+            bone_names = []
+            if self._fabrik_chain_obj:
+                bone_names.extend(self._fabrik_chain_obj.bone_names)
+            for spine_bn in SPINE_BONES:
+                if spine_bn not in bone_names:
+                    bone_names.append(spine_bn)
+            # Add twist partners
+            extra_twist = []
+            for bn in list(bone_names):
+                tn = TWIST_BONE_PAIRS.get(bn)
+                if tn and tn not in bone_names:
+                    extra_twist.append(tn)
+            bone_names.extend(extra_twist)
+            self._fabrik_curve_bones = bone_names
+
+            # Record frame 0: the original (pre-drag) rotations as baseline
+            for bone_name in bone_names:
+                orig_rot = self._fabrik_original_rotations.get(bone_name)
+                if orig_rot is None:
+                    continue
+                pb = armature.pose.bones.get(bone_name)
+                if not pb:
+                    continue
+                # Temporarily set to original rotation to keyframe it at frame 0
+                saved = pb.rotation_quaternion.copy()
+                pb.rotation_quaternion = orig_rot
+                data_path = f'pose.bones["{bone_name}"].rotation_quaternion'
+                for idx in range(4):  # W, X, Y, Z
+                    fc = action.fcurves.find(data_path, index=idx)
+                    if not fc:
+                        fc = action.fcurves.new(data_path, index=idx, action_group=bone_name)
+                    fc.keyframe_points.insert(0, orig_rot[idx])
+                pb.rotation_quaternion = saved
+
+            print(f"[FABRIK CURVES] Recording started: {len(bone_names)} bones, action='{action_name}'")
+            print(f"  Bones: {', '.join(bone_names)}")
+
+        except Exception as e:
+            print(f"[FABRIK CURVES] Init error: {e}")
+            import traceback
+            traceback.print_exc()
+            self._fabrik_curve_action = None
+
+    def _record_fabrik_frame(self, frame_num):
+        """Record current bone rotations as keyframes at the given frame number."""
+        try:
+            action = self._fabrik_curve_action
+            armature = self._drag_armature
+            if not action or not armature:
+                return
+
+            for bone_name in self._fabrik_curve_bones:
+                pb = armature.pose.bones.get(bone_name)
+                if not pb:
+                    continue
+                rot = pb.rotation_quaternion
+                data_path = f'pose.bones["{bone_name}"].rotation_quaternion'
+                for idx in range(4):  # W, X, Y, Z
+                    fc = action.fcurves.find(data_path, index=idx)
+                    if not fc:
+                        fc = action.fcurves.new(data_path, index=idx, action_group=bone_name)
+                    fc.keyframe_points.insert(frame_num, rot[idx])
+
+        except Exception as e:
+            print(f"[FABRIK CURVES] Record error at frame {frame_num}: {e}")
+
+    def _finish_fabrik_curve_recording(self, cancel=False):
+        """Print diagnostic summary and clean up the temp action."""
+        try:
+            action = self._fabrik_curve_action
+            armature = self._drag_armature
+            if not action or not armature:
+                return
+
+            total_frames = self.__class__._fabrik_frame_count
+
+            print(f"\n[FABRIK CURVES] ═══════════════════════════════════════════════")
+            print(f"  {'CANCELLED' if cancel else 'COMPLETED'}: {total_frames} frames, {len(self._fabrik_curve_bones)} bones")
+            print(f"  Action: '{action.name}' ({len(action.fcurves)} f-curves)")
+
+            # Analyze each bone's curves
+            bone_deltas = {}  # {bone_name: total_rotation_change_deg}
+            for bone_name in self._fabrik_curve_bones:
+                data_path = f'pose.bones["{bone_name}"].rotation_quaternion'
+
+                # Collect all 4 channels (W, X, Y, Z)
+                channels = {}
+                for idx in range(4):
+                    fc = action.fcurves.find(data_path, index=idx)
+                    if fc and len(fc.keyframe_points) > 0:
+                        values = [kp.co[1] for kp in fc.keyframe_points]
+                        channels[idx] = values
+
+                if not channels or 0 not in channels:
+                    continue
+
+                n_samples = len(channels[0])
+                if n_samples < 2:
+                    continue
+
+                # Get frame 0 (baseline) and frame 1 (first FABRIK frame)
+                q0 = Quaternion((
+                    channels[0][0],
+                    channels.get(1, [0])[0],
+                    channels.get(2, [0])[0],
+                    channels.get(3, [0])[0]
+                ))
+
+                # Detect initiation pop (frame 0→1)
+                init_pop = 0.0
+                if n_samples >= 2:
+                    q1 = Quaternion((
+                        channels[0][1],
+                        channels.get(1, [0]*2)[1],
+                        channels.get(2, [0]*2)[1],
+                        channels.get(3, [0]*2)[1]
+                    ))
+                    init_pop = math.degrees(q0.rotation_difference(q1).angle)
+
+                # Get last frame rotation
+                q_last = Quaternion((
+                    channels[0][-1],
+                    channels.get(1, [0]*n_samples)[-1],
+                    channels.get(2, [0]*n_samples)[-1],
+                    channels.get(3, [0]*n_samples)[-1]
+                ))
+                total_change = math.degrees(q0.rotation_difference(q_last).angle)
+                bone_deltas[bone_name] = total_change
+
+                # Check smoothness: look for sign-reversals in per-frame deltas
+                jitter_frames = []
+                if n_samples >= 3:
+                    # Use quaternion angle deltas between consecutive frames
+                    prev_delta_sign = None
+                    for i in range(1, n_samples):
+                        qi_prev = Quaternion((
+                            channels[0][i-1],
+                            channels.get(1, [0]*n_samples)[i-1],
+                            channels.get(2, [0]*n_samples)[i-1],
+                            channels.get(3, [0]*n_samples)[i-1]
+                        ))
+                        qi = Quaternion((
+                            channels[0][i],
+                            channels.get(1, [0]*n_samples)[i],
+                            channels.get(2, [0]*n_samples)[i],
+                            channels.get(3, [0]*n_samples)[i]
+                        ))
+                        delta = qi_prev.rotation_difference(qi).angle
+                        # Use W channel derivative as proxy for direction
+                        w_delta = channels[0][i] - channels[0][i-1]
+                        if abs(w_delta) > 1e-6:
+                            sign = 1 if w_delta > 0 else -1
+                            if prev_delta_sign is not None and sign != prev_delta_sign and delta > math.radians(0.5):
+                                jitter_frames.append(i)
+                            prev_delta_sign = sign
+
+                # Per-channel range
+                range_strs = []
+                for idx, label in enumerate(['W', 'X', 'Y', 'Z']):
+                    if idx in channels:
+                        vals = channels[idx]
+                        vmin, vmax = min(vals), max(vals)
+                        range_strs.append(f"{label}:[{vmin:.4f},{vmax:.4f}]")
+
+                smooth = "JITTER" if jitter_frames else "smooth"
+                pop_flag = f" POP={init_pop:.2f}°" if init_pop > 0.5 else ""
+                jitter_detail = f" frames={jitter_frames[:5]}" if jitter_frames else ""
+
+                print(f"  {bone_name:20s}: Δ={total_change:6.2f}° init={init_pop:.2f}°{pop_flag} [{smooth}{jitter_detail}] {' '.join(range_strs)}")
+
+            # Rotation distribution (how much each bone contributed)
+            total_all = sum(bone_deltas.values())
+            if total_all > 0.1:
+                print(f"\n  Distribution (total {total_all:.1f}°):")
+                for bn, delta in sorted(bone_deltas.items(), key=lambda x: -x[1]):
+                    if delta > 0.1:
+                        pct = 100.0 * delta / total_all
+                        bar = '█' * int(pct / 2)
+                        print(f"    {bn:20s}: {pct:5.1f}% ({delta:.1f}°) {bar}")
+
+            # Release snap: compare last FABRIK frame to what bone will be after constraints
+            # (This is logged separately by the existing end_ik_drag bake-back code)
+
+            print(f"  Action '{action.name}' kept for Graph Editor inspection.")
+            print(f"  Select armature → Graph Editor → browse action → '{action.name}'")
+            print(f"[FABRIK CURVES] ═══════════════════════════════════════════════\n")
+
+            # Restore previous action on armature but keep temp action in bpy.data.actions
+            # for Graph Editor inspection. It will be cleaned up on next recording start.
+            armature.animation_data.action = self._fabrik_curve_prev_action
+            self._fabrik_curve_action = None
+            self._fabrik_curve_bones = []
+            self._fabrik_curve_prev_action = None
+
+        except Exception as e:
+            print(f"[FABRIK CURVES] Finish error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Best-effort cleanup: restore previous action
+            try:
+                if armature and armature.animation_data:
+                    armature.animation_data.action = getattr(self, '_fabrik_curve_prev_action', None)
+            except:
+                pass
+            self._fabrik_curve_action = None
 
     def update_analytical_leg_drag(self, context, event):
         """Update analytical two-bone IK for leg during drag.
@@ -8909,6 +9163,10 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
                 self._fabrik_muted_constraints = []
 
+            # --- FABRIK Curve Recording: Summary + Cleanup ---
+            if _FABRIK_RECORD_CURVES and self._fabrik_curve_action:
+                self._finish_fabrik_curve_recording(cancel=cancel)
+
             # Save chain + spine bone names for post-update logging before clearing state
             _fabrik_end_chain_bones = list(SPINE_BONES) + (list(self._fabrik_chain_obj.bone_names) if self._fabrik_chain_obj else [])
             _fabrik_end_prebake = dict(self._fabrik_prebake_rotations) if self._fabrik_prebake_rotations else {}
@@ -8924,6 +9182,9 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             self._fabrik_prebake_rotations = {}
             self._fabrik_rotation_limits = {}
             self._fabrik_max_swing_deg = {}
+            self._fabrik_curve_action = None
+            self._fabrik_curve_bones = []
+            self._fabrik_curve_prev_action = None
 
             # Re-enable pin constraint if needed (same as normal IK)
             self._restore_temp_pin_state(cancel=cancel)
