@@ -9,8 +9,8 @@ PoseBridge Phase 1 MVP implementation is **complete and ready for testing**. The
 ### 1. Core Infrastructure ✅
 
 **Files Created:**
-- `D:\dev\BlenDAZ\daz_shared_utils.py` - Shared utilities for bone axis determination and rotation
-- `D:\dev\BlenDAZ\posebridge\` - Complete PoseBridge module directory
+- `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py` - Shared utilities for bone axis determination and rotation
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\` - Complete PoseBridge module directory
   - `__init__.py` - Module registration
   - `core.py` - PropertyGroup definitions (PoseBridgeSettings, etc.)
   - `drawing.py` - GPU rendering for control points
@@ -196,7 +196,7 @@ PoseBridge Phase 1 MVP implementation is **complete and ready for testing**. The
 ```python
 # Run the quick start test script
 import bpy
-exec(open(r"D:\dev\BlenDAZ\posebridge\QUICKSTART_TEST.py").read())
+exec(open(r"D:\Dev\Blender Addons\BlenDAZ\posebridge\QUICKSTART_TEST.py").read())
 
 # Then manually start modal operator (to avoid blocking)
 bpy.ops.view3d.daz_bone_select('INVOKE_DEFAULT')
@@ -263,18 +263,18 @@ See `TESTING_PHASE1.md` for comprehensive test scenarios:
 ## Files Modified
 
 ### New Files
-- `D:\dev\BlenDAZ\daz_shared_utils.py`
-- `D:\dev\BlenDAZ\posebridge\__init__.py`
-- `D:\dev\BlenDAZ\posebridge\core.py`
-- `D:\dev\BlenDAZ\posebridge\drawing.py`
-- `D:\dev\BlenDAZ\posebridge\outline_generator_lineart.py`
-- `D:\dev\BlenDAZ\posebridge\control_points.py`
-- `D:\dev\BlenDAZ\posebridge\TESTING_PHASE1.md`
-- `D:\dev\BlenDAZ\posebridge\QUICKSTART_TEST.py`
-- `D:\dev\BlenDAZ\posebridge\IMPLEMENTATION_SUMMARY.md`
+- `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\__init__.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\core.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\drawing.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\outline_generator_lineart.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\control_points.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\TESTING_PHASE1.md`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\QUICKSTART_TEST.py`
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\IMPLEMENTATION_SUMMARY.md`
 
 ### Modified Files
-- `D:\dev\BlenDAZ\daz_bone_select.py` (4 methods modified)
+- `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py` (4 methods modified)
 - `C:\Users\joshr\.claude\plans\cheeky-growing-comet.md` (added "Pending Decisions" section)
 
 ## Next Steps

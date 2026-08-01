@@ -594,6 +594,13 @@ class BLENDAZ_OT_stop_blendaz(Operator):
         if pb_settings:
             pb_settings.is_active = False
 
+        # Clean up orphaned pin Empties
+        try:
+            _dbs.cleanup_orphaned_pin_empties()
+        except Exception as e:
+            import logging
+            logging.getLogger("blendaz.panel_ui").warning(f"Pin cleanup error: {e}")
+
         context.area.tag_redraw()
         return {'FINISHED'}
 

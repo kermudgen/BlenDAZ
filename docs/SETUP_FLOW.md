@@ -12,7 +12,7 @@ setup issues or modifying the script.
 
 - Blender open with a Genesis 8/9 character (imported via Diffeomorphic)
 - Character should be in **T-pose** (arms out, legs straight)
-- BlenDAZ code at `D:\Dev\BlenDAZ`
+- BlenDAZ code at `D:\Dev\Blender Addons\BlenDAZ`
 
 ### Diffeomorphic Import Requirements
 
@@ -65,7 +65,7 @@ manually by duplicating the body mesh and renaming it with a `_Standin` suffix.
 ## Step 0: Path Setup & Armature Detection
 
 **What happens:**
-1. Add `D:\Dev\BlenDAZ`, `projects/`, `projects/posebridge/` to `sys.path`
+1. Add `D:\Dev\Blender Addons\BlenDAZ`, `projects/`, `projects/posebridge/` to `sys.path`
 2. Auto-detect DAZ armature by looking for bone markers (`lPectoral`, `rPectoral`, `lCollar`, `rCollar`)
    - Checks active object first, then searches all scene armatures
 3. Select armature, switch to **Pose mode**
@@ -86,7 +86,7 @@ manually by duplicating the body mesh and renaming it with a `_Standin` suffix.
 - `DAZ_OT_face_controls` — face morph panel
 - `DAZ_OT_clear_ik_pose` — reset pose operator
 
-**Source:** `D:\Dev\BlenDAZ\daz_bone_select.py`
+**Source:** `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 ---
 
@@ -101,7 +101,7 @@ manually by duplicating the body mesh and renaming it with a `_Standin` suffix.
 4. Set `is_active = True`, `active_armature_name`, `show_control_points = True`
 5. Register `PoseBridgeDrawHandler` (GPU overlay for control points)
 
-**Source:** `D:\Dev\BlenDAZ\projects\posebridge\__init__.py` and submodules
+**Source:** `D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\__init__.py` and submodules
 
 ### Step 2b: Force Regenerate (optional)
 
@@ -247,7 +247,7 @@ See **Prerequisites → Diffeomorphic Import Requirements** above for how to imp
 3. `poseblend.register()` — creates `poseblend_settings` PropertyGroup
 4. Set `is_active = True`, `active_armature_name`
 
-**Source:** `D:\Dev\BlenDAZ\projects\poseblend\__init__.py` and submodules
+**Source:** `D:\Dev\Blender Addons\BlenDAZ\projects\poseblend\__init__.py` and submodules
 
 ---
 

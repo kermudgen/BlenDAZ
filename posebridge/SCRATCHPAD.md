@@ -115,16 +115,16 @@ This file tracks ongoing development work, experiments, bugs, and feature progre
 ### Useful Commands
 ```python
 # Start PoseBridge in Blender
-exec(open(r"D:\dev\BlenDAZ\projects\posebridge\start_posebridge.py").read())
+exec(open(r"D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\start_posebridge.py").read())
 
 # Recapture control points after moving outline
-exec(open(r"D:\dev\BlenDAZ\projects\posebridge\recapture_control_points.py").read())
+exec(open(r"D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\recapture_control_points.py").read())
 
 # Reload daz_bone_select after code changes
-exec(open(r"D:\dev\BlenDAZ\reload_daz_bone_select.py").read())
+exec(open(r"D:\Dev\Blender Addons\BlenDAZ\reload_daz_bone_select.py").read())
 
 # Recapture with module reload (development)
-exec(open(r"D:\dev\BlenDAZ\projects\posebridge\recapture_with_reload.py").read())
+exec(open(r"D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\recapture_with_reload.py").read())
 ```
 
 ### Important Patterns

@@ -206,6 +206,102 @@ def get_all_body_bones():
 
 
 # ============================================================================
+# Live Body-Part Mask Regions (Director-style)
+# ============================================================================
+#
+# These 9 regions are NON-OVERLAPPING (unlike the preset groups above, where
+# ARMS ⊃ ARM_L). Non-overlapping regions are the right primitive for a live
+# mask you compose with checkboxes / solo — every bone belongs to exactly one
+# region, so toggling regions partitions the skeleton cleanly.
+#
+# Used by the grid's live "active mask" (what the blend is allowed to write).
+# The preset groups above stay for per-dot authoring masks and dot colors.
+
+MASK_REGIONS = OrderedDict([
+    ('HIP', ('Hip', [
+        'pelvis', 'hip',
+    ])),
+    ('TORSO', ('Torso', [
+        'abdomen', 'abdomenLower', 'abdomenUpper', 'abdomen2',
+        'chest', 'chestLower', 'chestUpper',
+    ])),
+    ('HEAD', ('Head', [
+        'neck', 'neckLower', 'neckUpper', 'head',
+        'lEye', 'rEye', 'jaw',
+        'upperFaceRig', 'lowerFaceRig',
+        'tongue01', 'tongue02', 'tongue03', 'tongue04',
+        'CenterBrow',
+        'lBrowInner', 'lBrowMid', 'lBrowOuter',
+        'rBrowInner', 'rBrowMid', 'rBrowOuter',
+        'lEyelidUpper', 'lEyelidLower', 'rEyelidUpper', 'rEyelidLower',
+        'lNostril', 'rNostril',
+        'lLipCorner', 'rLipCorner',
+        'lLipUpperInner', 'lLipUpperOuter', 'rLipUpperInner', 'rLipUpperOuter',
+        'lLipLowerInner', 'lLipLowerOuter', 'rLipLowerInner', 'rLipLowerOuter',
+        'lCheekUpper', 'lCheekLower', 'rCheekUpper', 'rCheekLower',
+    ])),
+    ('ARM_L', ('L.Arm', [
+        'lCollar', 'lShldr', 'lShldrBend', 'lShldrTwist',
+        'lForeArm', 'lForearmBend', 'lForearmTwist', 'lHand',
+    ])),
+    ('ARM_R', ('R.Arm', [
+        'rCollar', 'rShldr', 'rShldrBend', 'rShldrTwist',
+        'rForeArm', 'rForearmBend', 'rForearmTwist', 'rHand',
+    ])),
+    ('HAND_L', ('L.Hand', [
+        'lThumb1', 'lThumb2', 'lThumb3',
+        'lIndex1', 'lIndex2', 'lIndex3',
+        'lMid1', 'lMid2', 'lMid3',
+        'lRing1', 'lRing2', 'lRing3',
+        'lPinky1', 'lPinky2', 'lPinky3',
+        'lCarpal1', 'lCarpal2', 'lCarpal3', 'lCarpal4',
+    ])),
+    ('HAND_R', ('R.Hand', [
+        'rThumb1', 'rThumb2', 'rThumb3',
+        'rIndex1', 'rIndex2', 'rIndex3',
+        'rMid1', 'rMid2', 'rMid3',
+        'rRing1', 'rRing2', 'rRing3',
+        'rPinky1', 'rPinky2', 'rPinky3',
+        'rCarpal1', 'rCarpal2', 'rCarpal3', 'rCarpal4',
+    ])),
+    ('LEG_L', ('L.Leg', [
+        'lThigh', 'lThighBend', 'lThighTwist',
+        'lShin', 'lFoot', 'lToe', 'lMetatarsals',
+    ])),
+    ('LEG_R', ('R.Leg', [
+        'rThigh', 'rThighBend', 'rThighTwist',
+        'rShin', 'rFoot', 'rToe', 'rMetatarsals',
+    ])),
+])
+
+# All region keys in display order
+MASK_REGION_KEYS = list(MASK_REGIONS.keys())
+
+
+def get_region_label(region_key):
+    """Short display label for a mask region (e.g. 'L.Arm')."""
+    entry = MASK_REGIONS.get(region_key)
+    return entry[0] if entry else region_key
+
+
+def bones_for_regions(region_keys):
+    """Union of bone names for the given region keys.
+
+    Args:
+        region_keys: Iterable of region keys (e.g. ['ARM_L', 'ARM_R'])
+
+    Returns:
+        Set of bone names belonging to those regions.
+    """
+    bones = set()
+    for key in region_keys:
+        entry = MASK_REGIONS.get(key)
+        if entry:
+            bones.update(entry[1])
+    return bones
+
+
+# ============================================================================
 # Dot Color Presets by Mask Type
 # ============================================================================
 

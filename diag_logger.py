@@ -463,3 +463,97 @@ def log_state_dump(trigger=None, **kwargs):
         'trigger': trigger,
         **kwargs,
     })
+
+
+# ============================================================================
+# IK Drag Diagnostic Log — plain-text file for rotation tracking
+# ============================================================================
+# Tracks bone rotations at key moments across drags to diagnose compounding.
+# File: logs/ik_drag_diag.log — wiped on each BlenDAZ session start.
+
+_IK_DIAG_FILE = os.path.join(DIAG_LOG_DIR, "ik_drag_diag.log")
+_ik_diag_handle = None
+_ik_drag_count = 0
+
+
+def ik_diag_start_session():
+    """Wipe and open the IK drag diagnostic log. Call from modal invoke()."""
+    global _ik_diag_handle, _ik_drag_count
+    if not DIAG_ENABLED:
+        return
+    os.makedirs(DIAG_LOG_DIR, exist_ok=True)
+    try:
+        if _ik_diag_handle:
+            _ik_diag_handle.close()
+        _ik_diag_handle = open(_IK_DIAG_FILE, 'w', encoding='utf-8')
+        _ik_drag_count = 0
+        _ik_diag_handle.write(f"=== IK Drag Diagnostic Log — {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n\n")
+        _ik_diag_handle.flush()
+    except Exception as e:
+        log.warning(f"[DIAG] Failed to open IK drag log: {e}")
+        _ik_diag_handle = None
+
+
+def ik_diag_end_session():
+    """Close the IK drag diagnostic log."""
+    global _ik_diag_handle
+    if _ik_diag_handle:
+        try:
+            _ik_diag_handle.close()
+        except Exception:
+            pass
+        _ik_diag_handle = None
+
+
+def ik_diag(msg):
+    """Write a line to the IK drag diagnostic log."""
+    if not DIAG_ENABLED or not _ik_diag_handle:
+        return
+    try:
+        _ik_diag_handle.write(msg + '\n')
+        _ik_diag_handle.flush()
+    except Exception:
+        pass
+
+
+def ik_diag_drag_start(bone_name, armature, daz_bone_names):
+    """Log the start of a new IK drag with bone rotation snapshot."""
+    global _ik_drag_count
+    if not DIAG_ENABLED or not _ik_diag_handle:
+        return
+    _ik_drag_count += 1
+    ik_diag(f"\n{'='*70}")
+    ik_diag(f"DRAG #{_ik_drag_count} START — bone={bone_name}")
+    ik_diag(f"  chain: {daz_bone_names}")
+    ik_diag(f"  --- Initial rotation_quaternion (raw, pre-IK) ---")
+    for bn in daz_bone_names:
+        pb = armature.pose.bones.get(bn)
+        if pb:
+            q = pb.rotation_quaternion
+            ik_diag(f"    {bn:20s}: ({q.w:+.6f}, {q.x:+.6f}, {q.y:+.6f}, {q.z:+.6f})")
+
+
+def ik_diag_drag_end_phase(phase, armature, daz_bone_names, note=""):
+    """Log bone rotations at a specific phase of drag release."""
+    if not DIAG_ENABLED or not _ik_diag_handle:
+        return
+    ik_diag(f"  --- {phase} {('(' + note + ') ') if note else ''}---")
+    for bn in daz_bone_names:
+        pb = armature.pose.bones.get(bn)
+        if pb:
+            q = pb.rotation_quaternion
+            ik_diag(f"    {bn:20s}: ({q.w:+.6f}, {q.x:+.6f}, {q.y:+.6f}, {q.z:+.6f})")
+
+
+def ik_diag_bake_comparison(bone_name, before_q, after_q, method=""):
+    """Log before/after comparison for a bake operation."""
+    if not DIAG_ENABLED or not _ik_diag_handle:
+        return
+    # Compute angular difference
+    dot = abs(before_q.dot(after_q))
+    dot = min(dot, 1.0)
+    import math
+    angle_deg = math.degrees(2 * math.acos(dot))
+    flag = " *** DRIFT" if angle_deg > 0.5 else ""
+    ik_diag(f"    {bone_name:20s}: before=({before_q.w:+.6f},{before_q.x:+.6f},{before_q.y:+.6f},{before_q.z:+.6f})")
+    ik_diag(f"    {'':20s}  after =({after_q.w:+.6f},{after_q.x:+.6f},{after_q.y:+.6f},{after_q.z:+.6f}) Δ={angle_deg:.3f}°{flag} [{method}]")

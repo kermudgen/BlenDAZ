@@ -589,7 +589,7 @@ Control points are defined in **two places** (must stay in sync):
 **Solutions**:
 - `daz_shared_utils.py` changes: **Full Blender restart required**
 - `daz_bone_select.py` changes: Use reload script or restart
-- Use `exec(open(r"D:\dev\BlenDAZ\reload_daz_bone_select.py").read())` for hot reload
+- Use `exec(open(r"D:\Dev\Blender Addons\BlenDAZ\reload_daz_bone_select.py").read())` for hot reload
 
 ### Problem: Operator invoke fails from Text Editor ("Must be in 3D View")
 

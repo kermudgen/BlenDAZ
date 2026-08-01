@@ -92,7 +92,7 @@ Note: `blf` calls must be made within a valid GPU draw context (inside the draw 
 ```python
 # Register PoseBlend manually in Blender Python console
 import sys
-sys.path.insert(0, r"D:\Dev\BlenDAZ\projects")
+sys.path.insert(0, r"D:\Dev\Blender Addons\BlenDAZ\projects")
 import poseblend
 poseblend.register()
 

@@ -99,7 +99,7 @@ def unregister():
 
 ### Option 1: Simple Imports (No Workflow Change)
 
-**Setup:** All files in `d:\dev\blendaz\` folder
+**Setup:** All files in `D:\Dev\Blender Addons\BlenDAZ\` folder
 
 **`__init__.py` structure:**
 ```python
@@ -110,7 +110,7 @@ import operators
 ```
 
 **Your workflow:**
-1. Edit files in `d:\dev\blendaz\`
+1. Edit files in `D:\Dev\Blender Addons\BlenDAZ\`
 2. In Blender: Scripting tab → open `__init__.py` → Run Script
 3. Test immediately
 
@@ -133,7 +133,7 @@ import operators
    - Blender menu: Edit → Preferences → File Paths → Scripts
 2. Create junction/symlink to your dev folder:
    ```cmd
-   mklink /J "C:\Users\YourName\AppData\Roaming\Blender Foundation\Blender\4.x\scripts\addons\blendaz" "d:\dev\blendaz"
+   mklink /J "C:\Users\YourName\AppData\Roaming\Blender Foundation\Blender\4.x\scripts\addons\blendaz" "D:\Dev\Blender Addons\BlenDAZ"
    ```
 3. In Blender: Edit → Preferences → Add-ons → Enable "DAZ Bone Select & Pin"
 
@@ -146,7 +146,7 @@ from . import operators
 ```
 
 **Your workflow:**
-1. Edit files in `d:\dev\blendaz\` (your normal dev location)
+1. Edit files in `D:\Dev\Blender Addons\BlenDAZ\` (your normal dev location)
 2. In Blender: `F3` → type "Reload Scripts" → Enter
 3. Test immediately
 

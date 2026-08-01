@@ -151,28 +151,56 @@ def apply_pose(armature, rotations, bone_mask=None, locations=None):
                 pose_bone.location = Vector(loc_values)
 
 
-def apply_blended_pose(armature, weighted_poses):
-    """Apply a blended pose from multiple weighted sources
+def apply_blended_pose(armature, weighted_poses, grid=None, allowed_bones=None):
+    """Apply a blended pose from multiple weighted sources.
+
+    Masking is enforced here (it was previously stored on dots but never
+    applied). Two independent gates compose:
+
+    - Per-dot mask: each dot only contributes the bones in its own effective
+      mask (``get_bone_mask_for_dot``). A "left arm" dot contributes only left
+      arm bones, even though it stored a full-body pose at capture time.
+    - Grid region mask (``allowed_bones``): the grid's live "active mask" — a
+      set of bone names the blend is allowed to write at all. ``None`` means no
+      gating (write everything the dots contribute).
 
     Args:
         armature: Armature object
         weighted_poses: List of (dot, weight) tuples from blending calculation
+        grid: Active PoseBlendGrid (needed to resolve USE_GRID dot masks)
+        allowed_bones: Set of writable bone names, or None for no region gating
     """
     if not weighted_poses:
         return
 
-    # Collect all affected bones (from rotations)
-    all_bones = set()
+    # Precompute each dot's effective mask and parsed pose data once.
+    # entries: (weight, mask_set_or_None, rotations_dict, locations_dict)
+    entries = []
     for dot, weight in weighted_poses:
-        rotations = dot.get_rotations_dict()
-        all_bones.update(rotations.keys())
+        mask = get_bone_mask_for_dot(dot, grid)
+        mask_set = set(mask) if mask is not None else None
+        entries.append((weight, mask_set, dot.get_rotations_dict(), dot.get_locations_dict()))
+
+    def dot_allows(mask_set, bone_name):
+        return mask_set is None or bone_name in mask_set
+
+    def region_allows(bone_name):
+        return allowed_bones is None or bone_name in allowed_bones
+
+    # Collect affected rotation bones, respecting per-dot + region masks
+    all_bones = set()
+    for weight, mask_set, rotations, _locations in entries:
+        for b in rotations:
+            if dot_allows(mask_set, b) and region_allows(b):
+                all_bones.add(b)
 
     # Blend each bone's rotation
     for bone_name in all_bones:
-        # Collect rotations for this bone from dots that have it
         bone_rotations = []
-        for dot, weight in weighted_poses:
-            quat_data = dot.get_rotation(bone_name)
+        for weight, mask_set, rotations, _locations in entries:
+            if not dot_allows(mask_set, bone_name):
+                continue
+            quat_data = rotations.get(bone_name)
             if quat_data:
                 quat = Quaternion((quat_data[0], quat_data[1], quat_data[2], quat_data[3]))
                 bone_rotations.append((quat, weight))
@@ -180,7 +208,7 @@ def apply_blended_pose(armature, weighted_poses):
         if not bone_rotations:
             continue
 
-        # Blend quaternions
+        # Blend quaternions (weights renormalized inside)
         blended_quat = blend_quaternions(bone_rotations)
 
         # Apply to bone
@@ -193,15 +221,19 @@ def apply_blended_pose(armature, weighted_poses):
 
     # Blend bone locations (hip root bone, any translated bones)
     all_loc_bones = set()
-    for dot, weight in weighted_poses:
-        locations = dot.get_locations_dict()
-        all_loc_bones.update(locations.keys())
+    for weight, mask_set, _rotations, locations in entries:
+        for b in locations:
+            if dot_allows(mask_set, b) and region_allows(b):
+                all_loc_bones.add(b)
 
     for bone_name in all_loc_bones:
-        # Collect locations from all dots — missing means (0,0,0)
+        # Only dots that contribute this bone participate; a masked-out dot
+        # must not drag the location toward zero.
         bone_locs = []
-        for dot, weight in weighted_poses:
-            loc_data = dot.get_location(bone_name)
+        for weight, mask_set, _rotations, locations in entries:
+            if not dot_allows(mask_set, bone_name):
+                continue
+            loc_data = locations.get(bone_name)
             if loc_data:
                 bone_locs.append((Vector(loc_data), weight))
             else:
@@ -403,22 +435,50 @@ def keyframe_pose(armature, bone_mask=None, frame=None):
 # Bone Mask Utilities
 # ============================================================================
 
-def get_bone_mask_for_dot(dot):
-    """Get the effective bone mask for a dot
+def get_bone_mask_for_dot(dot, grid=None):
+    """Get the effective bone mask for a dot.
 
     Args:
         dot: PoseBlendDot PropertyGroup
+        grid: Owning PoseBlendGrid — required to resolve 'USE_GRID' mode
 
     Returns:
         List of bone names, or None for all bones
     """
-    if dot.bone_mask_mode == 'ALL':
+    mode = dot.bone_mask_mode
+
+    if mode == 'USE_GRID':
+        # Inherit the grid's mask. Grid mask is ALL or PRESET.
+        if grid is None or grid.bone_mask_mode == 'ALL':
+            return None
+        return get_bone_group(grid.bone_mask_preset)
+
+    if mode == 'ALL':
         return None  # All bones
-    elif dot.bone_mask_mode == 'PRESET':
+    elif mode == 'PRESET':
         return get_bone_group(dot.bone_mask_preset)
-    elif dot.bone_mask_mode == 'CUSTOM':
+    elif mode == 'CUSTOM':
         return dot.get_custom_mask_list()
     return None
+
+
+def get_grid_region_mask(grid):
+    """Resolve a grid's live 'active mask' to a set of writable bone names.
+
+    Args:
+        grid: PoseBlendGrid, or None
+
+    Returns:
+        Set of bone names the blend is allowed to write, or None for no gating.
+        An empty set means every region is disabled (nothing writes).
+    """
+    if grid is None:
+        return None
+    regions = grid.get_active_regions()
+    if regions is None:
+        return None  # All regions active — no gating
+    from .presets import bones_for_regions
+    return bones_for_regions(regions)
 
 
 def filter_rotations_by_mask(rotations, bone_mask):

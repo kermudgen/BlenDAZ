@@ -14,12 +14,12 @@ BlenDAZ is a collection of Blender addons for working with DAZ Studio characters
 
 ## Quick File Lookup
 
-**See [docs/INDEX.md](docs/INDEX.md) for complete reference.** Key files:
+**See [INDEX.md](INDEX.md) for complete reference.** Key files:
 - Bone selection, IK, modal interaction → [daz_bone_select.py](daz_bone_select.py)
 - Shared utilities (rotation, limits, CPs) → [daz_shared_utils.py](daz_shared_utils.py)
 - Visual posing editor → [posebridge/](posebridge/)
 - Pose blending → [poseblend/](poseblend/)
-- All docs → [docs/](docs/)
+- Supporting docs → [docs/](docs/)
 
 ## Running / Testing
 
@@ -56,6 +56,9 @@ Second IK drag snap-back/wrong position. Root causes: constraint space mismatch 
 ### 🟡 ik_refactor_step_3b — OPEN
 Replace old `rotation_cache = {}` patterns with baking approach in 3 remaining locations.
 
+### 🟢 pin_maintenance_parity — CORE COMPLETE (2026-07-03)
+Pin maintenance now covers rotation (R on hip/pelvis/spine), over-extension (reach leash per DAZ Rule 8 — hip translates back instead of breaking the pin), and pose preservation (originals-reset instead of identity-reset for solver-unowned bones). Tested against production code in `tests/test_pin_maintenance.py` (synthetic G8 rig, headless). Remaining: live feel-test, multi-hand spine drags, Rule 10 full-chain distribution — see TODO.md.
+
 ### ✅ Fixed issues (reference only)
 - **arm_shrugs** — Analytical arm IK solver, 62 tests
 - **knee_bends_backward** — Analytical leg IK solver, 57 tests
@@ -64,13 +67,13 @@ Replace old `rotation_cache = {}` patterns with baking approach in 3 remaining l
 
 ## Documentation System
 
-Five-file system. **All docs except CLAUDE.md are in [docs/](docs/).**
+Five-file system at project root, plus supporting docs in [docs/](docs/).
 
 1. **CLAUDE.md** (this file) — Philosophy, conventions, issue status
 2. **[SESSION_START.md](SESSION_START.md)** — Fast session resumption (read first every session)
-3. **[docs/INDEX.md](docs/INDEX.md)** — File reference and quick lookup
-4. **[docs/TODO.md](docs/TODO.md)** — Task tracking, roadmap, backlog
-5. **[docs/SCRATCHPAD.md](docs/SCRATCHPAD.md)** — Development journal
+3. **[INDEX.md](INDEX.md)** — File reference and quick lookup
+4. **[TODO.md](TODO.md)** — Task tracking, roadmap, backlog
+5. **[SCRATCHPAD.md](SCRATCHPAD.md)** — Long-form decision records and experiment logs
 6. **[docs/TECHNICAL_REFERENCE.md](docs/TECHNICAL_REFERENCE.md)** — IK, DAZ rigs, Blender integration
 
 See [docs/PROJECT_SETUP_GUIDE.md](docs/PROJECT_SETUP_GUIDE.md) for update cadence, archiving rules, and templates.
@@ -86,25 +89,31 @@ See [docs/PROJECT_SETUP_GUIDE.md](docs/PROJECT_SETUP_GUIDE.md) for update cadenc
 Design philosophy, issue status, code conventions.
 
 #### Step 3 — Only if the task requires it
-- Finding a file → [docs/INDEX.md](docs/INDEX.md)
-- Full task backlog → [docs/TODO.md](docs/TODO.md)
+- Finding a file → [INDEX.md](INDEX.md)
+- Full task backlog → [TODO.md](TODO.md)
 - IK/rig research → [docs/TECHNICAL_REFERENCE.md](docs/TECHNICAL_REFERENCE.md)
-- Decision history → [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md)
+- Decision history → [SCRATCHPAD.md](SCRATCHPAD.md)
 
 **Don't front-load.** Read reference docs only when the task requires them.
+
+#### What about auto-memory?
+Auto-memory (MEMORY.md) is loaded automatically — you don't need to read it.
+It contains user preferences, workflow corrections, and external references.
+Project state lives here in the docs, not in memory.
 
 #### When working on this project
 1. Check the Issue Status above before investigating any bug
 2. Follow Code Simplicity and Artist-First principles
-3. Update [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md), [docs/TODO.md](docs/TODO.md), and Issue Status as you work
+3. Update [SCRATCHPAD.md](SCRATCHPAD.md), [TODO.md](TODO.md), and Issue Status as you work
 4. Prefer simple solutions over complex ones
 
 #### End of session
-Update [SESSION_START.md](SESSION_START.md) with current state and what's next (3-5 min).
+Run `/save` to update SESSION_START.md and project docs.
+Save auto-memories only when something genuinely new and cross-session-relevant was learned.
 
 ## Current Focus
 
-**Release preparation.** All core features complete. Pre-release code cleanup done (relative imports, logging, LICENSE, manifest, version numbers). ZIP packaged for install testing. See [SESSION_START.md](SESSION_START.md) for detailed status and remaining checklist items.
+**Pin maintenance DAZ parity.** The analytical depsgraph-handler approach shipped in production (`daz_bone_select.py`) — the native-IK test-script route was abandoned. As of 2026-07-03 pins hold through hip translation AND rotation, over-extension leashes the hip (DAZ Rule 8), and user pose survives pinned drags. Next: live feel-testing and Rule 10 full-chain rotation distribution. See [SESSION_START.md](SESSION_START.md).
 
 ## Questions to Ask Before Making Changes
 

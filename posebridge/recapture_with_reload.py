@@ -5,7 +5,7 @@ import bpy
 from mathutils import Vector
 
 # Add BlenDAZ to path
-blendaz_path = r"D:\dev\BlenDAZ"
+blendaz_path = r"D:\Dev\Blender Addons\BlenDAZ"
 if blendaz_path not in sys.path:
     sys.path.insert(0, blendaz_path)
 

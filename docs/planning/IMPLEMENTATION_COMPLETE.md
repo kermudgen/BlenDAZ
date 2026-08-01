@@ -276,7 +276,7 @@ All validation checks passed:
 
 ## Delivery
 
-**All files ready at**: `D:\Dev\BlenDAZ\`
+**All files ready at**: `D:\Dev\Blender Addons\BlenDAZ\`
 
 **Main Implementation**: `daz_bone_select.py` (version 1.2.0)
 

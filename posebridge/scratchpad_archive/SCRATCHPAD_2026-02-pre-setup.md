@@ -83,7 +83,7 @@ Now the script:
 **Why:**
 The control viewport uses a front-facing orthographic camera at Z=-50m. The gray mannequin mesh sits behind the GP outline and the control point dots, giving a clean silhouette reference without any DAZ materials, rigging, or shape keys distracting from the pose controls.
 
-**Also fixed:** `outline_generator_lineart.py` was missing `projects_path` in its `sys.path` setup inside `capture_fixed_control_points()`, causing `ModuleNotFoundError: No module named 'posebridge'`. Added `r"D:\dev\BlenDAZ\projects"` alongside the existing BlenDAZ root path.
+**Also fixed:** `outline_generator_lineart.py` was missing `projects_path` in its `sys.path` setup inside `capture_fixed_control_points()`, causing `ModuleNotFoundError: No module named 'posebridge'`. Added `r"D:\Dev\Blender Addons\BlenDAZ\projects"` alongside the existing BlenDAZ root path.
 
 **Status:** Implemented, ready for testing
 
@@ -217,13 +217,13 @@ Note: Only bones that exist in the armature will show control points
 4. `start_posebridge.py` - Start PoseBridge mode (Step 6)
 
 **Key Files:**
-- `D:\dev\BlenDAZ\posebridge\start_posebridge.py` - Main startup script
-- `D:\dev\BlenDAZ\posebridge\recapture_control_points.py` - Position recapture
-- `D:\dev\BlenDAZ\posebridge\outline_generator_lineart.py` - Outline generation and control point capture
-- `D:\dev\BlenDAZ\posebridge\drawing.py` - GPU drawing of control points (circles and diamonds)
-- `D:\dev\BlenDAZ\daz_bone_select.py` - Modal operator for interaction (single and multi-bone rotation)
-- `D:\dev\BlenDAZ\daz_shared_utils.py` - Shared control point definitions (imported by outline generator)
-- `D:\dev\BlenDAZ\reload_daz_bone_select.py` - Properly reload daz_bone_select operator
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\start_posebridge.py` - Main startup script
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\recapture_control_points.py` - Position recapture
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\outline_generator_lineart.py` - Outline generation and control point capture
+- `D:\Dev\Blender Addons\BlenDAZ\posebridge\drawing.py` - GPU drawing of control points (circles and diamonds)
+- `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py` - Modal operator for interaction (single and multi-bone rotation)
+- `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py` - Shared control point definitions (imported by outline generator)
+- `D:\Dev\Blender Addons\BlenDAZ\reload_daz_bone_select.py` - Properly reload daz_bone_select operator
 
 ---
 
@@ -375,8 +375,8 @@ Note: Only bones that exist in the armature will show control points
    - Added debug output to twist bone detection (lines 4031, 4033, 4037) to diagnose RMB vertical issue
 
 **Implementation Status:** ✅ Complete (2026-02-15)
-- Updated [daz_bone_select.py](d:\dev\BlenDAZ\daz_bone_select.py) lines ~3867-3995, ~4013-4043, ~2997-3010, ~4232-4261
-- Updated [daz_shared_utils.py](d:\dev\BlenDAZ\daz_shared_utils.py) lines 339, 352, 357, 391, 404, 409 (position + twist targets)
+- Updated [daz_bone_select.py](D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py) lines ~3867-3995, ~4013-4043, ~2997-3010, ~4232-4261
+- Updated [daz_shared_utils.py](D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py) lines 339, 352, 357, 391, 404, 409 (position + twist targets)
 - Added multi-bone target system for context-specific bone routing
 - Added inversion flag system for direction reversals
 - Updated multi-bone neck_group rotation to support 4-way controls (lines ~4056-4082)
@@ -438,7 +438,7 @@ Integrate DAZ PowerPose-style mouse controls into PoseBridge, mapping left/right
 ### Implementation Phase
 
 #### 1. Updated Control Point Definitions
-**File:** `d:\dev\BlenDAZ\daz_shared_utils.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py`
 
 - Updated `get_genesis8_control_points()` with PowerPose-style 4-way mappings
 - Each control point now has `controls` dict with:
@@ -461,7 +461,7 @@ Integrate DAZ PowerPose-style mouse controls into PoseBridge, mapping left/right
 - Reason: User wants to carefully plan bone group placement later
 
 #### 2. Added Helper Functions
-**File:** `d:\dev\BlenDAZ\daz_shared_utils.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py`
 
 - **`get_rotation_axis_from_control(bone_name, mouse_button, is_horizontal)`**
   - Looks up appropriate rotation axis from control mapping
@@ -475,7 +475,7 @@ Integrate DAZ PowerPose-style mouse controls into PoseBridge, mapping left/right
   - Applies rotation using that axis
 
 #### 3. Updated Interaction System
-**File:** `d:\dev\BlenDAZ\daz_bone_select.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 - Added imports at top of file:
   ```python
@@ -551,12 +551,12 @@ Integrate DAZ PowerPose-style mouse controls into PoseBridge, mapping left/right
 
 ### Files Modified
 
-1. `d:\dev\BlenDAZ\daz_shared_utils.py` - Control definitions + helper functions
-2. `d:\dev\BlenDAZ\daz_bone_select.py` - Updated interaction system with imports
-3. `d:\dev\BlenDAZ\posebridge\Posebridge_Control_Node_Map.md` - New comprehensive reference
-4. `d:\dev\BlenDAZ\posebridge\POWERPOSE_INTEGRATION.md` - New integration guide
-5. `d:\dev\BlenDAZ\posebridge\TESTING_POSEBRIDGE.md` - Updated testing procedures
-6. `d:\dev\BlenDAZ\posebridge\scratchpad.md` - This file
+1. `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py` - Control definitions + helper functions
+2. `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py` - Updated interaction system with imports
+3. `D:\Dev\Blender Addons\BlenDAZ\posebridge\Posebridge_Control_Node_Map.md` - New comprehensive reference
+4. `D:\Dev\Blender Addons\BlenDAZ\posebridge\POWERPOSE_INTEGRATION.md` - New integration guide
+5. `D:\Dev\Blender Addons\BlenDAZ\posebridge\TESTING_POSEBRIDGE.md` - Updated testing procedures
+6. `D:\Dev\Blender Addons\BlenDAZ\posebridge\scratchpad.md` - This file
 
 ### Status
 
@@ -601,7 +601,7 @@ Integrate DAZ PowerPose-style mouse controls into PoseBridge, mapping left/right
 
 **To test changes:**
 1. Restart Blender (required to load new `daz_shared_utils.py` definitions)
-2. Or run reload script: `exec(open(r"D:\dev\BlenDAZ\reload_daz_bone_select.py").read())`
+2. Or run reload script: `exec(open(r"D:\Dev\Blender Addons\BlenDAZ\reload_daz_bone_select.py").read())`
 3. Start PoseBridge and test 4-way controls
 
 **Python module caching note:**
@@ -718,7 +718,7 @@ Should be:
 ### Fixes Applied
 
 #### Fix 1: Stop Zeroing Deltas
-**File:** `d:\dev\BlenDAZ\daz_bone_select.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 **Line 4066:**
 ```python
@@ -735,7 +735,7 @@ Should be:
 **Rationale:** Pass both deltas to the function and let it pick the right one based on the axis.
 
 #### Fix 2: Swap LMB Shoulder Axes
-**File:** `d:\dev\BlenDAZ\daz_bone_select.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 **Lines 3973-3974:**
 ```python
@@ -749,7 +749,7 @@ vert_axis = 'X'   # Swing forward/back (vertical drag, X uses delta_y)
 ```
 
 #### Fix 3: RMB Shoulder Twist on Vertical Drag
-**File:** `d:\dev\BlenDAZ\daz_bone_select.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 **Problem:** RMB should control twist (Y axis) with vertical drag, but Y axis uses delta_x (horizontal).
 
@@ -816,9 +816,9 @@ else:
 - Ready for final user testing
 
 **Files Modified:**
-1. `d:\dev\BlenDAZ\daz_bone_select.py` (lines 4066, 4098, 3973-3974, 4094-4115)
-2. `d:\dev\BlenDAZ\poseblend\POSEBLEND_DESIGN.md` (added troubleshooting section)
-3. `d:\dev\BlenDAZ\posebridge\scratchpad.md` (this entry)
+1. `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py` (lines 4066, 4098, 3973-3974, 4094-4115)
+2. `D:\Dev\Blender Addons\BlenDAZ\poseblend\POSEBLEND_DESIGN.md` (added troubleshooting section)
+3. `D:\Dev\Blender Addons\BlenDAZ\posebridge\scratchpad.md` (this entry)
 
 **Testing Required:**
 - User to restart Blender
@@ -868,8 +868,8 @@ def apply_rotation_from_delta(bone, initial_rotation, axis, delta, sensitivity):
 - Twist bone vertical: `apply_rotation_from_delta(twist_bone, quat, 'Y', delta_y, sensitivity)`
 
 **Files Modified:**
-1. `d:\dev\BlenDAZ\daz_bone_select.py` - Simplified function (line ~5208) and all call sites (lines ~4056, ~4075, ~5306)
-2. `d:\dev\BlenDAZ\daz_shared_utils.py` - Simplified function (line ~151) and directional wrapper (line ~625)
+1. `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py` - Simplified function (line ~5208) and all call sites (lines ~4056, ~4075, ~5306)
+2. `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py` - Simplified function (line ~151) and directional wrapper (line ~625)
 
 **Status:** ✅ Complete - ready for testing after Blender restart
 

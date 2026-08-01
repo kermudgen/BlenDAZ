@@ -12,7 +12,7 @@ import sys
 import os
 
 # Add posebridge to path
-addon_dir = r"D:\dev\BlenDAZ\projects\posebridge"
+addon_dir = r"D:\Dev\Blender Addons\BlenDAZ\projects\posebridge"
 if addon_dir not in sys.path:
     sys.path.insert(0, addon_dir)
 

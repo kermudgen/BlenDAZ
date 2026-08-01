@@ -17,6 +17,7 @@
 """PoseBlend Drawing - GPU rendering for grid and dots"""
 
 import bpy
+import blf
 import gpu
 import math
 from gpu_extras.batch import batch_for_shader
@@ -371,14 +372,40 @@ class PoseBlendDrawHandler:
 
     @staticmethod
     def draw_label(position, text, offset):
-        """Draw text label near dot
+        """Draw a dot's name centered just below it, with a legibility shadow.
 
-        Note: Blender's GPU module doesn't support text directly.
-        For text, we'd need to use blf module.
-        This is a placeholder - actual implementation would use blf.
+        Args:
+            position: (x, y) pixel coordinates of the dot center
+            text: Label string (the dot name)
+            offset: Dot radius in pixels (label sits below this)
         """
-        # TODO: Implement text drawing with blf module
-        pass
+        if not text:
+            return
+
+        font_id = 0
+        ui_scale = bpy.context.preferences.system.ui_scale
+        size = max(9, int(11 * ui_scale))
+
+        blf.size(font_id, size)
+
+        try:
+            text_w, text_h = blf.dimensions(font_id, text)
+        except Exception:
+            text_w, text_h = (len(text) * size * 0.5, size)
+
+        x = position[0] - text_w / 2.0
+        y = position[1] - offset - text_h - 2  # just below the dot
+
+        # Drop shadow so the name reads over any background/dot color
+        blf.enable(font_id, blf.SHADOW)
+        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.9)
+        blf.shadow_offset(font_id, 1, -1)
+
+        blf.position(font_id, x, y, 0)
+        blf.color(font_id, 1.0, 1.0, 1.0, 0.95)
+        blf.draw(font_id, text)
+
+        blf.disable(font_id, blf.SHADOW)
 
     @staticmethod
     def draw_cursor(grid_region, cursor_pos, zoom=1.0, pan_center=(0.5, 0.5)):

@@ -27,7 +27,7 @@ from mathutils import Quaternion
 # ---------------------------------------------------------------------------
 # Path setup
 # ---------------------------------------------------------------------------
-PROJECTS_DIR = r"D:\Dev\BlenDAZ\projects"
+PROJECTS_DIR = r"D:\Dev\Blender Addons\BlenDAZ\projects"
 if PROJECTS_DIR not in sys.path:
     sys.path.insert(0, PROJECTS_DIR)
 

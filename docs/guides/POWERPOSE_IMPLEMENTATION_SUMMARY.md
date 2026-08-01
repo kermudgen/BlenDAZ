@@ -101,7 +101,7 @@ elif axis == 'Z':
 
 ## File Changes
 
-**Modified File**: `D:\Dev\BlenDAZ\daz_bone_select.py`
+**Modified File**: `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 **Lines Added**: ~300 lines
 

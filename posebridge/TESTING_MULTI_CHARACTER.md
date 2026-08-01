@@ -16,7 +16,7 @@ Flow: register_only → scan → register → activate
 Run `register_only.py` to get the N-Panel without any character setup.
 
 1. Open **Text Editor** in Blender
-2. Open: `D:\Dev\BlenDAZ\register_only.py`
+2. Open: `D:\Dev\Blender Addons\BlenDAZ\register_only.py`
 3. Click **Run Script**
 
 **Expected console output:**

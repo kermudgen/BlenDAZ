@@ -43,7 +43,7 @@ The documentation audit system analyzes your project docs and provides actionabl
 
 ### Quick Start (Windows)
 ```batch
-cd d:\dev\BlenDAZ
+cd D:\Dev\Blender Addons\BlenDAZ
 schedule_docs_audit.bat
 ```
 

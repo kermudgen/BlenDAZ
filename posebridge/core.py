@@ -439,6 +439,12 @@ class PoseBridgeSettings(PropertyGroup):
         subtype='FACTOR'
     )
 
+    pins_enabled: BoolProperty(
+        name="Enable Pins",
+        description="Master toggle for all bone pin constraints",
+        default=True
+    )
+
     control_points_fixed: CollectionProperty(
         type=PoseBridgeControlPoint,
         name="Fixed Control Points",

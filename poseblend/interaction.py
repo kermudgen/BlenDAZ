@@ -20,8 +20,8 @@ import bpy
 from bpy.types import Operator
 from .grid import pixel_to_grid, find_dot_at_position, snap_to_grid, clamp_to_grid
 from .blending import calculate_blend_weights
-from .poses import apply_blended_pose, capture_pose, capture_bone_locations, keyframe_pose, get_bone_mask_for_dot, capture_morphs, apply_morphs, blend_morphs
-from .presets import get_dot_color, get_morph_names_for_categories
+from .poses import apply_blended_pose, capture_pose, capture_bone_locations, keyframe_pose, get_bone_mask_for_dot, get_grid_region_mask, capture_morphs, apply_morphs, blend_morphs
+from .presets import get_dot_color, get_morph_names_for_categories, MASK_REGIONS, MASK_REGION_KEYS
 
 
 
@@ -378,7 +378,8 @@ class POSEBLEND_OT_interact(Operator):
         )
 
         if weights:
-            apply_blended_pose(armature, weights)
+            allowed = get_grid_region_mask(grid)
+            apply_blended_pose(armature, weights, grid=grid, allowed_bones=allowed)
 
             # Blend and apply morphs
             weighted_morphs = []
@@ -410,22 +411,30 @@ class POSEBLEND_OT_interact(Operator):
     def apply_dot_pose(self, context, dot):
         """Apply a single dot's pose directly"""
         settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
         armature = bpy.data.objects.get(settings.active_armature_name)
 
         if not armature:
             return
 
-        # Apply with 100% weight
-        apply_blended_pose(armature, [(dot, 1.0)])
+        # Apply with 100% weight, honoring per-dot and grid region masks
+        allowed = get_grid_region_mask(grid)
+        apply_blended_pose(armature, [(dot, 1.0)], grid=grid, allowed_bones=allowed)
 
         # Apply morphs
         md = dot.get_morphs_dict()
         if md:
             apply_morphs(armature, md)
 
-        # Auto keyframe if enabled
+        # Auto keyframe if enabled — key the same bones that were written
+        # (per-dot mask ∩ active region mask)
         if settings.auto_keyframe:
-            bone_mask = get_bone_mask_for_dot(dot)
+            bone_mask = get_bone_mask_for_dot(dot, grid)
+            if allowed is not None:
+                if bone_mask is None:
+                    bone_mask = list(allowed)
+                else:
+                    bone_mask = [b for b in bone_mask if b in allowed]
             keyframe_pose(armature, bone_mask)
 
     def create_dot_at_cursor(self, context):
@@ -658,14 +667,143 @@ class POSEBLEND_OT_update_dot_pose(Operator):
         return {'FINISHED'}
 
 
+_DOT_MASK_MODE_ITEMS = [
+    ('USE_GRID', 'Use Grid Default', 'Inherit bone mask from grid'),
+    ('ALL', 'Full Body', 'All bones (override grid)'),
+    ('PRESET', 'Preset Region', 'Use predefined bone group (override grid)'),
+    ('CUSTOM', 'Custom', 'Custom bone selection'),
+]
+
+_DOT_MASK_PRESET_ITEMS = [
+    ('HEAD', 'Head & Face', 'Head, neck, eyes, jaw'),
+    ('UPPER_BODY', 'Upper Body', 'Spine, chest, shoulders, arms'),
+    ('LOWER_BODY', 'Lower Body', 'Pelvis, legs, feet'),
+    ('ARMS', 'Arms', 'Both arms and hands'),
+    ('ARM_L', 'Left Arm', 'Left arm and hand'),
+    ('ARM_R', 'Right Arm', 'Right arm and hand'),
+    ('LEGS', 'Legs', 'Both legs and feet'),
+    ('LEG_L', 'Left Leg', 'Left leg and foot'),
+    ('LEG_R', 'Right Leg', 'Right leg and foot'),
+    ('HANDS', 'Hands', 'Fingers only'),
+    ('FACE', 'Face', 'Facial bones/expressions'),
+    ('SPINE', 'Spine', 'Spine and torso only'),
+]
+
+
 class POSEBLEND_OT_edit_dot_mask(Operator):
-    """Edit bone mask for selected dot"""
+    """Edit which bones the selected dot contributes to the blend"""
     bl_idname = "poseblend.edit_dot_mask"
     bl_label = "Edit Bone Mask"
+    bl_options = {'REGISTER', 'UNDO'}
 
-    # TODO: Implement mask editing UI
+    mask_mode: bpy.props.EnumProperty(
+        name="Mode", items=_DOT_MASK_MODE_ITEMS, default='USE_GRID'
+    )
+    mask_preset: bpy.props.EnumProperty(
+        name="Preset", items=_DOT_MASK_PRESET_ITEMS, default='HEAD'
+    )
+
+    def invoke(self, context, event):
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if grid:
+            dot = grid.get_active_dot()
+            if dot:
+                self.mask_mode = dot.bone_mask_mode
+                self.mask_preset = dot.bone_mask_preset
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "mask_mode")
+        if self.mask_mode == 'PRESET':
+            layout.prop(self, "mask_preset")
+        elif self.mask_mode == 'CUSTOM':
+            layout.label(text="Custom bone list kept as-is.", icon='INFO')
+
     def execute(self, context):
-        self.report({'INFO'}, "Mask editing not yet implemented")
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if not grid:
+            return {'CANCELLED'}
+        dot = grid.get_active_dot()
+        if not dot:
+            self.report({'WARNING'}, "No active dot")
+            return {'CANCELLED'}
+
+        dot.bone_mask_mode = self.mask_mode
+        dot.bone_mask_preset = self.mask_preset
+        dot.color = get_dot_color(dot.bone_mask_mode, dot.bone_mask_preset)
+        context.area.tag_redraw()
+        self.report({'INFO'}, f"Updated mask for: {dot.name}")
+        return {'FINISHED'}
+
+
+# ============================================================================
+# Live Body-Part Mask (Director-style region gate)
+# ============================================================================
+
+class POSEBLEND_OT_mask_region(Operator):
+    """Toggle a body-part region. Shift-click to solo just this region"""
+    bl_idname = "poseblend.mask_region"
+    bl_label = "Toggle Mask Region"
+    bl_options = {'INTERNAL'}
+
+    region: bpy.props.StringProperty(name="Region", default="")
+
+    _solo: bool = False
+
+    def invoke(self, context, event):
+        self._solo = event.shift
+        return self.execute(context)
+
+    def execute(self, context):
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if not grid or not self.region:
+            return {'CANCELLED'}
+
+        if self._solo:
+            grid.solo_region(self.region)
+        else:
+            grid.toggle_region(self.region)
+
+        if context.area:
+            context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class POSEBLEND_OT_mask_all(Operator):
+    """Enable all body-part regions (no masking)"""
+    bl_idname = "poseblend.mask_all"
+    bl_label = "Mask: All"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if not grid:
+            return {'CANCELLED'}
+        grid.set_active_regions(None)
+        if context.area:
+            context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class POSEBLEND_OT_mask_none(Operator):
+    """Disable all body-part regions (freeze everything)"""
+    bl_idname = "poseblend.mask_none"
+    bl_label = "Mask: None"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        settings = context.scene.poseblend_settings
+        grid = settings.get_active_grid()
+        if not grid:
+            return {'CANCELLED'}
+        grid.set_active_regions([])
+        if context.area:
+            context.area.tag_redraw()
         return {'FINISHED'}
 
 
@@ -774,6 +912,9 @@ classes = (
     POSEBLEND_OT_duplicate_dot,
     POSEBLEND_OT_update_dot_pose,
     POSEBLEND_OT_edit_dot_mask,
+    POSEBLEND_OT_mask_region,
+    POSEBLEND_OT_mask_all,
+    POSEBLEND_OT_mask_none,
     POSEBLEND_OT_clear_grid,
     POSEBLEND_OT_reset_view,
     POSEBLEND_OT_rename_grid,

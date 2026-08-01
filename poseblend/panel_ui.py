@@ -18,7 +18,12 @@
 
 import bpy
 from bpy.types import Panel, Operator, UIList
-from .presets import get_available_morph_categories, get_available_custom_morph_cats
+from .presets import (
+    get_available_morph_categories,
+    get_available_custom_morph_cats,
+    MASK_REGIONS,
+    MASK_REGION_KEYS,
+)
 
 
 
@@ -91,6 +96,47 @@ class VIEW3D_PT_poseblend_main(Panel):
                 col.prop(grid, "bone_mask_mode", text="")
                 if grid.bone_mask_mode == 'PRESET':
                     col.prop(grid, "bone_mask_preset", text="")
+
+                box.separator()
+
+                # Live body-part mask — gates which regions the blend may move
+                # right now. Click to toggle, Shift-click to solo a region.
+                mask_box = box.box()
+                header = mask_box.row(align=True)
+                header.label(text="Live Mask:", icon='MOD_MASK')
+                sub = header.row(align=True)
+                sub.operator("poseblend.mask_all", text="All")
+                sub.operator("poseblend.mask_none", text="None")
+
+                def region_btn(parent, key):
+                    op = parent.operator(
+                        "poseblend.mask_region",
+                        text=MASK_REGIONS[key][0],
+                        depress=grid.is_region_active(key),
+                    )
+                    op.region = key
+
+                # Rough body map (Shift-click any region to solo it)
+                mcol = mask_box.column(align=True)
+                r = mcol.row(align=True)
+                r.label(text="")
+                region_btn(r, 'HEAD')
+                r.label(text="")
+                r = mcol.row(align=True)
+                region_btn(r, 'ARM_L')
+                region_btn(r, 'TORSO')
+                region_btn(r, 'ARM_R')
+                r = mcol.row(align=True)
+                region_btn(r, 'HAND_L')
+                region_btn(r, 'HIP')
+                region_btn(r, 'HAND_R')
+                r = mcol.row(align=True)
+                region_btn(r, 'LEG_L')
+                r.label(text="")
+                region_btn(r, 'LEG_R')
+
+                if not grid.all_regions_active():
+                    mask_box.label(text="Masking active", icon='INFO')
 
                 box.separator()
 

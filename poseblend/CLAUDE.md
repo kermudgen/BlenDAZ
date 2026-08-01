@@ -25,7 +25,7 @@ Common lookups:
 
 ## Project Structure
 ```
-D:\Dev\BlenDAZ\poseblend\
+D:\Dev\Blender Addons\BlenDAZ\poseblend\
   __init__.py              # Module registration, bl_info, register()/unregister()
   core.py                  # PropertyGroups: PoseBlendDot, PoseBlendGrid, PoseBlendSettings
   poses.py                 # Pose capture, apply, quaternion blending, keyframing

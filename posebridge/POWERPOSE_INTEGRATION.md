@@ -11,7 +11,7 @@ PoseBridge now uses **DAZ PowerPose-style 4-way directional controls** for bone 
 
 ### 1. Control Point Definitions Updated
 
-**File:** `d:\dev\BlenDAZ\daz_shared_utils.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py`
 
 Each control point now includes a `controls` dictionary with 4 mappings:
 
@@ -42,7 +42,7 @@ Each control point now includes a `controls` dictionary with 4 mappings:
 
 ### 2. New Helper Functions Added
 
-**File:** `d:\dev\BlenDAZ\daz_shared_utils.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py`
 
 #### `get_rotation_axis_from_control(bone_name, mouse_button, is_horizontal)`
 Returns the appropriate rotation axis ('X', 'Y', 'Z', or None) based on:
@@ -58,7 +58,7 @@ Applies rotation using PowerPose-style directional mapping:
 
 ### 3. Interaction System Updated
 
-**File:** `d:\dev\BlenDAZ\daz_bone_select.py`
+**File:** `D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`
 
 The `update_rotation()` method now uses the new directional control system:
 
@@ -208,22 +208,22 @@ apply_rotation_from_delta_directional(
 ## Files Modified
 
 ### Updated Files
-1. **`d:\dev\BlenDAZ\daz_shared_utils.py`**
+1. **`D:\Dev\Blender Addons\BlenDAZ\daz_shared_utils.py`**
    - Updated `get_genesis8_control_points()` with 4-way control mappings
    - Added `get_rotation_axis_from_control()` function
    - Added `apply_rotation_from_delta_directional()` function
 
-2. **`d:\dev\BlenDAZ\daz_bone_select.py`**
+2. **`D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py`**
    - Updated `update_rotation()` to use new directional system
    - Simplified from ~70 lines of special-case logic to ~15 lines
 
 ### New Files
-1. **`d:\dev\BlenDAZ\posebridge\Posebridge_Control_Node_Map.md`**
+1. **`D:\Dev\Blender Addons\BlenDAZ\posebridge\Posebridge_Control_Node_Map.md`**
    - Comprehensive control mapping reference document
    - Implementation guidelines
    - Bone name mapping reference
 
-2. **`d:\dev\BlenDAZ\posebridge\POWERPOSE_INTEGRATION.md`** (this file)
+2. **`D:\Dev\Blender Addons\BlenDAZ\posebridge\POWERPOSE_INTEGRATION.md`** (this file)
    - Integration summary
    - Usage guide
    - Testing instructions

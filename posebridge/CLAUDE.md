@@ -27,7 +27,7 @@ Common lookups:
 
 ## Project Structure
 ```
-D:\Dev\BlenDAZ\                     # Addon package (BlenDAZ)
+D:\Dev\Blender Addons\BlenDAZ\                     # Addon package (BlenDAZ)
   __init__.py                       # Addon entry point, root logging config
   blender_manifest.toml             # Blender extension manifest (id=blendaz, v1.0.0)
   LICENSE                           # GPL-3.0

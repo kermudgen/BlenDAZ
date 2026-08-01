@@ -52,7 +52,7 @@ SKIP_POSEBLEND = False  # Set True to skip PoseBlend registration
 # Path setup — add parent of BlenDAZ so package imports resolve
 # ============================================================================
 
-BLENDAZ_PARENT = r"D:\Dev"
+BLENDAZ_PARENT = r"D:\Dev\Blender Addons"
 
 if BLENDAZ_PARENT not in sys.path:
     sys.path.insert(0, BLENDAZ_PARENT)

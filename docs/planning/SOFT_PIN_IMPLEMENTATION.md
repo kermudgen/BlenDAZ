@@ -56,7 +56,7 @@ Soft Pin System:
 ## Code Changes
 
 ### Files Modified
-- **D:\Dev\BlenDAZ\daz_bone_select.py**
+- **D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py**
 
 ### New Instance Variables (lines 1519-1524)
 ```python

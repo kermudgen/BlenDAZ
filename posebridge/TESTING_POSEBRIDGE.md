@@ -7,7 +7,7 @@ This guide walks you through testing the PoseBridge Phase 1 MVP with fixed contr
 ## Prerequisites
 - Blender open with Genesis 8 character (mesh + armature)
 - Character in **T-pose** (arms out horizontally, legs straight)
-- BlenDAZ addon files in `D:\dev\BlenDAZ`
+- BlenDAZ addon files in `D:\Dev\Blender Addons\BlenDAZ`
 
 ---
 
@@ -29,8 +29,8 @@ This guide walks you through testing the PoseBridge Phase 1 MVP with fixed contr
 
 ```python
 import bpy, sys
-blendaz_path = r"D:\dev\BlenDAZ"
-projects_path = r"D:\dev\BlenDAZ\projects"
+blendaz_path = r"D:\Dev\Blender Addons\BlenDAZ"
+projects_path = r"D:\Dev\Blender Addons\BlenDAZ\projects"
 if blendaz_path not in sys.path:
     sys.path.insert(0, blendaz_path)
 if projects_path not in sys.path:
@@ -43,7 +43,7 @@ print("✓ PoseBridge registered")
 **Expected output:** `✓ PoseBridge registered`
 
 **Troubleshooting:**
-- If you get an error, make sure the path is correct: `D:\dev\BlenDAZ`
+- If you get an error, make sure the path is correct: `D:\Dev\Blender Addons\BlenDAZ`
 - Check that `posebridge` folder exists in that directory
 
 ---
@@ -53,7 +53,7 @@ print("✓ PoseBridge registered")
 **Steps:**
 1. **Select your mesh** in the viewport
 2. Open **Text Editor** (Editor Type → Text Editor)
-3. Open file: `D:\dev\BlenDAZ\projects\posebridge\outline_generator_lineart.py`
+3. Open file: `D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\outline_generator_lineart.py`
 4. Click **Run Script** button (▶)
 
 **Expected output in console:**
@@ -114,7 +114,7 @@ print("✓ Moved to -50m")
 **Steps:**
 1. Open **Text Editor** (Editor Type → Text Editor)
 2. Click **Open** button
-3. Navigate to: `D:\dev\BlenDAZ\projects\posebridge\recapture_control_points.py`
+3. Navigate to: `D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\recapture_control_points.py`
 4. **IMPORTANT**: Before running, change `ARMATURE_NAME = "Fey"` to match your armature's name
 5. Click **Run Script** button (▶)
 
@@ -167,7 +167,7 @@ Recapturing Fixed Control Point Positions...
 
 1. Open **Text Editor** (Editor Type → Text Editor)
 2. Click **Open** button
-3. Navigate to: `D:\dev\BlenDAZ\projects\posebridge\start_posebridge.py`
+3. Navigate to: `D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\start_posebridge.py`
 4. **IMPORTANT**: Before running, open the file and change `ARMATURE_NAME = "Fey"` to match your armature's name
 5. Click **Run Script** button (▶)
 
@@ -176,7 +176,7 @@ Recapturing Fixed Control Point Positions...
 ======================================================================
 Starting PoseBridge...
 ======================================================================
-✓ Added D:\dev\BlenDAZ to Python path
+✓ Added D:\Dev\Blender Addons\BlenDAZ to Python path
 ✓ PoseBridge registered
 ✓ daz_bone_select registered
 ✓ PoseBridge mode enabled for armature: Fey
@@ -196,7 +196,7 @@ Then the modal operator will start automatically...
 
 If you prefer to use Python console, run this single command:
 ```python
-exec(open(r"D:\dev\BlenDAZ\projects\posebridge\start_posebridge.py").read())
+exec(open(r"D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\start_posebridge.py").read())
 ```
 
 **Expected:**
@@ -399,7 +399,7 @@ The hand panel provides detailed control over finger joints with 42 control poin
 **Run in Text Editor:**
 
 1. Open **Text Editor**
-2. Open file: `D:\dev\BlenDAZ\projects\posebridge\test_hand_integration.py`
+2. Open file: `D:\Dev\Blender Addons\BlenDAZ\projects\posebridge\test_hand_integration.py`
 3. **IMPORTANT**: Edit lines 15-16 to match your scene:
    ```python
    STANDIN_NAME = "Fey Mesh_Standin"  # Your mesh name

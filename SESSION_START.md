@@ -3,101 +3,70 @@
 > **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
 > Update at the end of every session (3-5 min).
 
-**Updated**: 2026-03-06 (session 14)
+**Updated**: 2026-07-07 (soft-pin wrist anchor fix)
 
 ---
 
 ## Current State
 
-**Active stress testing and feature iteration.** PoseBlend morph category blending implemented (FACS, expressions, visemes, body, custom DazMorphCats). Streamline mesh muting added — user-selectable popup hides high-poly meshes + disables their Armature modifiers during Streamline for dramatically faster posing. Streamline sub-toggles now live-update. Face mode isolates active character in PB viewport via Blender local view (other characters hidden in PB viewport only, main viewport unaffected). All changes committed as `2407846`.
+**Pin maintenance is in production** (`daz_bone_select.py`) and now covers rotation, over-extension, and pose preservation. Architecture: pins = hidden empties + COPY_LOCATION/COPY_ROTATION constraints; during hip/torso drags a depsgraph handler re-solves pinned limbs analytically every frame (`_solve_pin_maintenance_frame`). The old native-IK test-script approach was abandoned (solver pops — see vault `Pin Maintenance Solver Journey.md`); the analytical depsgraph-handler approach is what shipped.
+
+New this session (2026-07-03):
+- **R-key pin maintenance** — rotating hip/pelvis/spine bones keeps pinned hands/feet/head planted (was translation-only; feet used to visually detach from legs)
+- **Reach leash (DAZ Rule 8)** — over-extending a drag translates the hip back instead of silently breaking the pin; radial-only so tangential drag slides along the reach sphere
+- **Pose preservation** — per-frame reset now uses pre-drag originals for twist bones, endpoints, and neck-compensation spine bones (identity reset was wiping user-posed foot roll / twists / spine during pinned drags)
+- **Production-code tests** — `tests/test_pin_maintenance.py` (6 tests) runs the REAL solver methods headlessly against a synthetic G8 rig fixture in `conftest.py` (no DAZ content needed)
+- **Live-rig validated** — via Claude Bridge on a G8M ogre with both hands pinned: hip translate/rotate/leash all converge to ≤2mm endpoint error. Three real-rig bugs found and fixed in the process (arm reach measured to forearmBend.tail instead of the wrist, leash overshoot with multiple pins, residual miss from wrist offset + live LIMIT_ROTATION clamping → per-limb aim feedback). See DRAG_FIX_LOG #005.
+
+New 2026-07-07 (spawned from the 07-03 "found in passing" item):
+- **Soft-pin drag wrist anchor fixed** — `start_ik_drag` locked the IK goal at forearmBend.tail (mid-forearm on Diffeo rigs, 225.9mm off the ogre's wrist), and the lock point didn't match the IK effector anyway (hand **tail**, another 184mm). All three points (lock position, .ik.target creation, effector via `use_tail=False` in soft-pin mode) now sit at the pinned child's **head** — the wrist/ankle the pin constraint actually holds. Also fixes pinned-foot leg drags. `fabrik_solver.py` audited clean. New test `tests/test_soft_pin_ik_chain.py`; suite 21 pass / 4 skip. DRAG_FIX_LOG #008. **Feel-test pending** (addon hot-reloaded live; restart Touch first).
 
 ---
 
-## Active Sub-Projects
+## What We Did Last Session (2026-07-03)
 
-| Sub-project | Status | Session Start |
-|-------------|--------|---------------|
-| [posebridge/](posebridge/) | 🟢 Streamline mesh muting, face local view isolation, sub-toggle live updates | [SESSION_START.md](posebridge/SESSION_START.md) |
-| [poseblend/](poseblend/) | 🟢 Morph category blending working, tested with Diffeomorphic morphs | [SESSION_START.md](poseblend/SESSION_START.md) |
-
-**Read the sub-project SESSION_START.md for the one you're working on.**
-
----
-
-## What We Did Last Session (2026-03-05/06, sessions 13-14)
-
-### PoseBlend Morph Categories
-- Added morph capture/blend/apply to `poseblend/poses.py` (capture_morphs, apply_morphs, blend_morphs)
-- New `MORPH_CATEGORIES` in `poseblend/presets.py` mapping to Diffeomorphic attributes (DazFacs, DazExpressions, etc.)
-- Custom morph support via `DazMorphCats` collection
-- New Morph Categories sub-panel in `poseblend/panel_ui.py` with per-grid toggles
-- Morph values stored as JSON on PoseBlendDot, blended alongside bone poses
-
-### Streamline High-Poly Mesh Muting
-- `posebridge/core.py`: `streamline_muted_meshes` JSON StringProperty on CharacterSlot + helpers
-- `posebridge/streamline.py`: `mute_armature_meshes` param — hides meshes + disables Armature modifiers
-- `posebridge/panel_ui.py`: Popup dialog (`BLENDAZ_OT_select_streamline_meshes`) scans child meshes with vertex counts, auto-checks high-poly, All/None buttons
-- `posebridge/core.py`: Split callbacks — `_on_streamline_master_toggled` (master ON/OFF) and `_on_streamline_toggled` (sub-toggles do restore-all then re-apply). Master OFF = unconditional full restore.
-
-### Face Mode Local View Isolation
-- `posebridge/panel_ui.py`: `_enter_face_local_view()` / `_exit_face_local_view()` — uses Blender local view via `temp_override` to isolate active character in PB viewport only
-- `daz_bone_select.py`: `_refresh_face_local_view()` — re-isolates when switching characters in Face mode
-- Main 3D viewport stays unaffected (other characters still visible)
-
-### Bug Fixes
-- Fixed `bpy.ops.object.select_all()` context error in face local view (replaced with direct `obj.select_set()`)
+- Mapped the full pin system (creation → maintenance → bake-back) and gap-analyzed against the 10 DAZ behavioral rules from vault research
+- Extracted the hip-pin depsgraph handler body into `_solve_pin_maintenance_frame()`; generalized `_start_hip_pin_drag()` with `transform_op` ('TRANSLATE'/'ROTATE') and `rotated_bone_name`
+- Added `_apply_pin_reach_leash()` — world-space deficit correction on the root bone, margin 0.99 (tighter than the solver's 0.995 clamp so they never fight)
+- R-key block now routes hip/pelvis/spine rotations with pinned limbs through the pin-maintenance handler (intercepts when the rotated bone can move a pin; maintains ALL pins once active since the leash can translate the hip)
+- Added synthetic Genesis-8 armature fixture + `load_production_module()` package-import helper (daz_bone_select uses relative imports) to `tests/conftest.py`
+- All tests green headless: 6 new + 11 existing (`blender --background --python tests/run_tests.py`)
 
 ---
 
 ## Next Up
 
-**Testing (active):**
-- [ ] Continue stress testing all features with multiple characters
-- [ ] Test Streamline mesh muting with various character configurations
-- [ ] Test PoseBlend morph blending with all category types
-
-**Feature TODO:**
-1. **Head rotation CP in face mode** — add head rotation control point for PoseBridge
-2. **Finger bone selection after posing hand** — drill into child bones (low priority)
-3. **PoseBlend stale modal on BlenDAZ restart** — auto-relaunch or reset is_active
-4. **Rename PoseBridge/PoseBlend** — Touch / Pose / Mixer naming (big refactor, dedicated session)
-
-**Post-v1:**
-- Blender-style bone renaming support (`.L`/`.R` suffixes for Paste X-Flipped Pose etc.)
-
-**Release:**
-- [ ] Marketing assets (cover image, screenshots, demo video, product description)
-- [ ] Launch channels (Superhive, Gumroad, community posts)
+1. **Feel-test in live Blender** — R on hip/chest with pins, leash behavior at full extension (tests prove positions; feel needs eyes)
+2. **Spine-bone G-drag with multiple pinned hands** — soft-pin path still honors only ONE pinned descendant (`find_pinned_descendant` singular); DAZ holds both
+3. **Rule 10 full-chain participation** — hip-pin arm solve engages collar+arm only; DAZ engages spine→collar→arm with measured distribution (vault: context profiles)
+4. **Collar tuning** — pin-maintenance collar influence (0.45 damped-track) vs DAZ's 20.5% absorption
+5. **Unpin preservation check** — delta bake-back exists in `unpin_bone()`; TODO.md still lists the old bug as open — verify and close
+6. **PinPool** (from plan, never built) — pre-created empties to avoid per-pin object churn
 
 ---
 
 ## Don't Forget
 
-- **Package structure**: `blendaz/` top-level folder inside ZIP, matching manifest `id`
-- **Imports**: All shipped files use relative imports. Dev scripts use `from BlenDAZ import ...`
-- **Logging**: `logging.getLogger(__name__)` in each module. Root logger "BlenDAZ" at WARNING level.
-- `daz_shared_utils.py` changes → **full Blender restart** (importlib.reload doesn't work)
-- `posebridge/core.py` changes (PropertyGroup) → **full Blender restart**
-- `daz_bone_select.py` changes → reload script or restart
-- **Blender objects don't support arbitrary Python attributes** — use `obj["foo"]` (custom properties) or return values instead of `obj._foo`
-- **User's preferred workflow**: `register_only.py` → Scan → Register → Activate (NOT `setup_all.py` as entry point)
-- **Commit discipline**: wait until things work before committing — don't commit every small fix
-- **Multi-viewport architecture** (single modal, all viewports):
-  - `_resolve_event_viewport(context, event)` — find viewport under mouse (canonical helper)
-  - `_find_pb_viewport(context)` — find PB viewport (assigned PB_Camera_* name)
-  - `_find_main_viewport(context)` — find non-PB viewport
-  - `_mode_set_safe(context, mode)` — route mode_set through main viewport (protects PB camera)
-  - `_set_header(context, text)` — broadcasts to ALL VIEW_3D areas
-  - **Never use `context.area`/`context.region` directly** for raycasts or UI checks — always resolve via `_resolve_event_viewport()`
-  - **Never call `bpy.ops.object.mode_set()` directly** — use `_mode_set_safe()` to protect PB viewport
-- **Per-character caches** (class-level dicts on `VIEW3D_OT_daz_bone_select`, persist across modal restarts):
-  - `_base_body_meshes = {}` — `{armature_name: mesh_obj}` resolves through clothing
-  - `_face_group_mgrs = {}` — `{armature_name: FaceGroupManager}` DSF zone detection
-- **RAYCAST 2 pattern**: Scene raycast → armature modifier lookup → raycast cached body mesh → priority within 1.0m threshold
-- **Proximity bone override**: After DSF resolution, if result is torso/thigh bone, check if IK-target bone's posed position is within 0.15m of hit location
-- **Streamline sub-toggle pattern**: restore-all (`apply_streamline(False)`) then re-apply with current values. Master OFF = `apply_streamline(False)` with all defaults.
-- **Face local view**: Uses `bpy.ops.view3d.localview()` with `temp_override` targeting PB area. Must re-ensure camera mode after entering local view. Selection saved/restored around localview call.
-- **Diagnostic logger**: `diag_logger.py` — set `DIAG_ENABLED = True` to capture structured events to `logs/diag_events.jsonl`. Disable when not debugging.
+- **⚠️ Diff dev↔extension BEFORE any sync** — live bridge sessions edit the installed extension directly; in April 2026 the extension was ~650 lines ahead of dev (pin icons, ik_diag logging, freeze anti-pop) and a careless overwrite lost it (recovered from the Blender 5.0 profile, merged 2026-07-07 — DRAG_FIX_LOG #008)
+- **Solver-owned bones need identity reset** — `_solve_pinned_limb` reads the pose matrix as its rest frame, so thigh/shin/collar/shoulder/forearm/neck must be identity before each pass; everything else resets to pre-drag originals (see `_PIN_SOLVER_OWNED_KEYS`)
+- **Leash margin (0.99) < solver reach clamp (0.995)** — keep that ordering or they fight at the boundary
+- **Check vault before implementing** — `BlenDAZ/IK Stiffness Reference.md`, `Pin Maintenance Solver Journey.md`, `blendaz-research-findings.md`. Don't re-derive values that already exist.
+- **Headless tests**: `"D:/SteamLibrary/steamapps/common/Blender/blender.exe" --background --python tests/run_tests.py -- tests/test_pin_maintenance.py -v` (pytest is installed in Blender 5.1's Python)
+- **Pin workflow**: hover → click to select → P to pin (Shift+P rotation) → select hip → G to drag / R to rotate
+- **Live-Blender bridge**: `scripts/bridge_workflow.py` (port 7777) — needs Blender running with Claude Bridge started
+- `daz_shared_utils.py` changes → **full Blender restart**
+- **Commit discipline**: wait until things work before committing
+
+---
+
+## Files Most Likely Needed Next Session
+
+| File | Why |
+|------|-----|
+| `daz_bone_select.py` | All pin code: `_start_hip_pin_drag` / `_solve_pin_maintenance_frame` / `_apply_pin_reach_leash` / R-key block (~line 3060) |
+| `tests/test_pin_maintenance.py` | Production-code pin tests (synthetic rig) |
+| `tests/conftest.py` | `build_synthetic_g8()`, `load_production_module()` |
+| `fabrik_solver.py` | Drag-IK FABRIK (soft-pin arm drags) |
 
 ---
 
@@ -106,19 +75,9 @@
 | File | When to read |
 |------|-------------|
 | [CLAUDE.md](CLAUDE.md) | Design philosophy, issue status, conventions |
-| [docs/INDEX.md](docs/INDEX.md) | Finding a specific file |
-| [docs/TODO.md](docs/TODO.md) | Full task backlog |
+| [INDEX.md](INDEX.md) | Finding a specific file |
+| [TODO.md](TODO.md) | Full task backlog |
 | [docs/TECHNICAL_REFERENCE.md](docs/TECHNICAL_REFERENCE.md) | IK research, DAZ rig architecture, rotation math |
-| [docs/SCRATCHPAD.md](docs/SCRATCHPAD.md) | History of decisions |
-
----
-
-## How to Update This File
-
-At the end of each session, update:
-1. **Updated** date
-2. **Current State** — 2-3 sentences on where things stand
-3. **Active Sub-Projects** — update status emoji if phase changes
-4. **What We Did Last Session** — replace with this session's work
-5. **Next Up** — sync with active sub-project TODOs
-6. **Don't Forget** — add new gotchas, prune stale ones
+| [SCRATCHPAD.md](SCRATCHPAD.md) | History of decisions |
+| Vault: `BlenDAZ/Pin Maintenance Solver Journey.md` | Why FABRIK/CCD failed, why native IK works |
+| Vault: `BlenDAZ/IK Stiffness Reference.md` | Proven stiffness values |

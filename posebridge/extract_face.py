@@ -434,7 +434,7 @@ def generate_face_control_points(positions):
     # Eye Look: bilateral gaze via FACS controllers, LMB only
     add_cp('face_eyeLook', 'Eye Look', {
         'lmb_vert': ('facs_ctrl_EyeLookUp-Down', 'positive', 1.0),
-        'lmb_horiz': ('facs_ctrl_EyeLookSide-Side', 'negative', 1.0),
+        'lmb_horiz': ('facs_ctrl_EyeLookSide-Side', 'positive', 1.0),
         'rmb_vert': None,
         'rmb_horiz': None,
     })

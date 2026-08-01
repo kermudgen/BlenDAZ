@@ -26,7 +26,7 @@ Stay cutting-edge by automatically tracking updates from Diffeomorphic, Blender,
 
 ### Quick Start (Windows)
 ```batch
-cd d:\dev\BlenDAZ
+cd D:\Dev\Blender Addons\BlenDAZ
 schedule_monitor.bat
 ```
 

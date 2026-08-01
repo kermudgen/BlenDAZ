@@ -57,8 +57,8 @@ if not ARMATURE_NAME:
     raise RuntimeError("No DAZ armature found")
 
 # Add BlenDAZ and projects to path
-blendaz_path = r"D:\dev\BlenDAZ"
-projects_path = r"D:\dev\BlenDAZ\projects"
+blendaz_path = r"D:\Dev\Blender Addons\BlenDAZ"
+projects_path = r"D:\Dev\Blender Addons\BlenDAZ\projects"
 if blendaz_path not in sys.path:
     sys.path.insert(0, blendaz_path)
     print(f"✓ Added {blendaz_path} to Python path")

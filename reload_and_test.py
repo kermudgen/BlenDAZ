@@ -27,7 +27,7 @@ def reload_and_test():
 
     # Force reload the script file
     print("\nReloading from disk...")
-    script_path = r"d:\dev\BlenDAZ\daz_bone_select.py"
+    script_path = r"D:\Dev\Blender Addons\BlenDAZ\daz_bone_select.py"
 
     # Read and exec the file
     with open(script_path, 'r', encoding='utf-8') as f:

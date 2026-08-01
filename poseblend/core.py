@@ -303,6 +303,16 @@ class PoseBlendGrid(PropertyGroup):
         default='HEAD'
     )
 
+    # Live "active mask" — which body-part regions the blend is allowed to
+    # write. JSON list of region keys (see presets.MASK_REGION_KEYS).
+    # Empty string ("") is the default sentinel meaning ALL regions active
+    # (no gating — fastest path). "[]" means NO regions (freeze everything).
+    active_mask_regions: StringProperty(
+        name="Active Mask Regions",
+        description="JSON list of enabled body-part regions ('' = all)",
+        default=""
+    )
+
     # Morph category toggles (which Diffeomorphic morph groups to capture/blend)
     morph_facs: BoolProperty(name="FACS", default=False)
     morph_facs_detail: BoolProperty(name="FACS Detail", default=False)
@@ -376,6 +386,64 @@ class PoseBlendGrid(PropertyGroup):
     def generate_id(self):
         """Generate unique ID for this grid"""
         self.id = str(uuid.uuid4())[:8]
+
+    # --- Live mask region helpers ---
+
+    def get_active_regions(self):
+        """Return the list of enabled region keys, or None if all are active.
+
+        None (the default) means "no gating" — every bone passes.
+        An empty list [] means "no regions" — nothing passes (all frozen).
+        """
+        if self.active_mask_regions == "":
+            return None  # All active (no gating)
+        try:
+            return json.loads(self.active_mask_regions)
+        except json.JSONDecodeError:
+            return None
+
+    def set_active_regions(self, region_keys):
+        """Set enabled regions. Pass None to reset to 'all active'."""
+        if region_keys is None:
+            self.active_mask_regions = ""
+        else:
+            self.active_mask_regions = json.dumps(list(region_keys))
+
+    def is_region_active(self, region_key):
+        """True if the given region is currently enabled (writable)."""
+        regions = self.get_active_regions()
+        if regions is None:
+            return True
+        return region_key in regions
+
+    def all_regions_active(self):
+        """True when no gating is applied (all regions writable)."""
+        return self.get_active_regions() is None
+
+    def toggle_region(self, region_key):
+        """Toggle one region. Materializes the full set first if currently 'all'."""
+        from .presets import MASK_REGION_KEYS
+        regions = self.get_active_regions()
+        if regions is None:
+            # Currently all-active → materialize full set, then turn this off
+            regions = [k for k in MASK_REGION_KEYS if k != region_key]
+        elif region_key in regions:
+            regions = [k for k in regions if k != region_key]
+        else:
+            regions = regions + [region_key]
+        # Normalize: if every region ended up enabled, collapse back to "all"
+        if set(regions) == set(MASK_REGION_KEYS):
+            self.set_active_regions(None)
+        else:
+            self.set_active_regions(regions)
+
+    def solo_region(self, region_key):
+        """Enable only this region (or clear the solo if it is the only one)."""
+        regions = self.get_active_regions()
+        if regions is not None and regions == [region_key]:
+            self.set_active_regions(None)  # Un-solo → back to all
+        else:
+            self.set_active_regions([region_key])
 
     def add_dot(self, name, position, rotations_dict, mask_mode='ALL', mask_preset='HEAD', locations_dict=None):
         """Add a new dot to the grid"""

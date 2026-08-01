@@ -27,9 +27,9 @@ Z_OFFSET = -53.0                    # Hand camera Z offset
 # Path setup
 # ============================================================================
 
-blendaz_path = r"D:\dev\BlenDAZ"
-projects_path = r"D:\dev\BlenDAZ\projects"
-posebridge_path = r"D:\dev\BlenDAZ\projects\posebridge"
+blendaz_path = r"D:\Dev\Blender Addons\BlenDAZ"
+projects_path = r"D:\Dev\Blender Addons\BlenDAZ\projects"
+posebridge_path = r"D:\Dev\Blender Addons\BlenDAZ\projects\posebridge"
 
 for p in [blendaz_path, projects_path, posebridge_path]:
     if p not in sys.path:
