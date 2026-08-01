@@ -413,35 +413,43 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         # Save current selection, select only character objects
         saved_sel = context.selected_objects[:]
         saved_active = context.view_layer.objects.active
-        for obj in context.selected_objects:
-            obj.select_set(False)
-        for obj in char_objs:
-            obj.select_set(True)
-        context.view_layer.objects.active = armature
+        try:
+            for obj in context.selected_objects:
+                obj.select_set(False)
+            for obj in char_objs:
+                # select_set raises RuntimeError for objects not in the active
+                # view layer (e.g. children in excluded collections) — skip
+                # them rather than aborting mid-switch
+                try:
+                    obj.select_set(True)
+                except RuntimeError:
+                    pass
+            context.view_layer.objects.active = armature
 
-        # Enter local view in the PB viewport
-        region = None
-        for r in pb_area.regions:
-            if r.type == 'WINDOW':
-                region = r
-                break
-        if region:
-            with context.temp_override(area=pb_area, region=region):
-                bpy.ops.view3d.localview(frame_selected=False)
-
-        # Restore selection
-        for obj in context.selected_objects:
-            obj.select_set(False)
-        for obj in saved_sel:
-            try:
-                obj.select_set(True)
-            except ReferenceError:
-                pass
-        if saved_active:
-            try:
-                context.view_layer.objects.active = saved_active
-            except ReferenceError:
-                pass
+            # Enter local view in the PB viewport
+            region = None
+            for r in pb_area.regions:
+                if r.type == 'WINDOW':
+                    region = r
+                    break
+            if region:
+                with context.temp_override(area=pb_area, region=region):
+                    bpy.ops.view3d.localview(frame_selected=False)
+        finally:
+            # Restore selection — must run even when local-view entry fails,
+            # or the user's selection is silently destroyed
+            for obj in context.selected_objects:
+                obj.select_set(False)
+            for obj in saved_sel:
+                try:
+                    obj.select_set(True)
+                except (ReferenceError, RuntimeError):
+                    pass
+            if saved_active:
+                try:
+                    context.view_layer.objects.active = saved_active
+                except ReferenceError:
+                    pass
 
     def _exit_face_local_view(self, context, pb_space, pb_area):
         """Exit local view in PB viewport when leaving Face mode."""

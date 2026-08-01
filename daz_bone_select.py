@@ -2828,7 +2828,12 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                     context.space_data.region_3d if context.space_data and context.space_data.type == 'VIEW_3D' else None)
                 armature = context.active_object
                 if gizmo_region and gizmo_rv3d and armature and armature.type == 'ARMATURE':
-                    bone_world_pos = armature.matrix_world @ context.active_bone.head
+                    # Use the POSED bone head — data-Bone .head is
+                    # parent-relative, which projected the dead-zone near the
+                    # armature origin instead of the gizmo.
+                    _active_pb = armature.pose.bones.get(context.active_bone.name)
+                    bone_world_pos = armature.matrix_world @ (
+                        _active_pb.head if _active_pb else context.active_bone.head_local)
                     bone_screen = view3d_utils.location_3d_to_region_2d(gizmo_region, gizmo_rv3d, bone_world_pos)
                     if bone_screen:
                         lx, ly = evt_local if evt_region else (event.mouse_region_x, event.mouse_region_y)
@@ -4026,7 +4031,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         if context.active_bone and context.mode == 'POSE':
             armature = context.active_object
             if armature and armature.type == 'ARMATURE':
-                bone_world_pos = armature.matrix_world @ context.active_bone.head
+                # Posed head, not parent-relative data-Bone .head (see the
+                # click dead-zone above)
+                _active_pb = armature.pose.bones.get(context.active_bone.name)
+                bone_world_pos = armature.matrix_world @ (
+                    _active_pb.head if _active_pb else context.active_bone.head_local)
                 bone_screen_pos = view3d_utils.location_3d_to_region_2d(
                     hover_region, hover_rv3d, bone_world_pos
                 )
@@ -11778,6 +11787,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             if armature:
                 for prop_name, initial_val in self._morph_initial_values.items():
                     armature[prop_name] = initial_val
+                # Custom-property writes don't re-evaluate drivers on their own
+                # — tag like the sibling paths (update_morph, undo_last_drag)
+                # or the mesh visually stays at the dragged expression.
+                armature.update_tag()
+                context.view_layer.depsgraph.update()
         else:
             # Store undo state
             log.info(f"\n=== Ending Morph Drag: {self._morph_cp_id} ===")
@@ -13368,7 +13382,10 @@ def unregister():
     if kc:
         km = kc.keymaps.get('3D View')
         if km:
-            for kmi in km.keymap_items:
+            # Snapshot first: removing while iterating the live collection
+            # shifts indices and skips the next item — leaked the Alt+Shift+R
+            # entry (and stacked a duplicate) on every addon reload.
+            for kmi in list(km.keymap_items):
                 if kmi.idname in (VIEW3D_OT_daz_bone_select.bl_idname,
                                  POSE_OT_clear_ik_pose.bl_idname):
                     km.keymap_items.remove(kmi)

@@ -509,6 +509,25 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
     light.location = camera.location.copy()
     log.info(f"  Light power: {light_data.energy}W")
 
+    def _abort_cleanup(reason, gp=None):
+        """Failure rollback for the late steps: put the scene back the way the
+        user had it. The early returns previously left the character's
+        collection excluded (invisible) with an orphaned camera, light, mesh
+        copy, and temp collection."""
+        log.warning(f"  Rolling back outline setup: {reason}")
+        for obj in (gp, mesh_copy, camera, light):
+            if obj is not None:
+                try:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                except (ReferenceError, RuntimeError):
+                    pass
+        if temp_collection_name in bpy.data.collections:
+            bpy.data.collections.remove(bpy.data.collections[temp_collection_name])
+        if original_collection and layer_coll:
+            layer_coll.exclude = False
+            log.info(f"  ✓ Re-enabled collection: {original_collection.name}")
+        bpy.context.view_layer.update()
+
     # STEP 6: Select copied mesh object
     log.info("Step 6: Selecting copied mesh...")
     bpy.ops.object.select_all(action='DESELECT')
@@ -525,6 +544,7 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
     gp_obj = bpy.context.active_object
     if not gp_obj or gp_obj.type != 'GREASEPENCIL':
         log.warning("Error: Failed to create GP Line Art object")
+        _abort_cleanup("Grease Pencil object was not created")
         return None
 
     # Rename the GP object
@@ -542,6 +562,7 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
 
     if not lineart_mod:
         log.warning("Error: Line Art modifier not found on GP object")
+        _abort_cleanup("Line Art modifier not found", gp=gp_obj)
         return None
 
     log.info(f"  Configuring Line Art modifier...")

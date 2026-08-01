@@ -69,7 +69,11 @@ def _apply_expression_preset(self, context, preset_name):
     # Trigger depsgraph update
     armature.update_tag()
     context.view_layer.depsgraph.update()
-    context.area.tag_redraw()
+    # context.area is None when the slider is set outside a UI area (app
+    # timers, frame-change handlers, scripts) — the values are already
+    # applied above, so just skip the redraw.
+    if context.area:
+        context.area.tag_redraw()
 
 
 def _make_expr_update(preset_name):

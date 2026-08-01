@@ -353,8 +353,11 @@ class POSEBLEND_OT_interact(Operator):
         dot, idx = find_dot_at_position(self._cursor_pos, grid.dots)
 
         if dot:
+            # Capture before remove_dot(): the CollectionProperty item ref is
+            # invalid once the collection reshuffles.
+            dot_name = dot.name
             grid.remove_dot(idx)
-            self.report({'INFO'}, f"Deleted dot: {dot.name}")
+            self.report({'INFO'}, f"Deleted dot: {dot_name}")
             context.area.tag_redraw()
 
         return {'RUNNING_MODAL'}
@@ -675,21 +678,31 @@ class POSEBLEND_OT_duplicate_dot(Operator):
         if grid:
             dot = grid.get_active_dot()
             if dot:
-                # Create copy with offset position
+                # Capture ALL source-dot data BEFORE add_dot(): dots.add() can
+                # reallocate the CollectionProperty array and invalidate
+                # existing item references (documented BPY gotcha) — reading
+                # `dot` after the add is use-after-free.
                 new_pos = (
                     min(1.0, dot.position[0] + 0.05),
                     min(1.0, dot.position[1] + 0.05)
                 )
+                src_name = dot.name
+                src_rotations = dot.get_rotations_dict()
+                src_locations = dot.get_locations_dict()
+                src_mask_mode = dot.bone_mask_mode
+                src_mask_preset = dot.bone_mask_preset
+                src_color = tuple(dot.color)
+                src_morphs = dot.get_morphs_dict()
                 new_dot = grid.add_dot(
-                    name=f"{dot.name} (copy)",
+                    name=f"{src_name} (copy)",
                     position=new_pos,
-                    rotations_dict=dot.get_rotations_dict(),
-                    locations_dict=dot.get_locations_dict(),
-                    mask_mode=dot.bone_mask_mode,
-                    mask_preset=dot.bone_mask_preset
+                    rotations_dict=src_rotations,
+                    locations_dict=src_locations,
+                    mask_mode=src_mask_mode,
+                    mask_preset=src_mask_preset
                 )
-                new_dot.color = dot.color
-                new_dot.set_morphs_dict(dot.get_morphs_dict())
+                new_dot.color = src_color
+                new_dot.set_morphs_dict(src_morphs)
         return {'FINISHED'}
 
 

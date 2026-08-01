@@ -265,6 +265,16 @@ if RELOAD_MODULES and 'BlenDAZ.daz_bone_select' in sys.modules:
         daz_bone_select.unregister()
     except:
         pass
+    # Remove the PoseBridge overlay draw handler BEFORE purging: the class
+    # attribute holding it is the only reference, so purging the module
+    # orphans it — one leaked SpaceView3D handler per rerun.
+    try:
+        _drawing = sys.modules.get('BlenDAZ.posebridge.drawing')
+        if _drawing is not None:
+            _drawing.PoseBridgeDrawHandler.unregister()
+            print("  Removed PoseBridge draw handler before purge")
+    except Exception as _e:
+        print(f"  Warning removing draw handler: {_e}")
     purge_modules('BlenDAZ')
     # Also reload shared utils
     if 'BlenDAZ.daz_shared_utils' in sys.modules:

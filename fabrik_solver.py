@@ -431,7 +431,6 @@ class FABRIKChain:
                 n_a = len(pos_a)
                 if n_a >= 3:
                     forced_tip = pos_a[-1].copy()
-                    pos_a[-1] = forced_tip
                     for j in range(n_a - 2, -1, -1):
                         d_vec = pos_a[j] - pos_a[j + 1]
                         if d_vec.length < 1e-8:
@@ -445,6 +444,13 @@ class FABRIKChain:
                             d_vec = Vector((0, 1e-4, 0))
                         d_vec.normalize()
                         pos_a[j + 1] = pos_a[j] + d_vec * len_a[j]
+                    # Re-pin the tip: the forward pass re-enforced segment
+                    # lengths from the root and moved the split point off the
+                    # feasibility sphere again. Invariant #9 requires it ON the
+                    # sphere (Sub-B is rigid — wrong distance = wrist drift);
+                    # the residual last-segment length error is what the debug
+                    # print below reports.
+                    pos_a[-1] = forced_tip
 
                 if debug:
                     seg_len_actual = (pos_a[-1] - pos_a[-2]).length if len(pos_a) >= 2 else 0
