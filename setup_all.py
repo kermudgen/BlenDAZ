@@ -54,6 +54,7 @@ RELOAD_MODULES = True         # Force-reload modules (picks up code changes)
 STANDIN_NAME = None           # Auto-detect standin mesh, or set e.g. "Fey Mesh_Standin"
 OUTLINE_Z_OFFSET = -50.0     # Z offset for outline/camera/control points (meters below character)
 HAND_Z_OFFSET = -53.0        # Z offset for hand camera
+char_z_offset = None         # per-character stacked Z, resolved before positioning (multi-char)
 GENERATE_OUTLINE = True       # Generate Line Art outline if it doesn't exist
 FORCE_REGENERATE_OUTLINE = False  # Delete existing outline and regenerate from scratch
 SETUP_HANDS = True            # Extract hand geometry + control points
@@ -93,24 +94,34 @@ def find_daz_armature():
 
 
 def find_standin_mesh(armature_name):
-    """Try to find a standin mesh for the armature."""
-    # Common naming patterns
-    candidates = []
-    if armature_name:
-        # Look for mesh objects that might be related to the armature
-        for obj in bpy.data.objects:
-            if obj.type == 'MESH':
-                name = obj.name
-                if '_Standin' in name or '_LineArt_Copy' in name:
-                    candidates.append(name)
-    # Also try DAZ naming convention
-    if armature_name:
-        for suffix in ["_Standin", "_LineArt_Copy"]:
-            name = f"{armature_name} Mesh{suffix}"
-            if name in bpy.data.objects:
-                candidates.append(name)
+    """Try to find a standin mesh for the armature.
 
-    return candidates[0] if candidates else None
+    Priority: exact DAZ-convention names for THIS armature, then
+    _Standin/_LineArt_Copy meshes prefixed with the armature name. The
+    unfiltered scan runs last and only counts when unambiguous — the old
+    global-scan-first order returned another character's standin in
+    multi-character files (bpy.data is alphabetically sorted).
+    Same logic as posebridge/core.py find_standin_mesh — keep in sync.
+    """
+    if not armature_name:
+        return None
+    for suffix in ["_Standin", "_LineArt_Copy"]:
+        name = f"{armature_name} Mesh{suffix}"
+        if name in bpy.data.objects:
+            return name
+    prefixed = [obj.name for obj in bpy.data.objects
+                if obj.type == 'MESH'
+                and ('_Standin' in obj.name or '_LineArt_Copy' in obj.name)
+                and obj.name.startswith(armature_name)]
+    if prefixed:
+        prefixed.sort(key=lambda n: '_LineArt_Copy' in n)  # prefer _Standin
+        return prefixed[0]
+    unfiltered = [obj.name for obj in bpy.data.objects
+                  if obj.type == 'MESH'
+                  and ('_Standin' in obj.name or '_LineArt_Copy' in obj.name)]
+    if len(unfiltered) == 1:
+        return unfiltered[0]
+    return None
 
 
 def find_character_mesh(armature_name):
@@ -455,9 +466,24 @@ if not SKIP_POSEBRIDGE:
             else:
                 print("  Warning: No character mesh found for outline generation")
 
+        # Resolve this character's stacked Z BEFORE placing anything.
+        # Reruns reuse the registered slot Z (idempotent); new characters
+        # stack 5m below the lowest existing slot. Previously the stacked
+        # value was only recorded in the registry AFTER placement, so every
+        # character's stage landed at OUTLINE_Z_OFFSET, overlapping.
+        char_z_offset = OUTLINE_Z_OFFSET
+        if pb_settings and hasattr(pb_settings, 'blendaz_characters'):
+            _existing = [s for s in pb_settings.blendaz_characters
+                         if s.armature_name == armature_name]
+            if _existing:
+                char_z_offset = _existing[0].z_offset
+            elif len(pb_settings.blendaz_characters) > 0:
+                char_z_offset = min(s.z_offset
+                                    for s in pb_settings.blendaz_characters) - 5.0
+
         # Move outline/camera/light/mesh copy to Z offset using ABSOLUTE positioning
         # (matches TESTING_POSEBRIDGE.md Step 4 — idempotent, safe to run multiple times)
-        print(f"\n  --- Z-offset positioning (target Z={OUTLINE_Z_OFFSET}m) ---")
+        print(f"\n  --- Z-offset positioning (target Z={char_z_offset}m) ---")
         print(f"  outline_exists={outline_exists}, outline_name='{outline_name}'")
         print(f"  camera_name='{camera_name}', light_name='{light_name}'")
 
@@ -470,7 +496,7 @@ if not SKIP_POSEBRIDGE:
             # 1. Outline GP → feet level
             gp_obj = bpy.data.objects.get(outline_name)
             if gp_obj:
-                z_targets[gp_obj] = OUTLINE_Z_OFFSET
+                z_targets[gp_obj] = char_z_offset
             else:
                 print(f"  WARNING: Outline GP '{outline_name}' not found in bpy.data.objects!")
                 print(f"  Available GP objects: {[o.name for o in bpy.data.objects if o.type == 'GREASEPENCIL']}")
@@ -489,7 +515,7 @@ if not SKIP_POSEBRIDGE:
                             mannequin_name = obj.name
                             break
             if mannequin_obj and mannequin_obj.type == 'MESH':
-                z_targets[mannequin_obj] = OUTLINE_Z_OFFSET
+                z_targets[mannequin_obj] = char_z_offset
                 # Strip shape keys
                 if mannequin_obj.data.shape_keys:
                     sk_count = len(mannequin_obj.data.shape_keys.key_blocks)
@@ -512,7 +538,7 @@ if not SKIP_POSEBRIDGE:
                 camera_z_offset = _char_h * 0.58
             else:
                 camera_z_offset = 0.72
-            cam_z = OUTLINE_Z_OFFSET + camera_z_offset
+            cam_z = char_z_offset + camera_z_offset
             for obj_name in [camera_name, light_name]:
                 obj = bpy.data.objects.get(obj_name)
                 if obj:
@@ -570,7 +596,10 @@ if not SKIP_POSEBRIDGE:
                     importlib.reload(extract_hands)
                 hand_result = extract_hands.extract_and_setup_hands(
                     standin,
-                    z_offset=HAND_Z_OFFSET,
+                    # Hands stack with the character's stage (same relative
+                    # drop below the outline as the single-character layout)
+                    z_offset=(HAND_Z_OFFSET if char_z_offset is None
+                              else char_z_offset + (HAND_Z_OFFSET - OUTLINE_Z_OFFSET)),
                     armature_name=armature_name if armature_name in bpy.data.objects else None,
                     char_name=armature_name,
                     char_tag=char_tag,
@@ -758,8 +787,12 @@ if pb_settings and hasattr(pb_settings, 'blendaz_characters'):
     if slot is None:
         slot = pb_settings.blendaz_characters.add()
         slot_idx = len(pb_settings.blendaz_characters) - 1
-        # Assign Z offset based on number of existing characters
-        if slot_idx == 0:
+        # Record the Z the stage was ACTUALLY placed at (resolved before the
+        # Step-2 positioning). Fall back to stacking below existing slots
+        # when positioning was skipped (SKIP_POSEBRIDGE / no outline).
+        if char_z_offset is not None:
+            slot.z_offset = char_z_offset
+        elif slot_idx == 0:
             slot.z_offset = OUTLINE_Z_OFFSET
         else:
             # Stack below previous characters

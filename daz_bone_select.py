@@ -2160,7 +2160,11 @@ def cleanup_orphaned_pin_empties():
         if pin_type not in ('translation', 'rotation'):
             continue  # Not one of ours
 
-        # Find the armature by checking all armatures in the scene
+        # Find the armature by checking all armatures in the scene.
+        # Several armature names can prefix the remainder ('Fey' and
+        # 'Fey_Clone' both prefix 'Fey_Clone_lHand'), so check EVERY
+        # matching parse — breaking on the first match mis-parsed the bone
+        # name and deleted live pin Empties of prefix-named armatures.
         found = False
         for arm_obj in bpy.data.objects:
             if arm_obj.type != 'ARMATURE':
@@ -2170,11 +2174,9 @@ def cleanup_orphaned_pin_empties():
                 bone_name = remainder[len(prefix):]
                 # Check if bone exists and is still pinned
                 data_bone = arm_obj.data.bones.get(bone_name)
-                if data_bone:
-                    pin_key = f"daz_pin_{pin_type}"
-                    if pin_key in data_bone:
-                        found = True  # Armature + bone + pin all exist — not orphaned
-                break  # Found matching armature, stop looking
+                if data_bone and f"daz_pin_{pin_type}" in data_bone:
+                    found = True  # Armature + bone + pin all exist — not orphaned
+                    break
 
         if not found:
             orphans.append(obj)

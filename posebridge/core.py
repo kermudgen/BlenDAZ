@@ -726,6 +726,22 @@ def make_char_tag(armature_name):
 _cp_cache = {}  # {char_tag: [dict, ...]}
 
 
+@bpy.app.handlers.persistent
+def _clear_cp_cache_on_load(_dummy):
+    """Opening a .blend invalidates the cache: char_tags derive from armature
+    names, and identically-named default DAZ rigs in two files would inject
+    file A's control points into file B on character switch."""
+    _cp_cache.clear()
+
+
+# Register once; the module can be re-imported by script reload, so replace
+# any handler left by a previous module instance instead of stacking.
+for _h in list(bpy.app.handlers.load_post):
+    if getattr(_h, '__name__', '') == '_clear_cp_cache_on_load':
+        bpy.app.handlers.load_post.remove(_h)
+bpy.app.handlers.load_post.append(_clear_cp_cache_on_load)
+
+
 def save_control_points(char_tag):
     """Snapshot the current control_points_fixed into _cp_cache[char_tag]."""
     settings = getattr(bpy.context.scene, 'posebridge_settings', None)
@@ -825,19 +841,32 @@ def find_character_mesh(armature_name):
 
 
 def find_standin_mesh(armature_name):
-    """Try to find a standin mesh for the armature."""
-    candidates = []
-    if armature_name:
-        for obj in bpy.data.objects:
-            if obj.type == 'MESH':
-                name = obj.name
-                if '_Standin' in name or '_LineArt_Copy' in name:
-                    candidates.append(name)
+    """Try to find a standin mesh for the armature.
+
+    Priority: exact DAZ-convention names for THIS armature, then
+    _Standin/_LineArt_Copy meshes prefixed with the armature name. The
+    unfiltered scan runs last and only counts when unambiguous — with
+    multiple characters registered, the old global-scan-first order
+    returned whichever character's standin sorted first in bpy.data.
+    """
+    if not armature_name:
+        return None
     for name in [f"{armature_name} Mesh_Standin", f"{armature_name} Mesh_LineArt_Copy"]:
         if name in bpy.data.objects:
-            candidates.append(name)
-
-    return candidates[0] if candidates else None
+            return name
+    prefixed = [obj.name for obj in bpy.data.objects
+                if obj.type == 'MESH'
+                and ('_Standin' in obj.name or '_LineArt_Copy' in obj.name)
+                and obj.name.startswith(armature_name)]
+    if prefixed:
+        prefixed.sort(key=lambda n: '_LineArt_Copy' in n)  # prefer _Standin
+        return prefixed[0]
+    unfiltered = [obj.name for obj in bpy.data.objects
+                  if obj.type == 'MESH'
+                  and ('_Standin' in obj.name or '_LineArt_Copy' in obj.name)]
+    if len(unfiltered) == 1:
+        return unfiltered[0]
+    return None
 
 
 # ============================================================================
