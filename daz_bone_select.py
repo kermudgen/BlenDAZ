@@ -1867,6 +1867,23 @@ def pin_bone_rotation(armature, bone_name):
     return False
 
 
+def _restore_rotation_mode(pose_bone, mode):
+    """Convert a bone back to its original rotation mode, pose-preserving.
+
+    Counterpart of the pose-neutral switch to QUATERNION in the unpin paths.
+    Leaving bones forced to QUATERNION discards their Euler values and breaks
+    FACS rotation_euler drivers (audit 2026-08-01 #27).
+    """
+    if mode == 'QUATERNION':
+        return
+    if mode == 'AXIS_ANGLE':
+        axis, angle = pose_bone.rotation_quaternion.to_axis_angle()
+        pose_bone.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+    else:
+        pose_bone.rotation_euler = pose_bone.rotation_quaternion.to_euler(mode)
+    pose_bone.rotation_mode = mode
+
+
 def unpin_bone(armature, bone_name):
     """Remove all pins from bone, preserving current visual pose."""
     bone = armature.data.bones.get(bone_name)
@@ -1900,9 +1917,16 @@ def unpin_bone(armature, bone_name):
     #   3. Snapshot world-space transform WITHOUT constraint
     #   4. Compute the world-space difference and apply as local correction
     pinned_world_mat = None
+    original_rotation_mode = pose_bone.rotation_mode if pose_bone else 'QUATERNION'
     if pose_bone and had_pins:
         bpy.context.view_layer.update()
-        pose_bone.rotation_mode = 'QUATERNION'
+        # Only the rotation-pin delta below needs quaternion math. Switch modes
+        # pose-neutrally (sync the quat from the current basis first) and only
+        # when required — a blanket force to QUATERNION discarded Euler values
+        # on translation-only unpins and broke FACS rotation_euler drivers.
+        if had_rotation_pin and original_rotation_mode != 'QUATERNION':
+            pose_bone.rotation_quaternion = pose_bone.matrix_basis.to_quaternion()
+            pose_bone.rotation_mode = 'QUATERNION'
         # World-space transform while constraint is active (the pose we want to keep)
         pinned_world_mat = (armature.matrix_world @ pose_bone.matrix).copy()
 
@@ -1962,6 +1986,9 @@ def unpin_bone(armature, bone_name):
                 local_offset = armature.matrix_world.to_3x3().inverted() @ world_offset
 
             pose_bone.location = pose_bone.location + local_offset
+
+        if had_rotation_pin and original_rotation_mode != 'QUATERNION':
+            _restore_rotation_mode(pose_bone, original_rotation_mode)
 
         bpy.context.view_layer.update()
         log.info(f"  ✓ Baked visual pose to local transform (delta approach)")
@@ -2029,7 +2056,12 @@ def unpin_bone_rotation(armature, bone_name):
 
     # Snapshot world-space rotation WITH constraint active
     bpy.context.view_layer.update()
-    pose_bone.rotation_mode = 'QUATERNION'
+    # Pose-neutral switch to QUATERNION for the delta math; restored below so
+    # Euler bones keep their mode (FACS drivers read rotation_euler).
+    original_rotation_mode = pose_bone.rotation_mode
+    if original_rotation_mode != 'QUATERNION':
+        pose_bone.rotation_quaternion = pose_bone.matrix_basis.to_quaternion()
+        pose_bone.rotation_mode = 'QUATERNION'
     pinned_world_rot = (armature.matrix_world @ pose_bone.matrix).to_quaternion()
 
     # Remove constraint
@@ -2051,6 +2083,9 @@ def unpin_bone_rotation(armature, bone_name):
     world_delta = pinned_world_rot @ current_world_rot.inverted()
     local_delta = current_world_rot.inverted() @ world_delta @ current_world_rot
     pose_bone.rotation_quaternion = local_delta @ pose_bone.rotation_quaternion
+
+    if original_rotation_mode != 'QUATERNION':
+        _restore_rotation_mode(pose_bone, original_rotation_mode)
 
     bpy.context.view_layer.update()
     log.info(f"  ✓ Unpinned Rotation: {bone_name} (pose preserved)")
@@ -4475,6 +4510,28 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
         diag_logger.flush_pending_hover()
         self.clear_hover(context)
 
+    def _rollback_fabrik_init(self):
+        """Roll back the FABRIK bake+mute setup when drag init fails.
+
+        Every FABRIK init failure path falls through to normal IK, which never
+        touches FABRIK state — without this rollback the baked rotations stay
+        applied and the muted LIMIT_ROTATION constraints stay off for the rest
+        of the session (invariant #3's bake+mute cycle must be atomic).
+        No-op when init failed before the bake ran.
+        """
+        if getattr(self, '_fabrik_prebake_rotations', None):
+            for bone_name, prebake_rot in self._fabrik_prebake_rotations.items():
+                pb = self._drag_armature.pose.bones.get(bone_name)
+                if pb:
+                    pb.rotation_quaternion = prebake_rot
+            self._fabrik_prebake_rotations = {}
+        if getattr(self, '_fabrik_muted_constraints', None):
+            for pose_bone, constraint in self._fabrik_muted_constraints:
+                constraint.mute = False
+                log.info(f"  ✓ Rolled back muted LIMIT_ROTATION on {pose_bone.name}")
+            self._fabrik_muted_constraints = []
+        bpy.context.view_layer.update()
+
     def _get_region_rv3d(self, context, event):
         """Return (region, rv3d, mouse_local) for the viewport the mouse is in.
 
@@ -6199,7 +6256,11 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 traceback.print_exc()
                 self._use_fabrik = False
 
-            # If we get here, FABRIK failed — fall through to normal IK
+            # If we get here, FABRIK failed — fall through to normal IK.
+            # Roll back the bake+mute setup first (the success path returned
+            # above); otherwise LIMIT_ROTATION constraints stay muted and the
+            # baked rotations double-apply for the rest of the session.
+            self._rollback_fabrik_init()
             log.info("  → Falling back to normal IK (FABRIK init failed)")
 
         # Continue with normal IK path (now with soft pin support)
@@ -8594,6 +8655,16 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
             log.warning(f"  ✗ Could not invoke {transform_op.lower()}: {e}")
             self._remove_hip_pin_handler()
             self._use_hip_pin_ik = False
+            # _end_hip_pin_ik early-returns once _use_hip_pin_ik is False, so
+            # its unmute never runs for a failed launch — restore the pin
+            # constraints here or every pin stays silently dead all session.
+            for pose_bone, constraint in self._hip_pin_muted_constraints:
+                try:
+                    constraint.mute = False
+                    log.info(f"  ✓ Re-enabled pin constraint: {constraint.name} on {pose_bone.name}")
+                except Exception as unmute_err:
+                    log.warning(f"  ⚠️  Error re-enabling pin on {pose_bone.name}: {unmute_err}")
+            self._hip_pin_muted_constraints = []
 
         # Clear drag state — the native transform owns the modal now
         # Our modal will detect it finishing via the handler cleanup
@@ -11349,16 +11420,16 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 log.info(f"\n=== Canceling Rotation: {self._rotation_bone.name} ===")
                 # Restore initial rotation
                 self._rotation_bone.rotation_quaternion = self._rotation_initial_quat
-                # Also restore twist bone if it was used
+                # Also restore any redirected twist bones. The dict records
+                # exactly which bones the drag redirected (shoulder, forearm,
+                # AND thigh) — iterate it rather than re-deriving names, which
+                # previously missed the thigh redirect and left ThighTwist
+                # rotated after a cancel.
                 if hasattr(self, '_twist_bone_initial_quats'):
-                    bone_lower = self._rotation_bone.name.lower()
-                    if (('shldr' in bone_lower or 'shoulder' in bone_lower or
-                         'forearm' in bone_lower or 'lorearm' in bone_lower) and
-                        'bend' in bone_lower):
-                        twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
-                        if twist_bone_name in self._twist_bone_initial_quats:
-                            twist_bone = self._drag_armature.pose.bones[twist_bone_name]
-                            twist_bone.rotation_quaternion = self._twist_bone_initial_quats[twist_bone_name]
+                    for twist_bone_name, initial_quat in self._twist_bone_initial_quats.items():
+                        twist_bone = self._drag_armature.pose.bones.get(twist_bone_name)
+                        if twist_bone:
+                            twist_bone.rotation_quaternion = initial_quat
                             log.info(f"  ✓ Restored twist bone: {twist_bone_name}")
             else:
                 log.info(f"\n=== Ending Rotation: {self._rotation_bone.name} ===")
@@ -11367,15 +11438,13 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
                 # Keyframe the rotation
                 self._rotation_bone.keyframe_insert(data_path="rotation_quaternion")
                 log.info(f"  ✓ Keyframed rotation: {self._rotation_bone.rotation_quaternion}")
-                # Also keyframe twist bone if it was used
+                # Also keyframe any redirected twist bones (shoulder, forearm,
+                # AND thigh) — iterate the redirect record, same as the cancel
+                # path above.
                 if hasattr(self, '_twist_bone_initial_quats'):
-                    bone_lower = self._rotation_bone.name.lower()
-                    if (('shldr' in bone_lower or 'shoulder' in bone_lower or
-                         'forearm' in bone_lower or 'lorearm' in bone_lower) and
-                        'bend' in bone_lower):
-                        twist_bone_name = self._rotation_bone.name.replace('Bend', 'Twist')
-                        if twist_bone_name in self._twist_bone_initial_quats:
-                            twist_bone = self._drag_armature.pose.bones[twist_bone_name]
+                    for twist_bone_name in self._twist_bone_initial_quats:
+                        twist_bone = self._drag_armature.pose.bones.get(twist_bone_name)
+                        if twist_bone:
                             twist_bone.keyframe_insert(data_path="rotation_quaternion")
                             log.info(f"  ✓ Keyframed twist bone: {twist_bone_name}")
 

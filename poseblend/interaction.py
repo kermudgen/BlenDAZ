@@ -259,6 +259,10 @@ class POSEBLEND_OT_interact(Operator):
                 # Click empty: start previewing blend
                 self._state = InteractionState.PREVIEWING
                 settings.cursor_active = True
+                # Snapshot pose + morphs before the preview mutates them —
+                # RMB cancel restores from this (previously cancel kept
+                # whatever the preview had already applied).
+                self._capture_preview_snapshot(context)
                 self.update_preview(context)
 
         context.area.tag_redraw()
@@ -355,20 +359,50 @@ class POSEBLEND_OT_interact(Operator):
 
         return {'RUNNING_MODAL'}
 
-    def update_preview(self, context):
-        """Update pose preview based on cursor position"""
+    def _capture_preview_snapshot(self, context):
+        """Snapshot pose + morphs before a preview starts mutating them."""
         settings = context.scene.poseblend_settings
-
-        if settings.preview_mode != 'REALTIME':
+        grid = settings.get_active_grid()
+        armature = bpy.data.objects.get(settings.active_armature_name)
+        if not grid or not armature:
+            self._preview_snapshot = None
             return
+        morph_names = get_morph_names_for_categories(armature, grid)
+        self._preview_snapshot = {
+            'rotations': capture_pose(armature),
+            'locations': capture_bone_locations(armature),
+            'morphs': capture_morphs(armature, morph_names) if morph_names else {},
+        }
 
+    def _restore_preview_snapshot(self, context):
+        """Restore the pre-preview pose + morphs (RMB cancel during preview)."""
+        snap = getattr(self, '_preview_snapshot', None)
+        settings = context.scene.poseblend_settings
+        armature = bpy.data.objects.get(settings.active_armature_name)
+        if not snap or not armature:
+            return
+        for bone_name, quat in snap['rotations'].items():
+            pb = armature.pose.bones.get(bone_name)
+            if pb:
+                pb.rotation_quaternion = quat
+        for bone_name, loc in snap['locations'].items():
+            pb = armature.pose.bones.get(bone_name)
+            if pb:
+                pb.location = loc
+        if snap['morphs']:
+            apply_morphs(armature, snap['morphs'])
+        self._preview_snapshot = None
+        context.view_layer.update()
+
+    def _apply_blend_at_cursor(self, context):
+        """Compute weights at the cursor and apply the blended pose + morphs."""
+        settings = context.scene.poseblend_settings
         grid = settings.get_active_grid()
         armature = bpy.data.objects.get(settings.active_armature_name)
 
         if not grid or not armature or len(grid.dots) == 0:
-            return
+            return False
 
-        # Calculate blend weights
         weights = calculate_blend_weights(
             self._cursor_pos,
             grid.dots,
@@ -376,20 +410,31 @@ class POSEBLEND_OT_interact(Operator):
             settings.blend_radius,
             settings.extrapolation_max
         )
+        if not weights:
+            return False
 
-        if weights:
-            allowed = get_grid_region_mask(grid)
-            apply_blended_pose(armature, weights, grid=grid, allowed_bones=allowed)
+        allowed = get_grid_region_mask(grid)
+        apply_blended_pose(armature, weights, grid=grid, allowed_bones=allowed)
 
-            # Blend and apply morphs
-            weighted_morphs = []
-            for dot, weight in weights:
-                md = dot.get_morphs_dict()
-                if md:
-                    weighted_morphs.append((md, weight))
-            if weighted_morphs:
-                blended = blend_morphs(weighted_morphs)
-                apply_morphs(armature, blended)
+        # Blend and apply morphs
+        weighted_morphs = []
+        for dot, weight in weights:
+            md = dot.get_morphs_dict()
+            if md:
+                weighted_morphs.append((md, weight))
+        if weighted_morphs:
+            blended = blend_morphs(weighted_morphs)
+            apply_morphs(armature, blended)
+        return True
+
+    def update_preview(self, context):
+        """Update pose preview based on cursor position"""
+        settings = context.scene.poseblend_settings
+
+        if settings.preview_mode != 'REALTIME':
+            return
+
+        self._apply_blend_at_cursor(context)
 
     def update_dot_drag(self, context):
         """Update dot position during drag"""
@@ -487,6 +532,16 @@ class POSEBLEND_OT_interact(Operator):
         if not armature:
             return
 
+        # ON_RELEASE mode: the blend was never applied during the preview
+        # (update_preview early-returns for non-REALTIME) — apply it now at
+        # the release position. Previously this path only keyframed, so the
+        # unchanged pose got keyed and the mode did nothing at all.
+        if settings.preview_mode != 'REALTIME':
+            self._apply_blend_at_cursor(context)
+
+        # Blend is committed — the pre-preview snapshot is no longer needed
+        self._preview_snapshot = None
+
         # Auto keyframe if enabled
         if settings.auto_keyframe:
             keyframe_pose(armature)
@@ -515,6 +570,10 @@ class POSEBLEND_OT_interact(Operator):
             if self._dragged_dot and self._dragged_dot_original_pos:
                 self._dragged_dot.position = self._dragged_dot_original_pos
             self._dragged_dot = None
+        elif self._state == InteractionState.PREVIEWING:
+            # Undo the previewed blend — restore the pre-preview pose/morphs
+            # (previously cancel only reset flags and kept the mutated pose)
+            self._restore_preview_snapshot(context)
 
         settings = context.scene.poseblend_settings
         settings.cursor_active = False
