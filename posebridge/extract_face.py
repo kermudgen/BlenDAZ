@@ -55,9 +55,13 @@ def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.525, stage_c
         log.warning("ERROR: 'head' bone not found in armature")
         return None
 
-    # Head bone center in armature local space (rest pose)
-    # Use head_local midpoint between head and tail for center of head
-    head_center = (head_bone.head_local + head_bone.tail_local) / 2
+    # Head bone center in the CURRENT pose. Using rest-pose head_local/
+    # tail_local here while the parent-inverse below uses the posed matrix
+    # anchored the camera at the rest-pose head position whenever the
+    # character was posed at setup time — the CPs tracked the real face
+    # while the camera looked at empty space.
+    head_pose_bone = armature.pose.bones['head']
+    head_center = (head_pose_bone.head + head_pose_bone.tail) / 2
     # Transform to world space
     head_world = armature.matrix_world @ head_center
 
@@ -96,7 +100,6 @@ def create_face_camera(armature, camera_distance=0.6, ortho_scale=0.525, stage_c
 
     # Compute the bone's parent matrix (what Blender uses for BONE parenting)
     # parent_mat = armature.matrix_world @ pose_bone.matrix @ tail_offset
-    head_pose_bone = armature.pose.bones['head']
     bone_tail_offset = Matrix.Translation((0, head_pose_bone.length, 0))
     parent_mat = armature.matrix_world @ head_pose_bone.matrix @ bone_tail_offset
     camera.matrix_parent_inverse = parent_mat.inverted()
@@ -460,13 +463,17 @@ def generate_face_control_points(positions):
 
     # Squint - separate node at SquintOuter bone, vertical control
     add_cp('face_lSquint', 'Left Squint', {
-        'lmb_vert':  ('facs_ctrl_EyeSquint', 'positive', 1.0),
+        # NOTE: 'EyesSquint' (plural) — matches daz_shared_utils
+        # FACE_MORPH_CONTROLS, the runtime source of truth. The singular
+        # 'EyeSquint' was a stale name that made squint validation check a
+        # property that doesn't exist on standard rigs.
+        'lmb_vert':  ('facs_ctrl_EyesSquint', 'positive', 1.0),
         'lmb_horiz': None,
         'rmb_vert':  ('facs_bs_EyeSquintLeft_div2', 'positive', 1.0),
         'rmb_horiz': None,
     })
     add_cp('face_rSquint', 'Right Squint', {
-        'lmb_vert':  ('facs_ctrl_EyeSquint', 'positive', 1.0),
+        'lmb_vert':  ('facs_ctrl_EyesSquint', 'positive', 1.0),
         'lmb_horiz': None,
         'rmb_vert':  ('facs_bs_EyeSquintRight_div2', 'positive', 1.0),
         'rmb_horiz': None,

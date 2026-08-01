@@ -40,6 +40,49 @@ FINGER_BONES = [
     'Pinky1', 'Pinky2', 'Pinky3',
 ]
 
+def _hand_bone_names(hand_side):
+    """Vertex-group bone names for one hand ('l'/'r' prefixed)."""
+    prefix = 'l' if hand_side == 'left' else 'r'
+    return [
+        f'{prefix}Hand',
+        f'{prefix}Thumb1', f'{prefix}Thumb2', f'{prefix}Thumb3',
+        f'{prefix}Index1', f'{prefix}Index2', f'{prefix}Index3',
+        f'{prefix}Mid1', f'{prefix}Mid2', f'{prefix}Mid3',
+        f'{prefix}Ring1', f'{prefix}Ring2', f'{prefix}Ring3',
+        f'{prefix}Pinky1', f'{prefix}Pinky2', f'{prefix}Pinky3',
+        f'{prefix}Carpal1', f'{prefix}Carpal2', f'{prefix}Carpal3', f'{prefix}Carpal4',
+    ]
+
+
+def _hand_extraction_viable(source_mesh_name, hand_side):
+    """Read-only pre-check mirroring extract_hand_geometry's guards.
+
+    Returns (ok, reason). Lets extract_and_setup_hands validate BOTH hands
+    before the destructive extraction begins — extract_hand_geometry deletes
+    the previous PB_Hand_* mesh before the other side is known to succeed.
+    """
+    source_obj = bpy.data.objects.get(source_mesh_name)
+    if not source_obj or source_obj.type != 'MESH':
+        return False, f"source mesh '{source_mesh_name}' not found"
+    group_indices = {source_obj.vertex_groups[b].index
+                     for b in _hand_bone_names(hand_side)
+                     if b in source_obj.vertex_groups}
+    if not group_indices:
+        return False, "no hand vertex groups"
+    weighted = set()
+    for v in source_obj.data.vertices:
+        for g in v.groups:
+            if g.group in group_indices and g.weight > 0.01:
+                weighted.add(v.index)
+                break
+    if not weighted:
+        return False, "no weighted vertices"
+    for poly in source_obj.data.polygons:
+        if all(vi in weighted for vi in poly.vertices):
+            return True, ""
+    return False, "no complete faces above weight threshold"
+
+
 def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None, char_tag=None):
     """
     Extract hand geometry from a mesh using vertex groups.
@@ -64,16 +107,7 @@ def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None, c
         return None, None
 
     # Define hand bone names based on side
-    prefix = 'l' if hand_side == 'left' else 'r'
-    hand_bones = [
-        f'{prefix}Hand',
-        f'{prefix}Thumb1', f'{prefix}Thumb2', f'{prefix}Thumb3',
-        f'{prefix}Index1', f'{prefix}Index2', f'{prefix}Index3',
-        f'{prefix}Mid1', f'{prefix}Mid2', f'{prefix}Mid3',
-        f'{prefix}Ring1', f'{prefix}Ring2', f'{prefix}Ring3',
-        f'{prefix}Pinky1', f'{prefix}Pinky2', f'{prefix}Pinky3',
-        f'{prefix}Carpal1', f'{prefix}Carpal2', f'{prefix}Carpal3', f'{prefix}Carpal4',
-    ]
+    hand_bones = _hand_bone_names(hand_side)
 
     # Find vertex group indices
     group_indices = []
@@ -119,6 +153,17 @@ def extract_hand_geometry(source_mesh_name, hand_side='left', hands_coll=None, c
             faces_to_keep.append(face)
 
     log.info(f"Found {len(faces_to_keep)} faces for {hand_side} hand")
+
+    if not faces_to_keep:
+        # Weighted verts existed but every face has at least one vert under
+        # the weight threshold (e.g. decimated standins). Without this guard
+        # the empty mesh produced a NaN geometry_center ((inf + -inf)/2) that
+        # propagated into every stored hand control point while the log
+        # claimed success.
+        log.warning(f"ERROR: No complete faces for {hand_side} hand "
+                    f"({len(hand_vert_indices)} weighted verts, all on boundary faces)")
+        bm.free()
+        return None, None
 
     # Create new bmesh with only hand geometry
     new_bm = bmesh.new()
@@ -412,6 +457,17 @@ def extract_and_setup_hands(standin_mesh_name, z_offset=-53.0, armature_name=Non
     if char_name:
         hands_coll = get_or_create_pb_collection(char_name, 'Hands')
         log.info(f"  Collection: {hands_coll.name}")
+
+    # Pre-validate BOTH hands read-only before any destructive extraction.
+    # extract_hand_geometry deletes the previous PB_Hand_* mesh before the
+    # other side is known to succeed — failing late left a fresh unpositioned
+    # left hand beside the stale right hand, camera, and control points.
+    for side in ('left', 'right'):
+        ok, reason = _hand_extraction_viable(standin_mesh_name, side)
+        if not ok:
+            log.warning(f"\nERROR: {side} hand not extractable ({reason}) — "
+                        f"aborting before modifying the scene")
+            return None
 
     # Extract left hand
     log.info("\n--- Extracting LEFT hand ---")
