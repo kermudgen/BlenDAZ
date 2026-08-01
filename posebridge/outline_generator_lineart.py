@@ -273,13 +273,26 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
         log.warning("Error: Invalid mesh object")
         return None
 
+    # Legacy Grease Pencil (pre-4.3) has a different object type, add operator,
+    # and modifier stack — the old compat branches never actually ran there.
+    # Abort BEFORE any scene mutation so unsupported versions stay untouched.
+    if bpy.app.version < (4, 3, 0):
+        log.warning(f"Error: Line Art outline requires Blender 4.3+ "
+                    f"(running {bpy.app.version_string}) — aborting, no scene changes made")
+        return None
+
     if bpy.context.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
 
-    # Set render engine to EEVEE (required for LineArt modifier)
-    if bpy.context.scene.render.engine != 'BLENDER_EEVEE':
-        log.info("Setting render engine to EEVEE (required for LineArt)")
-        bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+    # Set render engine to EEVEE (required for LineArt modifier).
+    # The enum identifier is 'BLENDER_EEVEE_NEXT' on 4.2-4.4 but
+    # 'BLENDER_EEVEE' on 4.5+/5.x — resolve from the enum, don't hardcode.
+    _engines = {e.identifier for e in
+                bpy.types.RenderSettings.bl_rna.properties['engine'].enum_items}
+    _eevee = 'BLENDER_EEVEE' if 'BLENDER_EEVEE' in _engines else 'BLENDER_EEVEE_NEXT'
+    if bpy.context.scene.render.engine not in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
+        log.info(f"Setting render engine to EEVEE (required for LineArt): {_eevee}")
+        bpy.context.scene.render.engine = _eevee
 
     # Enable film transparency for clean background
     bpy.context.scene.render.film_transparent = True
@@ -294,12 +307,17 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
 
     # STEP 1: Copy mesh
     log.info("Step 1: Copying mesh...")
-    bpy.ops.object.select_all(action='DESELECT')
-    mesh_obj.select_set(True)
-    bpy.context.view_layer.objects.active = mesh_obj
-    bpy.ops.object.duplicate()
-    mesh_copy = bpy.context.active_object
+    # Explicit datablock copy. bpy.ops.object.duplicate() honors the user's
+    # Duplicate Data preference — with the Mesh flag unchecked the "copy" would
+    # SHARE the original mesh datablock, and the shape_key_clear() /
+    # materials.clear() below would destroy the original character.
+    mesh_copy = mesh_obj.copy()
+    mesh_copy.data = mesh_obj.data.copy()
     mesh_copy.name = f"{mesh_obj.name}_LineArt_Copy"
+    bpy.context.scene.collection.objects.link(mesh_copy)
+    bpy.ops.object.select_all(action='DESELECT')
+    mesh_copy.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_copy
     log.info(f"  Created mesh copy: {mesh_copy.name}")
 
     # Strip shape keys (JCMs, flexions, FACS blendshapes) — mannequin is geometry-only
@@ -499,11 +517,9 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
 
     # STEP 7: Create Grease Pencil using Blender's LINEART_OBJECT operator
     log.info("Step 7: Creating Grease Pencil Line Art...")
-    if bpy.app.version >= (5, 0, 0):
-        bpy.ops.object.grease_pencil_add(type='LINEART_OBJECT')
-    else:
-        # Blender 3.x-4.x uses generic 'LINEART' type
-        bpy.ops.object.grease_pencil_add(type='LINEART')
+    # GPv3 (4.3+) and 5.x both use LINEART_OBJECT; the old 'LINEART' fallback
+    # was not a valid enum on any version this function can now reach.
+    bpy.ops.object.grease_pencil_add(type='LINEART_OBJECT')
 
     # Get the newly created GP object (it's now the active object)
     gp_obj = bpy.context.active_object
@@ -516,18 +532,13 @@ def create_genesis8_lineart_outline(mesh_obj, outline_name="PB_Outline_LineArt",
     gp_data = gp_obj.data
     gp_data.name = outline_name
 
-    # Get the Line Art modifier (automatically created by the operator)
-    lineart_mod = None
-    if bpy.app.version >= (5, 0, 0):
-        for mod in gp_obj.modifiers:
-            if mod.type == 'LINEART':
-                lineart_mod = mod
-                break
-    else:
-        for mod in gp_obj.grease_pencil_modifiers:
-            if mod.type == 'GP_LINEART':
-                lineart_mod = mod
-                break
+    # Get the Line Art modifier (automatically created by the operator).
+    # The type enum differs across 4.3-5.x ('LINEART' / 'GREASE_PENCIL_LINEART'),
+    # so match loosely on the unified modifier stack.
+    lineart_mod = next((m for m in gp_obj.modifiers if 'LINEART' in m.type), None)
+    if lineart_mod is None and hasattr(gp_obj, 'grease_pencil_modifiers'):
+        lineart_mod = next((m for m in gp_obj.grease_pencil_modifiers
+                            if 'LINEART' in m.type), None)
 
     if not lineart_mod:
         log.warning("Error: Line Art modifier not found on GP object")
