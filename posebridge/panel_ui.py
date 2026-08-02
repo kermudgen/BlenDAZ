@@ -365,7 +365,7 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
         'face':  'PB_Camera_Face',
     }
 
-    # Objects shown in each panel view (substring match)
+    # Objects shown in each panel view (substring match).
     BODY_OBJECTS  = {'PB_Outline', '_LineArt_Copy'}
     HANDS_SUBSTR  = {'PB_Hand_Left', 'PB_Hand_Right'}
 
@@ -475,7 +475,34 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
 
         # Switch camera in the PB viewport (not whichever viewport the N-panel is in).
         pb_space, pb_r3d, pb_area = _find_pb_viewport(context)
-        # Fall back to context.space_data for first-time setup (no PB viewport yet)
+        if not pb_space and context.window:
+            # Second pass: a PB viewport that was orbited out of CAMERA view,
+            # or one using a legacy camera name without the PB_Camera_ prefix,
+            # won't match _find_pb_viewport. Identify it by the pointer that
+            # Open-in-Viewport recorded (deterministic), then by a tightened
+            # camera-name scan that NEVER selects the invoking area — the old
+            # context.space_data fallback hijacked exactly that viewport, and
+            # the stale PB cameras it wrote into saved files would re-match a
+            # loose name check (invariant #5's false-positive class).
+            _candidates = [a for a in context.window.screen.areas
+                           if a.type == 'VIEW_3D']
+            _locked_ptr = getattr(settings, 'locked_viewport_ptr', 0)
+            if _locked_ptr:
+                for _area in _candidates:
+                    if _area.as_pointer() == _locked_ptr:
+                        _sp = _area.spaces.active
+                        pb_space, pb_r3d, pb_area = _sp, _sp.region_3d, _area
+                        break
+            if not pb_space:
+                for _area in _candidates:
+                    _sp = _area.spaces.active
+                    if (_area != context.area and _sp.camera and
+                            (_sp.camera.name.startswith('PB_Camera_')
+                             or _sp.camera.name == 'PB_Outline_LineArt_Camera')):
+                        pb_space, pb_r3d, pb_area = _sp, _sp.region_3d, _area
+                        break
+        # Fall back to context.space_data ONLY for true first-time setup
+        # (no viewport anywhere is showing a PB camera yet)
         space = pb_space if pb_space else context.space_data
         r3d = pb_r3d if pb_r3d else (space.region_3d if space and space.type == 'VIEW_3D' else None)
 
@@ -514,6 +541,12 @@ class POSEBRIDGE_OT_set_panel_view(Operator):
             name = obj.name
             if any(s in name for s in self.BODY_OBJECTS):
                 obj.hide_viewport = not show_body
+            elif 'PB_Light_' in name:
+                # The single stage light serves BOTH body and hands panels.
+                # Face view hides every PB_* object and nothing unhid the
+                # light afterward (audit #4); putting it in BODY_OBJECTS
+                # instead would darken the hands panel.
+                obj.hide_viewport = not (show_body or show_hands)
             elif any(s in name for s in self.HANDS_SUBSTR):
                 is_active_hands = (not active_char_tag or active_char_tag in name
                                    or name in ('PB_Hand_Left', 'PB_Hand_Right'))

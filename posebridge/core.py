@@ -565,6 +565,15 @@ class PoseBridgeSettings(PropertyGroup):
         default=-1
     )
 
+    locked_viewport_ptr: IntProperty(
+        name="Locked PB Viewport Pointer",
+        description="as_pointer() of the area locked as the PoseBridge viewport. "
+                    "Written by Open in Viewport; read by the view-switch second-pass "
+                    "search to identify the PB viewport deterministically. "
+                    "Session-scoped — pointers are not stable across file loads",
+        default=0
+    )
+
     blendaz_scanned_unregistered: StringProperty(
         name="Scanned Unregistered",
         description="Comma-separated list of unregistered DAZ armature names from last scan",
