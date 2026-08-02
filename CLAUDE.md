@@ -10,7 +10,55 @@ Blender is technically powerful but its interface can overwhelm visually-oriente
 
 BlenDAZ is a collection of Blender addons for working with DAZ Studio characters (Genesis 8/9) in Blender. It improves the posing workflow for characters imported via the Diffeomorphic DAZ Importer.
 
-**Tech Stack**: Python 3.x, Blender 5.0+ API (bpy), GPU viewport rendering. Requires Diffeomorphic DAZ Importer (v5 recommended).
+**Tech Stack**: Python 3.x, Blender 4.3+ API (bpy; verified on 5.1.2 — see 2026-08-01 audit), GPU viewport rendering. Requires Diffeomorphic DAZ Importer (v5 recommended).
+
+**Codebase**: ~30K+ lines Python. Main engine is `daz_bone_select.py` (~14K lines) — don't read it blind; use the vault routing below.
+
+## Before You Touch Any Code
+
+**Use the Vault MCP** to read the relevant context notes before modifying code. The vault has architecture docs, invariants, design decisions, and research that won't fit in this file.
+
+### Step 1 — Read the routing table
+```
+vault: projects/blendaz/_blendaz-map.md
+```
+The "Task Routing" table tells you which vault notes to read for your specific task.
+
+### Step 2 — Read the invariants for your code area
+```
+vault: projects/blendaz/blendaz-invariants.md
+```
+14 "don't break this" contracts. Each has been violated before, causing bugs. The Quick Lookup table at the bottom maps code areas to relevant invariants.
+
+### Step 3 — Read the code you're changing
+Only after reading the vault context. This prevents burning context window on 14K lines of code without knowing what matters.
+
+## Key Vault Notes
+
+| Note | What it tells you |
+|------|-------------------|
+| `blendaz-invariants` | Code contracts — what MUST stay true, failure modes |
+| `blendaz-architecture` | Module layout, modal architecture, multi-character, raycast patterns |
+| `blendaz-fabrik` | FABRIK solver — split-chain, stiffness, clamping, spine injection |
+| `blendaz-golden-rules` | Zero visual disruption on grab and release |
+| `blendaz-decisions` | Why things are built this way (prevents relitigating settled questions) |
+| `blendaz-bugs` | Known bugs and investigation status |
+| `blendaz-research-findings` | DAZ behavioral rules, stiffness data from reverse-engineering |
+| `blendaz-audit-2026-08-01` | 28-bug audit closure record, per-item fixes and evidence |
+
+### Vault Access
+
+Read vault notes with the MCP tool:
+- `mcp__vault__read_note` with path like `projects/blendaz/blendaz-invariants.md`
+- `mcp__vault__search_notes` to find notes by keyword
+
+If the vault MCP is not available, the notes are also readable at `D:\Dev\vault\`.
+
+## Golden Rule
+
+**Zero visual disruption on grab and release.** No pops on initiate, no snaps on release. The pose must be frame-perfect. This applies to all IK/FABRIK/drag code.
+
+The golden rule has **tiers** — see `vault: projects/blendaz/blendaz-golden-rules.md` for the full framework. T0 is always the goal, but T1/T2 can be acceptable for shipping v1 of new features when the alternative is not shipping at all.
 
 ## Quick File Lookup
 
@@ -26,6 +74,83 @@ BlenDAZ is a collection of Blender addons for working with DAZ Studio characters
 - **Workflow**: `register_only.py` → Scan for Characters → Register → Activate
 - **daz_bone_select**: Press `Ctrl+Shift+D` in Pose mode, hover bones, click-drag to rotate
 - **Quick test**: Use [quick_test.py](quick_test.py) — handles prerequisites, enables posebridge, starts operator
+
+## Dev Tooling — Bridge Workflow
+
+BlenDAZ has a Claude Bridge integration for **edit → reload → test** without restarting Blender. The bridge addon runs an HTTP server inside Blender on port 7777.
+
+### Prerequisites
+- Blender open with a DAZ character
+- Claude Bridge addon started (Sidebar > Claude Bridge > Start Server)
+
+### The Edit/Test Loop (use this when working on solver/IK/pin code)
+```python
+from scripts.bridge_workflow import Workflow
+wf = Workflow()
+
+# After editing code:
+wf.reload_addon()                        # Hot-reload without restarting Blender
+wf.run_all_tests()                       # Run bake_mute_pop, arm_drag, hip_translate, euler_clamp
+wf.report()                              # Print tier results (T0/T1/T2/T3)
+
+# Or run with screenshots for visual verification:
+wf.run_all_tests(with_screenshots=True)
+
+# Or a single scenario:
+wf.run_solver_test("hip_translate")
+
+# Quick solver-only reload (faster, when only tweaking fabrik_solver.py):
+wf.reload_solver_only()
+```
+
+### Debug Overlay (for FABRIK drag visualization)
+```python
+wf.enable_overlay()     # Turns on chain drawing in viewport
+# Now drag a bone in Blender — you'll see:
+#   Blue lines: Sub-chain A (root → drag point)
+#   Orange lines: Sub-chain B (drag point → pinned tip)
+#   Green cross: Pin target
+#   Yellow cross: Drag target
+wf.disable_overlay()    # Turns it off
+```
+
+The overlay can also be toggled via the flag `_FABRIK_DEBUG_OVERLAY` in `daz_bone_select.py` (line ~105), or by running `scripts/debug_overlay.py` as a script in Blender's Text Editor.
+
+### CLI Usage
+```bash
+python scripts/bridge_workflow.py --reload                    # Reload + test all
+python scripts/bridge_workflow.py --reload --screenshots      # With before/after screenshots
+python scripts/bridge_workflow.py --scenario hip_translate     # Single scenario
+python scripts/bridge_test_client.py                          # Health check only
+```
+
+### Test Scenarios
+| Scenario | What it tests | Invariant |
+|---|---|---|
+| `bake_mute_pop` | Bake+mute cycle causes zero position change | #3 |
+| `arm_drag` | Shoulder rotation, measure pinned hand drift | #6, #9 |
+| `hip_translate` | Hip 10cm translate, measure pinned hand drift | Pin maintenance |
+| `euler_clamp` | Our clamp matches Blender's LIMIT_ROTATION | #8 |
+
+### Automated Tests (pytest-blender, headless)
+```bash
+BLENDER="D:/SteamLibrary/steamapps/common/Blender/blender.exe"
+$BLENDER --background --python tests/run_tests.py -- tests/test_fabrik_regression.py -v
+```
+See `tests/README.md` for full details. Note: `hide_viewport=True` objects are excluded from background depsgraph eval — unhide to measure. `daz_shared_utils.py` changes need a full Blender restart.
+
+## Commit Discipline
+
+Wait until things work before committing. Don't commit every small fix.
+
+## Agents — When to Use Them
+
+BlenDAZ has two specialized agents in `.claude/agents/` (recreated 2026-08-02). **The trigger is risk, not file count.**
+
+- **Architect** (`architect.md`) — invoke BEFORE writing code when the task touches IK/FABRIK/drag/pin/solver code (even single-file), modal event handling, 3+ files, a new feature, or a solver-approach switch (Approach Pivot Protocol is mandatory). Skip only for simple non-IK changes (UI label, panel button, config tweak).
+- **Reviewer** (`reviewer.md`) — invoke BEFORE committing when the change touches IK/FABRIK/drag/pin/solver code (even one line), constraint bake/mute/restore cycles, `view_layer.update()` calls, modal event handling, or 3+ files. Rates golden-rule tier (T0-T3) and checks the 14 vault invariants.
+
+**The key rule**: anything drag/IK/pin-related in `daz_bone_select.py` or `fabrik_solver.py` gets both agents — architect before coding, reviewer before committing. Single-file doesn't mean low-risk in a 13K-line modal. Both agents load context from `D:\Dev\vault\projects\blendaz\` (start at `_blendaz-map.md`).
 
 ## Development Conventions
 
