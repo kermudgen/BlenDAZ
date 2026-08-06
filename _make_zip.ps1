@@ -9,6 +9,7 @@ $files = @(
   'diag_logger.py',
   'diagnose.py',
   'dsf_face_groups.py',
+  'fabrik_solver.py',
   'force_register.py',
   'genesis8_limits.py',
   'ik_templates.py',

@@ -35,7 +35,6 @@ if not _log.handlers:
 _log.setLevel(logging.WARNING)
 
 from . import daz_bone_select
-from . import daz_bone_select_test
 from . import panel_ui
 from . import posebridge
 from . import poseblend
@@ -43,7 +42,6 @@ from . import poseblend
 
 def register():
     daz_bone_select.register()
-    daz_bone_select_test.register()
     panel_ui.register()
     posebridge.register()
     poseblend.register()
@@ -53,5 +51,4 @@ def unregister():
     poseblend.unregister()
     posebridge.unregister()
     panel_ui.unregister()
-    daz_bone_select_test.unregister()
     daz_bone_select.unregister()
