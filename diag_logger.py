@@ -38,8 +38,10 @@ log = logging.getLogger(__name__)
 
 # ============================================================================
 # Master switch — zero overhead when False
+# Must be False in release builds: when True, every hover/click/drag appends
+# to logs/ inside the installed extension directory.
 # ============================================================================
-DIAG_ENABLED = True
+DIAG_ENABLED = False
 
 # Resolve log dir robustly — __file__ may be unreliable in Blender's text editor context
 try:
