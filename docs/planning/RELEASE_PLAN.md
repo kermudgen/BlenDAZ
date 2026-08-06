@@ -20,12 +20,12 @@
 
 ## Release blockers (P0)
 
-1. **Commit current work** — working tree has uncommitted session work (tests/, scripts/, PoseBlend masking+labels, doc edits). Get to a clean, tagged state.
-2. **Dev ↔ installed-extension diff** — the installed extension has previously been ahead of the repo (Apr 2026 incident). Diff and reconcile BEFORE building the release zip. (See memory/SESSION_START "Don't Forget".)
-3. **Interactive posing pass** (TODO.md "Remaining follow-ups") — the manual feel-tests never driven: FABRIK drag over panel, hip drag with pins, thigh-twist + ESC, PoseBlend ON_RELEASE/RMB cancel, gizmo dead-zone. Add: **new live-mask + dot labels feel-test** (2026-08-06 work, untested live) and the 2026-07-07 soft-pin wrist-anchor feel-test (still pending).
-4. **Strip debug/diagnostic code** (TODO.md v1 polish) — `_FABRIK_DEBUG_OVERLAY` drawing, F-curve recording, ik_diag logging, old stubs. Keep bridge-workflow toggle until the final build.
-5. **Clean-machine install test** — build zip via `_make_zip.ps1`, install into a fresh Blender 5.x profile, run the register → scan → activate flow with a stock G8 Diffeo import. Consider trimming dev-only files (`diagnose.py`, `force_register.py`, `register_only.py`) from the ship list or confirming they're user-facing.
-6. **Headless suite green** on the release candidate.
+1. ✅ **Commit current work** (2026-08-06) — tree clean through `fb1ca89`; backups/diag junk gitignored.
+2. ✅ **Dev ↔ installed-extension diff** (2026-08-06) — dev strictly ahead; zero unmerged extension edits (one mtime artifact, content-identical). Installed 5.1 extension is a stale Mar–Jul snapshot; replace via release zip.
+3. **Interactive posing pass** (NEEDS USER AT BLENDER) — the manual feel-tests never driven: FABRIK drag over panel, hip drag with pins, thigh-twist + ESC, PoseBlend ON_RELEASE/RMB cancel, gizmo dead-zone. Add: **PoseBlend live-mask + dot labels feel-test** (Jul work, untested live) and the 2026-07-07 soft-pin wrist-anchor feel-test (still pending).
+4. ✅ **Disable diagnostic logging** (2026-08-06) — `DIAG_ENABLED = False` (was shipping ON, writing logs/ inside the extension per hover/click). `_FABRIK_DEBUG_OVERLAY` already off by default. Full call-site strip deferred to post-1.0.
+5. ✅ **Install test** (2026-08-06) — found + fixed **two DOA bugs**: zip was missing `fabrik_solver.py` (hard import → registration failure on every install), and `__init__.py` registered dev-only `daz_bone_select_test`. Zip now validates (`extension validate`) and installs+enables clean in a sandboxed `BLENDER_USER_RESOURCES` profile. Still to do: full register → scan → activate flow with a real G8 Diffeo character (needs user).
+6. ✅ **Headless suite green** (2026-08-06) — 22 passed / 4 skipped on the release candidate.
 
 ## Should-fix (P1 — ship-with-known-issues candidates)
 
