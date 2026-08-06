@@ -51,3 +51,10 @@ nul
 
 # Scratchpad archives (optional - uncomment if you want to track them)
 # scratchpad_archive/
+
+# Session backups and diagnostics (local only)
+*.backup_*
+*.recovered
+ik_diag_*.json
+backup_extension_*/
+backup_pre_reorganize_*.txt

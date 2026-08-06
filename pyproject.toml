@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "poseblend", "posebridge", "Assets", "docs", "scripts",
+    "logs", "reports", "projects", "__pycache__", ".claude",
+]
