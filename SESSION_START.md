@@ -3,59 +3,46 @@
 > **For AI Assistants**: Read this file first. It's the only file you need for most sessions.
 > Update at the end of every session (3-5 min).
 
-**Updated**: 2026-07-07 (soft-pin wrist anchor fix)
+**Updated**: 2026-08-01 (workflow audit closed — 28/28 fixed)
 
 ---
 
 ## Current State
 
-**Pin maintenance is in production** (`daz_bone_select.py`) and now covers rotation, over-extension, and pose preservation. Architecture: pins = hidden empties + COPY_LOCATION/COPY_ROTATION constraints; during hip/torso drags a depsgraph handler re-solves pinned limbs analytically every frame (`_solve_pin_maintenance_frame`). The old native-IK test-script approach was abandoned (solver pops — see vault `Pin Maintenance Solver Journey.md`); the analytical depsgraph-handler approach is what shipped.
-
-New this session (2026-07-03):
-- **R-key pin maintenance** — rotating hip/pelvis/spine bones keeps pinned hands/feet/head planted (was translation-only; feet used to visually detach from legs)
-- **Reach leash (DAZ Rule 8)** — over-extending a drag translates the hip back instead of silently breaking the pin; radial-only so tangential drag slides along the reach sphere
-- **Pose preservation** — per-frame reset now uses pre-drag originals for twist bones, endpoints, and neck-compensation spine bones (identity reset was wiping user-posed foot roll / twists / spine during pinned drags)
-- **Production-code tests** — `tests/test_pin_maintenance.py` (6 tests) runs the REAL solver methods headlessly against a synthetic G8 rig fixture in `conftest.py` (no DAZ content needed)
-- **Live-rig validated** — via Claude Bridge on a G8M ogre with both hands pinned: hip translate/rotate/leash all converge to ≤2mm endpoint error. Three real-rig bugs found and fixed in the process (arm reach measured to forearmBend.tail instead of the wrist, leash overshoot with multiple pins, residual miss from wrist offset + live LIMIT_ROTATION clamping → per-limb aim feedback). See DRAG_FIX_LOG #005.
-
-New 2026-07-07 (spawned from the 07-03 "found in passing" item):
-- **Soft-pin drag wrist anchor fixed** — `start_ik_drag` locked the IK goal at forearmBend.tail (mid-forearm on Diffeo rigs, 225.9mm off the ogre's wrist), and the lock point didn't match the IK effector anyway (hand **tail**, another 184mm). All three points (lock position, .ik.target creation, effector via `use_tail=False` in soft-pin mode) now sit at the pinned child's **head** — the wrist/ankle the pin constraint actually holds. Also fixes pinned-foot leg drags. `fabrik_solver.py` audited clean. New test `tests/test_soft_pin_ik_chain.py`; suite 21 pass / 4 skip. DRAG_FIX_LOG #008. **Feel-test pending** (addon hot-reloaded live; restart Touch first).
+**Pin maintenance is in production** (analytical depsgraph-handler approach; see vault `Pin Maintenance Solver Journey.md`) and a **28-bug audit sweep is closed**: a 41-agent parallel audit (2026-08-01) found 28 confirmed bugs across the whole addon — all new, zero overlap with known bugs — and every one is fixed. Two release blockers (outline data-destruction under Duplicate-Data prefs; dead pre-4.3 compat branches) are gone; **minimum Blender is now honestly 4.3+**, verified on 5.1.2. Pre-release prep for Superhive/Gumroad continues.
 
 ---
 
-## What We Did Last Session (2026-07-03)
+## What We Did Last Session (2026-08-01)
 
-- Mapped the full pin system (creation → maintenance → bake-back) and gap-analyzed against the 10 DAZ behavioral rules from vault research
-- Extracted the hip-pin depsgraph handler body into `_solve_pin_maintenance_frame()`; generalized `_start_hip_pin_drag()` with `transform_op` ('TRANSLATE'/'ROTATE') and `rotated_bone_name`
-- Added `_apply_pin_reach_leash()` — world-space deficit correction on the root bone, margin 0.99 (tighter than the solver's 0.995 clamp so they never fight)
-- R-key block now routes hip/pelvis/spine rotations with pinned limbs through the pin-maintenance handler (intercepts when the rotated bone can move a pin; maintains ALL pins once active since the leash can translate the hip)
-- Added synthetic Genesis-8 armature fixture + `load_production_module()` package-import helper (daz_bone_select uses relative imports) to `tests/conftest.py`
-- All tests green headless: 6 new + 11 existing (`blender --background --python tests/run_tests.py`)
+- **Ran the 41-agent workflow audit** (12 per-file auditors + fresh-context refuting verifiers): 29 findings → 28 confirmed / 1 refuted. Report with per-item fixes + evidence: vault `blendaz-audit-2026-08-01`.
+- **Fixed all 28** in five clean commits (`bf31ee3` release blockers · `3bd1d87` posing-state · `7d2cebc` multi-character · `563eaa8` extractors · `9cb1c1c` final nine), with pre-existing WIP checkpointed separately (`c729b63`). Headless 5.1.2 test evidence per cluster — highlights: FABRIK invariant-#9 split-point restored to **0.000000m sphere error**; unpin no longer breaks FACS euler drivers; PoseBlend ON_RELEASE mode works for the first time.
+- **⚠️ #4/#5 fixed but UNCOMMITTED** (`panel_ui.py`: stage-light restore + PB-viewport hijack) — caught unfixed during the /save closure review.
+- **Files modified**: `daz_bone_select.py`, `fabrik_solver.py`, `setup_all.py`, `posebridge/{core,panel_ui,outline_generator_lineart,extract_hands,extract_face}.py`, `poseblend/interaction.py`
 
 ---
 
 ## Next Up
 
-1. **Feel-test in live Blender** — R on hip/chest with pins, leash behavior at full extension (tests prove positions; feel needs eyes)
-2. **Spine-bone G-drag with multiple pinned hands** — soft-pin path still honors only ONE pinned descendant (`find_pinned_descendant` singular); DAZ holds both
-3. **Rule 10 full-chain participation** — hip-pin arm solve engages collar+arm only; DAZ engages spine→collar→arm with measured distribution (vault: context profiles)
-4. **Collar tuning** — pin-maintenance collar influence (0.45 damped-track) vs DAZ's 20.5% absorption
-5. **Unpin preservation check** — delta bake-back exists in `unpin_bone()`; TODO.md still lists the old bug as open — verify and close
-6. **PinPool** (from plan, never built) — pre-created empties to avoid per-pin object churn
+1. **Commit #4/#5** (panel_ui.py — the last uncommitted audit fixes)
+2. **Interactive posing pass** for the fixes headless tests can't drive: FABRIK drag from over the panel, hip drag w/ pins in a failing context, thigh-twist + ESC, PoseBlend ON_RELEASE + RMB cancel, gizmo dead-zone feel
+3. **Multi-character setup run** — verify setup_all Z-stacking on real characters
+4. **4.5 LTS manual run** before the store listing claims 4.x support
+5. *(carried)* Feel-test R-rotation + leash in live Blender; spine G-drag with multiple pinned hands (`find_pinned_descendant` singular)
 
 ---
 
 ## Don't Forget
 
-- **⚠️ Diff dev↔extension BEFORE any sync** — live bridge sessions edit the installed extension directly; in April 2026 the extension was ~650 lines ahead of dev (pin icons, ik_diag logging, freeze anti-pop) and a careless overwrite lost it (recovered from the Blender 5.0 profile, merged 2026-07-07 — DRAG_FIX_LOG #008)
-- **Solver-owned bones need identity reset** — `_solve_pinned_limb` reads the pose matrix as its rest frame, so thigh/shin/collar/shoulder/forearm/neck must be identity before each pass; everything else resets to pre-drag originals (see `_PIN_SOLVER_OWNED_KEYS`)
-- **Leash margin (0.99) < solver reach clamp (0.995)** — keep that ordering or they fight at the boundary
-- **Check vault before implementing** — `BlenDAZ/IK Stiffness Reference.md`, `Pin Maintenance Solver Journey.md`, `blendaz-research-findings.md`. Don't re-derive values that already exist.
-- **Headless tests**: `"D:/SteamLibrary/steamapps/common/Blender/blender.exe" --background --python tests/run_tests.py -- tests/test_pin_maintenance.py -v` (pytest is installed in Blender 5.1's Python)
-- **Pin workflow**: hover → click to select → P to pin (Shift+P rotation) → select hip → G to drag / R to rotate
-- **Live-Blender bridge**: `scripts/bridge_workflow.py` (port 7777) — needs Blender running with Claude Bridge started
+- **⚠️ Diff dev↔extension BEFORE any sync** — live bridge sessions edit the installed extension directly (April 2026 near-loss; DRAG_FIX_LOG #008)
+- **`bpy.ops.object.duplicate()` honors user Duplicate-Data prefs** — never use it for internal copies (`obj.copy()` + `data.copy()`)
+- **`hide_viewport=True` objects are excluded from background depsgraph eval** — evaluated matrices read identity in headless tests; unhide to measure
+- **CollectionProperty item refs invalidate on add()/remove()** — capture values first
+- **Solver-owned bones need identity reset** (`_PIN_SOLVER_OWNED_KEYS`); everything else resets to pre-drag originals
+- **Leash margin (0.99) < solver reach clamp (0.995)** — keep that ordering
+- **Check vault before implementing** — `blendaz-invariants` (14 contracts, read the Quick Lookup), `_blendaz-map` routing table, `blendaz-audit-2026-08-01`
+- **Headless tests**: `"D:/SteamLibrary/steamapps/common/Blender/blender.exe" --background --python tests/run_tests.py` (pytest lives in Blender 5.1's Python)
 - `daz_shared_utils.py` changes → **full Blender restart**
-- **Commit discipline**: wait until things work before committing
 
 ---
 
@@ -63,10 +50,10 @@ New 2026-07-07 (spawned from the 07-03 "found in passing" item):
 
 | File | Why |
 |------|-----|
-| `daz_bone_select.py` | All pin code: `_start_hip_pin_drag` / `_solve_pin_maintenance_frame` / `_apply_pin_reach_leash` / R-key block (~line 3060) |
-| `tests/test_pin_maintenance.py` | Production-code pin tests (synthetic rig) |
-| `tests/conftest.py` | `build_synthetic_g8()`, `load_production_module()` |
-| `fabrik_solver.py` | Drag-IK FABRIK (soft-pin arm drags) |
+| `posebridge/panel_ui.py` | The two uncommitted fixes (#4 BODY_OBJECTS, #5 viewport second-pass) |
+| Vault: `blendaz-audit-2026-08-01` | Audit closure record; manual-verification checklist |
+| `daz_bone_select.py` | Interactive pass touches FABRIK/hip-pin/twist/gizmo paths |
+| `tests/` + `scripts/bridge_workflow.py` | Headless suite; live-Blender bridge (port 7777) for feel-tests |
 
 ---
 
@@ -74,10 +61,9 @@ New 2026-07-07 (spawned from the 07-03 "found in passing" item):
 
 | File | When to read |
 |------|-------------|
-| [CLAUDE.md](CLAUDE.md) | Design philosophy, issue status, conventions |
+| [CLAUDE.md](CLAUDE.md) | Design philosophy, vault routing |
 | [INDEX.md](INDEX.md) | Finding a specific file |
-| [TODO.md](TODO.md) | Full task backlog |
-| [docs/TECHNICAL_REFERENCE.md](docs/TECHNICAL_REFERENCE.md) | IK research, DAZ rig architecture, rotation math |
-| [SCRATCHPAD.md](SCRATCHPAD.md) | History of decisions |
-| Vault: `BlenDAZ/Pin Maintenance Solver Journey.md` | Why FABRIK/CCD failed, why native IK works |
-| Vault: `BlenDAZ/IK Stiffness Reference.md` | Proven stiffness values |
+| [TODO.md](TODO.md) | Full task backlog (audit follow-ups at top) |
+| [SCRATCHPAD.md](SCRATCHPAD.md) | 2026-08-01 audit session entry (full fix detail) |
+| Vault: `_blendaz-map` | Task routing — read before modifying code |
+| Vault: `blendaz-invariants` | The 14 "don't break this" contracts |
