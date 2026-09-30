@@ -2458,8 +2458,14 @@ class VIEW3D_OT_daz_bone_select(bpy.types.Operator):
 
         # FABRIK test script active — pass all events through so it has
         # exclusive control. Production modal stays alive but dormant.
-        from . import daz_bone_select_test
-        if daz_bone_select_test.fabrik_test_active:
+        # daz_bone_select_test is dev-only and NOT in the release zip, so only
+        # consult it if a dev script already loaded it: an unconditional
+        # `from . import` raised ImportError on every event in the shipped
+        # build, which modal() swallowed, leaving the tool inert. (A module
+        # that was never imported has fabrik_test_active == False anyway.)
+        import sys as _sys
+        _test_mod = _sys.modules.get(__name__.rpartition('.')[0] + '.daz_bone_select_test')
+        if _test_mod is not None and getattr(_test_mod, 'fabrik_test_active', False):
             return {'PASS_THROUGH'}
 
         # Clear tooltip on any mouse button press
