@@ -96,7 +96,10 @@ _FABRIK_ENABLED = True
 # FABRIK DIAGNOSTICS: Record bone rotations as f-curves during drag.
 # When True, creates a temporary action with keyframes for every FABRIK frame.
 # View in Graph Editor during/after drag. Summary printed to console on release.
-_RECORD_DRAG_CURVES = True
+# Must be False in release builds: when True, every drag replaces the armature's
+# active action with a muted _IK_Diag_* action (displacing the user's animation)
+# and appends JSON to a hardcoded dev path (D:\Dev\...).
+_RECORD_DRAG_CURVES = False
 
 # FABRIK DEBUG OVERLAY: Draw chain state in viewport during drag.
 # Shows sub-chains (blue/orange), pin target (green), drag target (yellow).
