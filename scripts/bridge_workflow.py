@@ -156,7 +156,7 @@ else:
 import sys, os, importlib
 
 # Add dev scripts dir to path for debug_overlay import
-dev_scripts = 'D:\Dev\Blender Addons\BlenDAZ/scripts'
+dev_scripts = 'D:/Dev/Blender Addons/BlenDAZ/scripts'
 if dev_scripts not in sys.path:
     sys.path.insert(0, dev_scripts)
 
