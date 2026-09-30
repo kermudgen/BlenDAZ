@@ -16,5 +16,8 @@ website = "https://github.com/jrother/BlenDAZ"
 
 tags = ["Rigging", "Animation"]
 
-# No special permissions needed — BlenDAZ operates entirely within the Blender scene.
-# No network, filesystem, clipboard, camera, or microphone access required.
+# Filesystem: dsf_face_groups reads Genesis .dsf files from the DAZ content
+# library (located via ~/Documents/DAZ Importer settings), and PoseBlend
+# imports/exports grid JSON. No network, clipboard, camera or microphone.
+[permissions]
+files = "Read DAZ library .dsf files, import/export PoseBlend grids"
