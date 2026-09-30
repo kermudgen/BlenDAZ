@@ -21,7 +21,7 @@ from bpy.types import Operator
 from .grid import pixel_to_grid, find_dot_at_position, snap_to_grid, clamp_to_grid
 from .blending import calculate_blend_weights
 from .poses import apply_blended_pose, capture_pose, capture_bone_locations, keyframe_pose, get_bone_mask_for_dot, get_grid_region_mask, capture_morphs, apply_morphs, blend_morphs
-from .presets import get_dot_color, get_morph_names_for_categories, MASK_REGIONS, MASK_REGION_KEYS
+from .presets import get_dot_color, get_morph_names_for_categories
 
 
 

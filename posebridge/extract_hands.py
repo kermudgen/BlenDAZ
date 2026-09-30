@@ -21,7 +21,7 @@
 
 import bpy
 import bmesh
-from mathutils import Vector, Matrix, Euler
+from mathutils import Vector
 import math
 
 from .outline_generator_lineart import get_or_create_pb_collection

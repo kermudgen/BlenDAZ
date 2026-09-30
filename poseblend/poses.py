@@ -19,7 +19,7 @@
 import bpy
 import math
 from mathutils import Quaternion, Vector
-from .presets import get_bone_group, get_all_body_bones
+from .presets import get_bone_group
 
 
 

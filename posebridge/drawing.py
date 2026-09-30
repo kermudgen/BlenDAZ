@@ -122,8 +122,6 @@ class PoseBridgeDrawHandler:
         if not region or not rv3d:
             return
 
-        from ..daz_shared_utils import get_genesis8_control_points
-
         # USE FIXED CONTROL POINT POSITIONS (from T-pose)
         fixed_control_points = settings.control_points_fixed
 

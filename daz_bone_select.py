@@ -22,7 +22,6 @@ Combines fast hover preview, bone selection, pin marking system, and PowerPose p
 import bpy
 from bpy_extras import view3d_utils
 from mathutils import Vector, Euler, Quaternion, Matrix
-from mathutils.bvhtree import BVHTree
 import gpu
 from gpu_extras.batch import batch_for_shader
 import blf
@@ -49,7 +48,6 @@ from .bone_utils import (
     is_twist_bone,
     is_pectoral,
     get_ik_target_bone,
-    calculate_chain_length_skipping_twists,
     get_smart_chain_length
 )
 
