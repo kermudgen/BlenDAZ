@@ -747,12 +747,12 @@ def _clear_cp_cache_on_load(_dummy):
     _cp_cache.clear()
 
 
-# Register once; the module can be re-imported by script reload, so replace
-# any handler left by a previous module instance instead of stacking.
-for _h in list(bpy.app.handlers.load_post):
-    if getattr(_h, '__name__', '') == '_clear_cp_cache_on_load':
-        bpy.app.handlers.load_post.remove(_h)
-bpy.app.handlers.load_post.append(_clear_cp_cache_on_load)
+def _remove_cp_cache_handler():
+    """Remove any _clear_cp_cache_on_load, including one left by a previous
+    module instance (script reload), matched by name rather than identity."""
+    for _h in list(bpy.app.handlers.load_post):
+        if getattr(_h, '__name__', '') == '_clear_cp_cache_on_load':
+            bpy.app.handlers.load_post.remove(_h)
 
 
 def save_control_points(char_tag):
@@ -900,7 +900,14 @@ def register():
     # Register scene property
     bpy.types.Scene.posebridge_settings = PointerProperty(type=PoseBridgeSettings)
 
+    # Registered here (not at import) so disabling the add-on removes it:
+    # a @persistent handler otherwise outlives the add-on.
+    _remove_cp_cache_handler()
+    bpy.app.handlers.load_post.append(_clear_cp_cache_on_load)
+
 def unregister():
+    _remove_cp_cache_handler()
+
     del bpy.types.Scene.posebridge_settings
 
     for cls in reversed(classes):
